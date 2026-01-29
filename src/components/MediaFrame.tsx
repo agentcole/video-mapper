@@ -1,20 +1,19 @@
-import React, { useRef, useEffect, useState } from 'react';
-import type { MediaFrame } from '../types';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import type { MediaFrame, Point } from '../types';
 import { 
-  Maximize2, 
-  Minimize2, 
   RotateCw, 
   Trash2, 
   Volume2, 
   VolumeX,
-  Gauge,
   Layers,
   Upload,
   Sparkles,
   FlipHorizontal,
   FlipVertical,
   Lock,
-  Unlock
+  Unlock,
+  Scissors,
+  Move3D,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
 
@@ -30,6 +29,13 @@ interface MediaFrameComponentProps {
   isPresentationMode: boolean;
 }
 
+// Helper to convert normalized vertices to clip-path polygon string
+const verticesToClipPath = (vertices: Point[] | undefined): string => {
+  if (!vertices || vertices.length < 3) return 'none';
+  const points = vertices.map(v => `${v.x * 100}% ${v.y * 100}%`).join(', ');
+  return `polygon(${points})`;
+};
+
 export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   frame,
   isSelected,
@@ -44,9 +50,46 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEffects, setShowEffects] = useState(false);
+  const [draggingVertexIndex, setDraggingVertexIndex] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Handle vertex drag for polygon editing
+  const handleVertexMouseDown = useCallback((index: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingVertexIndex(index);
+  }, []);
+
+  const handleVertexMouseMove = useCallback((e: MouseEvent) => {
+    if (draggingVertexIndex === null || !frame.vertices || !containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    // Calculate new normalized position
+    const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / frame.width));
+    const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / frame.height));
+
+    const newVertices = [...frame.vertices];
+    newVertices[draggingVertexIndex] = { x: newX, y: newY };
+    onUpdate({ vertices: newVertices });
+  }, [draggingVertexIndex, frame.vertices, frame.width, frame.height, onUpdate]);
+
+  const handleVertexMouseUp = useCallback(() => {
+    setDraggingVertexIndex(null);
+  }, []);
+
+  // Add/remove mouse move/up listeners for vertex dragging
+  useEffect(() => {
+    if (draggingVertexIndex !== null) {
+      window.addEventListener('mousemove', handleVertexMouseMove);
+      window.addEventListener('mouseup', handleVertexMouseUp);
+      return () => {
+        window.removeEventListener('mousemove', handleVertexMouseMove);
+        window.removeEventListener('mouseup', handleVertexMouseUp);
+      };
+    }
+  }, [draggingVertexIndex, handleVertexMouseMove, handleVertexMouseUp]);
 
   useEffect(() => {
     if (videoRef.current && frame.type === 'video') {
@@ -100,9 +143,18 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     e.stopPropagation();
   };
 
-  const clipPathStyle = frame.shape === 'circle' 
-    ? 'ellipse(50% 50% at 50% 50%)' 
-    : 'none';
+  // Determine clip path based on shape and texture mode
+  const getClipPath = (): string => {
+    if (frame.shape === 'circle') {
+      return 'ellipse(50% 50% at 50% 50%)';
+    }
+    if (frame.shape === 'polygon' && frame.textureMode === 'clip') {
+      return verticesToClipPath(frame.vertices);
+    }
+    return 'none';
+  };
+  
+  const clipPathStyle = getClipPath();
 
   // Build CSS filter string
   const filterStyle = [
@@ -190,6 +242,19 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
           </div>
         )}
 
+        {/* Polygon outline overlay (non-presentation mode) */}
+        {frame.shape === 'polygon' && frame.vertices && !isPresentationMode && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none">
+            <polygon
+              points={frame.vertices.map(v => `${v.x * frame.width},${v.y * frame.height}`).join(' ')}
+              fill="none"
+              stroke="rgba(168, 85, 247, 0.5)"
+              strokeWidth="2"
+              strokeDasharray="4 2"
+            />
+          </svg>
+        )}
+
         {/* Filename Display */}
         {frame.url && frame.filename && !isPresentationMode && (
           <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white px-2 py-1 text-xs truncate backdrop-blur-sm">
@@ -203,8 +268,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         )}
       </div>
 
-      {/* Resize Handles */}
-      {isSelected && resizeHandles.map((handle) => (
+      {/* Resize Handles (not for polygons) */}
+      {isSelected && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
         <div
           key={handle}
           className={`absolute w-4 h-4 bg-yellow-400 border-2 border-yellow-600 cursor-${handle}-resize z-10 shadow-md`}
@@ -215,6 +280,20 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
             e.stopPropagation();
             onResizeStart(e, handle);
           }}
+        />
+      ))}
+
+      {/* Polygon Vertex Handles */}
+      {isSelected && frame.shape === 'polygon' && frame.vertices && frame.vertices.map((vertex, index) => (
+        <div
+          key={`vertex-${index}`}
+          className="absolute w-4 h-4 bg-purple-500 border-2 border-purple-700 rounded-full cursor-move z-20 shadow-md hover:bg-purple-400 transition-colors"
+          style={{
+            left: vertex.x * frame.width - 8,
+            top: vertex.y * frame.height - 8,
+          }}
+          onMouseDown={(e) => handleVertexMouseDown(index, e)}
+          title={`Vertex ${index + 1}`}
         />
       ))}
 
@@ -365,13 +444,64 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
               <label className="text-xs mb-2 block">Shape</label>
               <select
                 value={frame.shape}
-                onChange={(e) => onUpdate({ shape: e.target.value as 'rectangle' | 'circle' })}
+                onChange={(e) => {
+                  const newShape = e.target.value as 'rectangle' | 'circle' | 'polygon';
+                  // If switching to polygon without vertices, create default square polygon
+                  if (newShape === 'polygon' && (!frame.vertices || frame.vertices.length < 3)) {
+                    onUpdate({ 
+                      shape: newShape,
+                      vertices: [
+                        { x: 0, y: 0 },
+                        { x: 1, y: 0 },
+                        { x: 1, y: 1 },
+                        { x: 0, y: 1 },
+                      ]
+                    });
+                  } else {
+                    onUpdate({ shape: newShape });
+                  }
+                }}
                 className="w-full bg-white/10 rounded px-2 py-1 text-xs"
               >
                 <option value="rectangle">Rectangle</option>
                 <option value="circle">Circle</option>
+                <option value="polygon">Polygon</option>
               </select>
             </div>
+
+            {/* Texture Mode for Polygons */}
+            {frame.shape === 'polygon' && (
+              <div>
+                <label className="text-xs mb-2 block">Texture Mode</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => onUpdate({ textureMode: 'clip' })}
+                    className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${
+                      frame.textureMode === 'clip' ? 'bg-blue-600' : 'bg-white/10'
+                    }`}
+                    title="Clip - Cuts media to polygon shape"
+                  >
+                    <Scissors className="w-3 h-3" />
+                    Clip
+                  </button>
+                  <button
+                    onClick={() => onUpdate({ textureMode: 'warp' })}
+                    className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${
+                      frame.textureMode === 'warp' ? 'bg-blue-600' : 'bg-white/10'
+                    }`}
+                    title="Warp - Stretches media to fit polygon (experimental)"
+                  >
+                    <Move3D className="w-3 h-3" />
+                    Warp
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  {frame.textureMode === 'clip' 
+                    ? 'Media is cut to polygon shape' 
+                    : 'Media stretches to fit polygon (quad only)'}
+                </p>
+              </div>
+            )}
 
             <div className="pt-2 border-t border-white/20">
               <label className="flex items-center gap-2 text-xs cursor-pointer">

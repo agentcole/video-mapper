@@ -1,20 +1,50 @@
 // Types for the Video Mapper application
 
 export type MediaType = 'video' | 'image'
-export type ShapeType = 'rectangle' | 'circle'
+export type ShapeType = 'rectangle' | 'circle' | 'polygon'
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'color-dodge' | 'color-burn' | 'hard-light' | 'soft-light' | 'difference' | 'exclusion' | 'hue' | 'saturation' | 'color' | 'luminosity'
+export type TextureMode = 'clip' | 'warp'
+
+// Point for polygon vertices (relative to frame, 0-1 normalized)
+export interface Point {
+  x: number
+  y: number
+}
+
+// Stored media in IndexedDB
+export interface StoredMedia {
+  id: string
+  name: string
+  type: MediaType
+  mimeType: string
+  size: number
+  blob: Blob
+  thumbnail?: string // base64 data URL for preview
+  dateAdded: number
+}
+
+// Media library stats
+export interface MediaLibraryStats {
+  totalSize: number
+  count: number
+  maxSize: number // max allowed total size
+}
 
 export interface MediaFrame {
   id: string
   type: MediaType
   url: string
   filename?: string
+  mediaId?: string // Reference to stored media in IndexedDB
   x: number
   y: number
   width: number
   height: number
   rotation: number
   shape: ShapeType
+  // Polygon-specific properties
+  vertices?: Point[] // Normalized vertices (0-1) for polygon shape
+  textureMode: TextureMode // How to render media in polygon: clip or warp
   loop: boolean
   opacity: number
   zIndex: number

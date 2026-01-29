@@ -9,18 +9,22 @@ import {
   Square, 
   Circle,
   Image as ImageIcon,
-  Video
+  Video,
+  Pentagon,
+  FolderOpen,
 } from 'lucide-react';
+import type { ShapeType } from '../types';
 
 interface ControlPanelProps {
   onAddUrl: (url: string, type: 'video' | 'image') => void;
   onSave: () => void;
   onExport: () => void;
   onImport: (file: File) => void;
-  onDrawMode: (shape: 'rectangle' | 'circle') => void;
+  onDrawMode: (shape: ShapeType) => void;
   isDrawMode: boolean;
-  drawShape: 'rectangle' | 'circle' | null;
+  drawShape: ShapeType | null;
   onPresentationMode: () => void;
+  onOpenMediaLibrary: () => void;
 }
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -32,6 +36,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   isDrawMode,
   drawShape,
   onPresentationMode,
+  onOpenMediaLibrary,
 }) => {
   const [url, setUrl] = useState('');
   const [mediaType, setMediaType] = useState<'video' | 'image'>('video');
@@ -72,30 +77,51 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               size="sm"
               onClick={() => onDrawMode('rectangle')}
               className="flex-1"
+              title="Rectangle"
             >
-              <Square className="w-4 h-4 mr-1" />
-              Rectangle
+              <Square className="w-4 h-4" />
             </Button>
             <Button
               variant={isDrawMode && drawShape === 'circle' ? 'default' : 'outline'}
               size="sm"
               onClick={() => onDrawMode('circle')}
               className="flex-1"
+              title="Circle"
             >
-              <Circle className="w-4 h-4 mr-1" />
-              Circle
+              <Circle className="w-4 h-4" />
+            </Button>
+            <Button
+              variant={isDrawMode && drawShape === 'polygon' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => onDrawMode('polygon')}
+              className="flex-1"
+              title="Polygon"
+            >
+              <Pentagon className="w-4 h-4" />
             </Button>
           </div>
           {isDrawMode && (
             <p className="text-xs text-blue-400">
-              Click and drag on canvas to create {drawShape}
+              {drawShape === 'polygon' 
+                ? 'Click to add vertices, double-click or click first point to close'
+                : `Click and drag on canvas to create ${drawShape}`
+              }
             </p>
           )}
         </div>
 
-        {/* Add Media URL */}
+        {/* Add Media */}
         <div className="space-y-2">
           <p className="text-xs text-gray-400 uppercase font-semibold">Add Media</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onOpenMediaLibrary}
+            className="w-full"
+          >
+            <FolderOpen className="w-4 h-4 mr-1" />
+            Media Library
+          </Button>
           {!showUrlInput ? (
             <Button
               variant="outline"
@@ -220,15 +246,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <strong>Keyboard Shortcuts:</strong><br />
             • <strong>P</strong> - Present mode<br />
             • <strong>F</strong> - Fullscreen<br />
-            • <strong>ESC</strong> - Exit mode<br />
+            • <strong>ESC</strong> - Exit mode/cancel draw<br />
             <br />
             <strong>Tips:</strong><br />
-            • Draw frames or add media via URL<br />
+            • Rectangle/Circle: Click & drag<br />
+            • Polygon: Click vertices, dbl-click to close<br />
             • Drag frames to move<br />
-            • Use handles to resize<br />
+            • Blue handles to resize<br />
             • Green handle to rotate<br />
-            • Hover for controls<br />
-            • Drop files on canvas/frames
+            • Purple handles to edit polygon vertices<br />
+            • Hover for controls
           </p>
         </div>
       </div>

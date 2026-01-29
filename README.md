@@ -6,10 +6,16 @@ A high-performance web-based video mapping application built with React, TypeScr
 
 ### 🎥 Media Management
 - **Multiple Media Types**: Support for both videos and images
+- **Persistent Media Library**:
+  - Media files are stored in browser IndexedDB (persists across sessions)
+  - 50MB per file limit, 500MB total storage
+  - Thumbnail previews for all media
+  - Filter by video/image type
 - **Flexible Input Methods**:
-  - Draw frames directly on canvas (rectangle or circle shapes)
+  - Draw frames directly on canvas (rectangle, circle, or polygon shapes)
   - Add media via URL input
   - Drag & drop files onto the canvas
+  - Select from Media Library
 
 ### 🎨 Frame Manipulation
 - **Transform Controls**:
@@ -19,6 +25,10 @@ A high-performance web-based video mapping application built with React, TypeScr
 - **Shape Options**:
   - Rectangle frames (default)
   - Circle/ellipse frames with proper clipping
+  - **Freeform Polygon frames** with vertex editing
+    - Click to place vertices, double-click to close
+    - Drag purple handles to edit vertex positions
+    - Choose between Clip mode (cuts media) or Warp mode (stretches media)
 
 ### ⚙️ Advanced Controls (Hover to Access)
 - **Video Controls**:
@@ -161,11 +171,11 @@ src/
 - [ ] Undo/redo functionality
 - [ ] Timeline for synchronized playback
 - [ ] Audio waveform visualization
-- [ ] Blend modes and filters
 - [ ] Grid and snap-to-grid
-- [ ] Keyboard shortcuts
-- [ ] Fullscreen presentation mode
+- [ ] More keyboard shortcuts
 - [ ] Export as video file
+- [ ] Advanced polygon warp with mesh deformation
+- [ ] Bezier curve mask edges
 
 ## License
 

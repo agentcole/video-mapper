@@ -1,8 +1,18 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import type { MediaFrame, DragState, ResizeState, RotateState, DrawState, ShapeType } from '../types';
+import type { MediaFrame, DragState, ResizeState, RotateState, DrawState, ShapeType, Point, StoredMedia } from '../types';
 import { MediaFrameComponent } from './MediaFrame';
 import { ControlPanel } from './ControlPanel';
+import { MediaLibrary } from './MediaLibrary';
 import { saveProject, loadProject, exportProject, importProject, generateFrameId } from '../lib/storage';
+import { storeMedia, resolveMediaUrls } from '../lib/mediaStorage';
+
+// State for polygon drawing (click to add vertices)
+interface PolygonDrawState {
+  isDrawing: boolean;
+  vertices: Point[]; // Screen coordinates while drawing
+  startX: number;
+  startY: number;
+}
 
 export const Canvas: React.FC = () => {
   const [frames, setFrames] = useState<MediaFrame[]>([]);
@@ -41,9 +51,17 @@ export const Canvas: React.FC = () => {
     currentX: 0,
     currentY: 0,
   });
+  const [polygonDrawState, setPolygonDrawState] = useState<PolygonDrawState>({
+    isDrawing: false,
+    vertices: [],
+    startX: 0,
+    startY: 0,
+  });
   const [isDrawMode, setIsDrawMode] = useState(false);
   const [drawShape, setDrawShape] = useState<ShapeType | null>(null);
-  const [pendingMediaUrl, setPendingMediaUrl] = useState<{url: string, type: 'video' | 'image'} | null>(null);
+  const [pendingMediaUrl, setPendingMediaUrl] = useState<{url: string, type: 'video' | 'image', mediaId?: string} | null>(null);
+  const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [, setMediaUrlCache] = useState<Map<string, string>>(new Map());
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -57,25 +75,36 @@ export const Canvas: React.FC = () => {
           if (document.fullscreenElement) {
             document.exitFullscreen();
           }
+        } else if (polygonDrawState.isDrawing) {
+          // Cancel polygon drawing
+          setPolygonDrawState({
+            isDrawing: false,
+            vertices: [],
+            startX: 0,
+            startY: 0,
+          });
+          setIsDrawMode(false);
+          setDrawShape(null);
+          setPendingMediaUrl(null);
         } else if (isDrawMode) {
           setIsDrawMode(false);
           setDrawShape(null);
           setPendingMediaUrl(null);
         }
       }
-      // P for presentation mode
-      if (e.key === 'p' || e.key === 'P') {
+      // P for presentation mode (only if not typing in input)
+      if ((e.key === 'p' || e.key === 'P') && !isMediaLibraryOpen) {
         togglePresentationMode();
       }
       // F for fullscreen
-      if (e.key === 'f' || e.key === 'F') {
+      if ((e.key === 'f' || e.key === 'F') && !isMediaLibraryOpen) {
         toggleFullscreen();
       }
     };
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isPresentationMode, isDrawMode]);
+  }, [isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen]);
 
   const togglePresentationMode = useCallback(() => {
     setIsPresentationMode(prev => !prev);
@@ -108,12 +137,40 @@ export const Canvas: React.FC = () => {
     }
   }, []);
 
-  // Load project on mount
+  // Load project on mount and resolve media URLs
   useEffect(() => {
-    const savedFrames = loadProject();
-    if (savedFrames) {
-      setFrames(savedFrames);
-    }
+    const loadAndResolveMedia = async () => {
+      const savedFrames = loadProject();
+      if (savedFrames) {
+        // Get all unique media IDs that need to be resolved
+        const mediaIds = savedFrames
+          .filter(f => f.mediaId)
+          .map(f => f.mediaId!);
+        
+        if (mediaIds.length > 0) {
+          try {
+            const urlMap = await resolveMediaUrls(mediaIds);
+            setMediaUrlCache(urlMap);
+            
+            // Update frames with resolved URLs
+            const resolvedFrames = savedFrames.map(frame => {
+              if (frame.mediaId && urlMap.has(frame.mediaId)) {
+                return { ...frame, url: urlMap.get(frame.mediaId)! };
+              }
+              return frame;
+            });
+            setFrames(resolvedFrames);
+          } catch (error) {
+            console.error('Failed to resolve media URLs:', error);
+            setFrames(savedFrames);
+          }
+        } else {
+          setFrames(savedFrames);
+        }
+      }
+    };
+    
+    loadAndResolveMedia();
   }, []);
 
   // Auto-save
@@ -143,6 +200,8 @@ export const Canvas: React.FC = () => {
       flipHorizontal: frame.flipHorizontal ?? false,
       flipVertical: frame.flipVertical ?? false,
       lockAspectRatio: frame.lockAspectRatio ?? true,
+      textureMode: frame.textureMode ?? 'clip',
+      vertices: frame.vertices,
     };
     setFrames(prev => [...prev, newFrame]);
     setSelectedFrameId(newFrame.id);
@@ -165,16 +224,142 @@ export const Canvas: React.FC = () => {
       setSelectedFrameId(null);
       
       if (isDrawMode && drawShape) {
-        setDrawState({
-          isDrawing: true,
-          startX: e.clientX,
-          startY: e.clientY,
-          currentX: e.clientX,
-          currentY: e.clientY,
-        });
+        if (drawShape === 'polygon') {
+          // Polygon drawing: add vertex on click
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (rect) {
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (!polygonDrawState.isDrawing) {
+              // Start new polygon
+              setPolygonDrawState({
+                isDrawing: true,
+                vertices: [{ x, y }],
+                startX: x,
+                startY: y,
+              });
+            } else {
+              // Check if clicking near first vertex to close polygon
+              const firstVertex = polygonDrawState.vertices[0];
+              const distance = Math.sqrt(
+                Math.pow(x - firstVertex.x, 2) + Math.pow(y - firstVertex.y, 2)
+              );
+              
+              if (distance < 20 && polygonDrawState.vertices.length >= 3) {
+                // Close polygon
+                finishPolygon();
+              } else {
+                // Add new vertex
+                setPolygonDrawState(prev => ({
+                  ...prev,
+                  vertices: [...prev.vertices, { x, y }],
+                }));
+              }
+            }
+          }
+        } else {
+          // Rectangle or circle: drag to draw
+          setDrawState({
+            isDrawing: true,
+            startX: e.clientX,
+            startY: e.clientY,
+            currentX: e.clientX,
+            currentY: e.clientY,
+          });
+        }
       }
     }
-  }, [isDrawMode, drawShape]);
+  }, [isDrawMode, drawShape, polygonDrawState]);
+
+  // Handle double-click to close polygon
+  const handleCanvasDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === canvasRef.current && drawShape === 'polygon' && polygonDrawState.isDrawing) {
+      if (polygonDrawState.vertices.length >= 3) {
+        finishPolygon();
+      }
+    }
+  }, [drawShape, polygonDrawState]);
+
+  // Finish polygon and create frame
+  const finishPolygon = useCallback(() => {
+    if (polygonDrawState.vertices.length < 3) {
+      setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
+      return;
+    }
+
+    // Calculate bounding box
+    const xs = polygonDrawState.vertices.map(v => v.x);
+    const ys = polygonDrawState.vertices.map(v => v.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const width = maxX - minX;
+    const height = maxY - minY;
+
+    // Skip if too small
+    if (width < 20 || height < 20) {
+      setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
+      return;
+    }
+
+    // Convert vertices to normalized coordinates (0-1) relative to bounding box
+    const normalizedVertices: Point[] = polygonDrawState.vertices.map(v => ({
+      x: (v.x - minX) / width,
+      y: (v.y - minY) / height,
+    }));
+
+    const newFrame: Omit<MediaFrame, 'id'> = {
+      type: pendingMediaUrl?.type || 'image',
+      url: pendingMediaUrl?.url || '',
+      mediaId: pendingMediaUrl?.mediaId,
+      x: minX,
+      y: minY,
+      width,
+      height,
+      rotation: 0,
+      shape: 'polygon',
+      vertices: normalizedVertices,
+      textureMode: 'clip',
+      loop: true,
+      opacity: 1,
+      zIndex: frames.length,
+      playbackRate: 1,
+      muted: false,
+      blur: 0,
+      brightness: 100,
+      contrast: 100,
+      grayscale: 0,
+      saturate: 100,
+      hueRotate: 0,
+      invert: 0,
+      sepia: 0,
+      blendMode: 'normal',
+      flipHorizontal: false,
+      flipVertical: false,
+      lockAspectRatio: false, // Polygons don't have aspect ratio lock
+    };
+
+    if (pendingMediaUrl?.url) {
+      try {
+        const urlObj = new URL(pendingMediaUrl.url);
+        const pathname = urlObj.pathname;
+        const lastSegment = pathname.split('/').pop();
+        if (lastSegment) {
+          newFrame.filename = decodeURIComponent(lastSegment);
+        }
+      } catch {
+        // If URL parsing fails, leave filename undefined
+      }
+    }
+
+    addFrame(newFrame);
+    setPendingMediaUrl(null);
+    setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
+    setIsDrawMode(false);
+    setDrawShape(null);
+  }, [polygonDrawState, pendingMediaUrl, frames.length, addFrame]);
 
   // Handle frame drag start
   const handleDragStart = useCallback((frameId: string, e: React.MouseEvent) => {
@@ -322,8 +507,8 @@ export const Canvas: React.FC = () => {
 
   // Handle mouse up
   const handleMouseUp = useCallback(() => {
-    // Finish drawing
-    if (drawState.isDrawing && drawShape) {
+    // Finish drawing (only for rectangle/circle, not polygon)
+    if (drawState.isDrawing && drawShape && drawShape !== 'polygon') {
       const x = Math.min(drawState.startX, drawState.currentX);
       const y = Math.min(drawState.startY, drawState.currentY);
       const width = Math.abs(drawState.currentX - drawState.startX);
@@ -334,12 +519,14 @@ export const Canvas: React.FC = () => {
         const newFrame: Omit<MediaFrame, 'id'> = {
           type: pendingMediaUrl?.type || 'image',
           url: pendingMediaUrl?.url || '',
+          mediaId: pendingMediaUrl?.mediaId,
           x,
           y,
           width,
           height,
           rotation: 0,
           shape: drawShape,
+          textureMode: 'clip',
           loop: true,
           opacity: 1,
           zIndex: frames.length,
@@ -404,46 +591,59 @@ export const Canvas: React.FC = () => {
   }, [handleMouseMove, handleMouseUp]);
 
   // Handle file drop
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
     const files = Array.from(e.dataTransfer.files);
-    files.forEach(file => {
+    for (const file of files) {
       if (file.type.startsWith('video/') || file.type.startsWith('image/')) {
-        const url = URL.createObjectURL(file);
         const type = file.type.startsWith('video/') ? 'video' : 'image';
         
-        addFrame({
-          type,
-          url,
-          filename: file.name,
-          x: e.clientX - 150,
-          y: e.clientY - 100,
-          width: 300,
-          height: 200,
-          rotation: 0,
-          shape: 'rectangle',
-          loop: true,
-          opacity: 1,
-          zIndex: frames.length,
-          playbackRate: 1,
-          muted: false,
-          blur: 0,
-          brightness: 100,
-          contrast: 100,
-          grayscale: 0,
-          saturate: 100,
-          hueRotate: 0,
-          invert: 0,
-          sepia: 0,
-          blendMode: 'normal',
-          flipHorizontal: false,
-          flipVertical: false,
-          lockAspectRatio: true,
-        });
+        try {
+          // Store in IndexedDB
+          const storedMedia = await storeMedia(file, file.name, type);
+          const url = URL.createObjectURL(storedMedia.blob);
+          
+          // Update cache
+          setMediaUrlCache(prev => new Map(prev).set(storedMedia.id, url));
+          
+          addFrame({
+            type,
+            url,
+            mediaId: storedMedia.id,
+            filename: file.name,
+            x: e.clientX - 150,
+            y: e.clientY - 100,
+            width: 300,
+            height: 200,
+            rotation: 0,
+            shape: 'rectangle',
+            textureMode: 'clip',
+            loop: true,
+            opacity: 1,
+            zIndex: frames.length,
+            playbackRate: 1,
+            muted: false,
+            blur: 0,
+            brightness: 100,
+            contrast: 100,
+            grayscale: 0,
+            saturate: 100,
+            hueRotate: 0,
+            invert: 0,
+            sepia: 0,
+            blendMode: 'normal',
+            flipHorizontal: false,
+            flipVertical: false,
+            lockAspectRatio: true,
+          });
+        } catch (error) {
+          console.error('Failed to store media:', error);
+          alert((error as Error).message);
+        }
       }
-    });
+    }
   }, [frames.length, addFrame]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -453,6 +653,15 @@ export const Canvas: React.FC = () => {
   // Control panel handlers
   const handleAddUrl = useCallback((url: string, type: 'video' | 'image') => {
     setPendingMediaUrl({ url, type });
+    setIsDrawMode(true);
+    setDrawShape('rectangle');
+  }, []);
+
+  // Handle media selection from library
+  const handleSelectMedia = useCallback(async (media: StoredMedia) => {
+    const url = URL.createObjectURL(media.blob);
+    setMediaUrlCache(prev => new Map(prev).set(media.id, url));
+    setPendingMediaUrl({ url, type: media.type, mediaId: media.id });
     setIsDrawMode(true);
     setDrawShape('rectangle');
   }, []);
@@ -487,12 +696,17 @@ export const Canvas: React.FC = () => {
   }, []);
 
   // Draw preview rectangle/circle
-  const drawPreview = drawState.isDrawing && drawShape ? {
+  const drawPreview = drawState.isDrawing && drawShape && drawShape !== 'polygon' ? {
     x: Math.min(drawState.startX, drawState.currentX),
     y: Math.min(drawState.startY, drawState.currentY),
     width: Math.abs(drawState.currentX - drawState.startX),
     height: Math.abs(drawState.currentY - drawState.startY),
   } : null;
+
+  // Polygon preview points string for SVG
+  const polygonPreviewPoints = polygonDrawState.isDrawing && polygonDrawState.vertices.length > 0
+    ? polygonDrawState.vertices.map(v => `${v.x},${v.y}`).join(' ')
+    : null;
 
   return (
     <>
@@ -506,13 +720,22 @@ export const Canvas: React.FC = () => {
           isDrawMode={isDrawMode}
           drawShape={drawShape}
           onPresentationMode={enterFullscreenPresentation}
+          onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
         />
       )}
+
+      {/* Media Library Modal */}
+      <MediaLibrary
+        isOpen={isMediaLibraryOpen}
+        onClose={() => setIsMediaLibraryOpen(false)}
+        onSelectMedia={handleSelectMedia}
+      />
       
       <div
         ref={canvasRef}
         className="w-full h-full bg-gradient-to-br from-slate-800 via-slate-700 to-slate-900 relative overflow-hidden cursor-crosshair"
         onMouseDown={handleCanvasMouseDown}
+        onDoubleClick={handleCanvasDoubleClick}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
@@ -558,7 +781,7 @@ export const Canvas: React.FC = () => {
           />
         ))}
 
-        {/* Draw Preview */}
+        {/* Draw Preview for Rectangle/Circle */}
         {drawPreview && (
           <div
             className="absolute border-4 border-dashed border-yellow-400 bg-yellow-400/20 pointer-events-none"
@@ -570,6 +793,47 @@ export const Canvas: React.FC = () => {
               clipPath: drawShape === 'circle' ? 'ellipse(50% 50% at 50% 50%)' : 'none',
             }}
           />
+        )}
+
+        {/* Polygon Preview */}
+        {polygonDrawState.isDrawing && polygonDrawState.vertices.length > 0 && (
+          <svg className="absolute inset-0 w-full h-full pointer-events-none z-50">
+            {/* Draw lines between vertices */}
+            <polyline
+              points={polygonPreviewPoints || ''}
+              fill="rgba(250, 204, 21, 0.2)"
+              stroke="#facc15"
+              strokeWidth="3"
+              strokeDasharray="8 4"
+            />
+            {/* Draw vertices as circles */}
+            {polygonDrawState.vertices.map((vertex, index) => (
+              <circle
+                key={index}
+                cx={vertex.x}
+                cy={vertex.y}
+                r={index === 0 ? 10 : 6}
+                fill={index === 0 ? '#22c55e' : '#facc15'}
+                stroke={index === 0 ? '#16a34a' : '#ca8a04'}
+                strokeWidth="2"
+              />
+            ))}
+            {/* Instruction text */}
+            <text
+              x="50%"
+              y="30"
+              textAnchor="middle"
+              fill="white"
+              fontSize="14"
+              fontWeight="bold"
+              className="drop-shadow-lg"
+            >
+              {polygonDrawState.vertices.length < 3
+                ? `Click to add vertices (${polygonDrawState.vertices.length}/3 minimum)`
+                : 'Double-click or click green point to close polygon'
+              }
+            </text>
+          </svg>
         )}
 
         {/* Instructions overlay when empty */}
