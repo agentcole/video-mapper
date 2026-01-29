@@ -61,6 +61,7 @@ export const Canvas: React.FC = () => {
   const [drawShape, setDrawShape] = useState<ShapeType | null>(null);
   const [pendingMediaUrl, setPendingMediaUrl] = useState<{url: string, type: 'video' | 'image', mediaId?: string} | null>(null);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
+  const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
   const [, setMediaUrlCache] = useState<Map<string, string>>(new Map());
 
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -661,9 +662,35 @@ export const Canvas: React.FC = () => {
   const handleSelectMedia = useCallback(async (media: StoredMedia) => {
     const url = URL.createObjectURL(media.blob);
     setMediaUrlCache(prev => new Map(prev).set(media.id, url));
-    setPendingMediaUrl({ url, type: media.type, mediaId: media.id });
-    setIsDrawMode(true);
-    setDrawShape('rectangle');
+    
+    // Check if we're changing media for an existing frame
+    if (mediaLibraryTargetFrameId) {
+      // Update the existing frame with new media
+      updateFrame(mediaLibraryTargetFrameId, {
+        url,
+        type: media.type,
+        mediaId: media.id,
+        filename: media.name,
+      });
+      setMediaLibraryTargetFrameId(null);
+    } else {
+      // Set pending media for new frame creation
+      setPendingMediaUrl({ url, type: media.type, mediaId: media.id });
+      setIsDrawMode(true);
+      setDrawShape('rectangle');
+    }
+  }, [mediaLibraryTargetFrameId, updateFrame]);
+
+  // Handle opening media library for a specific frame (to change its media)
+  const handleOpenMediaLibraryForFrame = useCallback((frameId: string) => {
+    setMediaLibraryTargetFrameId(frameId);
+    setIsMediaLibraryOpen(true);
+  }, []);
+
+  // Handle opening media library for new media selection
+  const handleOpenMediaLibrary = useCallback(() => {
+    setMediaLibraryTargetFrameId(null);
+    setIsMediaLibraryOpen(true);
   }, []);
 
   const handleDrawMode = useCallback((shape: ShapeType) => {
@@ -720,14 +747,17 @@ export const Canvas: React.FC = () => {
           isDrawMode={isDrawMode}
           drawShape={drawShape}
           onPresentationMode={enterFullscreenPresentation}
-          onOpenMediaLibrary={() => setIsMediaLibraryOpen(true)}
+          onOpenMediaLibrary={handleOpenMediaLibrary}
         />
       )}
 
       {/* Media Library Modal */}
       <MediaLibrary
         isOpen={isMediaLibraryOpen}
-        onClose={() => setIsMediaLibraryOpen(false)}
+        onClose={() => {
+          setIsMediaLibraryOpen(false);
+          setMediaLibraryTargetFrameId(null);
+        }}
         onSelectMedia={handleSelectMedia}
       />
       
@@ -778,6 +808,7 @@ export const Canvas: React.FC = () => {
             onResizeStart={(e, handle) => !isPresentationMode && handleResizeStart(frame.id, handle, e)}
             onRotateStart={(e) => !isPresentationMode && handleRotateStart(frame.id, e)}
             isPresentationMode={isPresentationMode}
+            onOpenMediaLibrary={() => handleOpenMediaLibraryForFrame(frame.id)}
           />
         ))}
 

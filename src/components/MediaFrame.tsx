@@ -27,6 +27,7 @@ interface MediaFrameComponentProps {
   onResizeStart: (e: React.MouseEvent, handle: string) => void;
   onRotateStart: (e: React.MouseEvent) => void;
   isPresentationMode: boolean;
+  onOpenMediaLibrary: () => void; // Open media library to change media for this frame
 }
 
 // Helper to convert normalized vertices to clip-path polygon string
@@ -46,6 +47,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   onResizeStart,
   onRotateStart,
   isPresentationMode,
+  onOpenMediaLibrary,
 }) => {
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -53,7 +55,24 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const [draggingVertexIndex, setDraggingVertexIndex] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Use refs to avoid stale closures in event handlers
+  const draggingVertexIndexRef = useRef<number | null>(null);
+  const frameRef = useRef(frame);
+  const onUpdateRef = useRef(onUpdate);
+  
+  // Keep refs in sync
+  useEffect(() => {
+    draggingVertexIndexRef.current = draggingVertexIndex;
+  }, [draggingVertexIndex]);
+  
+  useEffect(() => {
+    frameRef.current = frame;
+  }, [frame]);
+
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  }, [onUpdate]);
 
   // Handle vertex drag for polygon editing
   const handleVertexMouseDown = useCallback((index: number, e: React.MouseEvent) => {
@@ -62,34 +81,41 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     setDraggingVertexIndex(index);
   }, []);
 
-  const handleVertexMouseMove = useCallback((e: MouseEvent) => {
-    if (draggingVertexIndex === null || !frame.vertices || !containerRef.current) return;
-
-    const rect = containerRef.current.getBoundingClientRect();
-    // Calculate new normalized position
-    const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / frame.width));
-    const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / frame.height));
-
-    const newVertices = [...frame.vertices];
-    newVertices[draggingVertexIndex] = { x: newX, y: newY };
-    onUpdate({ vertices: newVertices });
-  }, [draggingVertexIndex, frame.vertices, frame.width, frame.height, onUpdate]);
-
-  const handleVertexMouseUp = useCallback(() => {
-    setDraggingVertexIndex(null);
-  }, []);
-
-  // Add/remove mouse move/up listeners for vertex dragging
+  // Global mouse move/up handlers for vertex dragging - always attached when dragging
   useEffect(() => {
-    if (draggingVertexIndex !== null) {
-      window.addEventListener('mousemove', handleVertexMouseMove);
-      window.addEventListener('mouseup', handleVertexMouseUp);
-      return () => {
-        window.removeEventListener('mousemove', handleVertexMouseMove);
-        window.removeEventListener('mouseup', handleVertexMouseUp);
-      };
-    }
-  }, [draggingVertexIndex, handleVertexMouseMove, handleVertexMouseUp]);
+    const handleMouseMove = (e: MouseEvent) => {
+      const currentIndex = draggingVertexIndexRef.current;
+      if (currentIndex === null) return;
+      
+      const currentFrame = frameRef.current;
+      if (!currentFrame.vertices || !containerRef.current) return;
+
+      const rect = containerRef.current.getBoundingClientRect();
+      // Calculate new normalized position
+      const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / currentFrame.width));
+      const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / currentFrame.height));
+
+      const newVertices = [...currentFrame.vertices];
+      newVertices[currentIndex] = { x: newX, y: newY };
+      onUpdateRef.current({ vertices: newVertices });
+    };
+
+    const handleMouseUp = () => {
+      if (draggingVertexIndexRef.current !== null) {
+        setDraggingVertexIndex(null);
+        draggingVertexIndexRef.current = null;
+      }
+    };
+
+    // Always add listeners - they check the ref internally
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []); // Empty dependency - handlers use refs
 
   useEffect(() => {
     if (videoRef.current && frame.type === 'video') {
@@ -110,37 +136,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file && (file.type.startsWith('video/') || file.type.startsWith('image/'))) {
-      const url = URL.createObjectURL(file);
-      const type = file.type.startsWith('video/') ? 'video' : 'image';
-      onUpdate({ url, type, filename: file.name });
-    }
-    e.target.value = ''; // Reset input
-  };
-
   const handleChangeMedia = () => {
-    fileInputRef.current?.click();
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const files = Array.from(e.dataTransfer.files);
-    const file = files[0];
-    
-    if (file && (file.type.startsWith('video/') || file.type.startsWith('image/'))) {
-      const url = URL.createObjectURL(file);
-      const type = file.type.startsWith('video/') ? 'video' : 'image';
-      onUpdate({ url, type, filename: file.name });
-    }
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    onOpenMediaLibrary();
   };
 
   // Determine clip path based on shape and texture mode
@@ -195,8 +192,6 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      onDrop={handleDrop}
-      onDragOver={handleDragOver}
     >
       {/* Media Content */}
       <div 
@@ -234,10 +229,17 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
             />
           )
         ) : (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300">
+          <div 
+            className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300 cursor-pointer hover:from-gray-300 hover:to-gray-400 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenMediaLibrary();
+            }}
+          >
             <div className="text-center text-gray-500">
-              <p className="text-sm font-medium">Drop media here</p>
-              <p className="text-xs mt-1">or add URL</p>
+              <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
+              <p className="text-sm font-medium">Click to add media</p>
+              <p className="text-xs mt-1">from library</p>
             </div>
           </div>
         )}
@@ -373,15 +375,6 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
           </button>
         </div>
       )}
-
-      {/* Hidden File Input */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*,image/*"
-        onChange={handleFileChange}
-        className="hidden"
-      />
 
       {/* Settings Panel */}
       {showSettings && showControls && (
