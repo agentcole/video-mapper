@@ -68,9 +68,26 @@ export const Canvas: React.FC = () => {
   const [background, setBackground] = useState<BackgroundSettings>(DEFAULT_BACKGROUND);
   const [isBackgroundSettingsOpen, setIsBackgroundSettingsOpen] = useState(false);
   const [showPresentationControls, setShowPresentationControls] = useState(false);
+  const [playbackCommand, setPlaybackCommand] = useState<'play' | 'pause' | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement>(null);
+
+  // Check if there are any video frames
+  const hasVideos = frames.some(f => f.type === 'video');
+
+  // Play all videos
+  const handlePlayAll = useCallback(() => {
+    setPlaybackCommand('play');
+    // Reset command after a short delay to allow re-triggering
+    setTimeout(() => setPlaybackCommand(null), 100);
+  }, []);
+
+  // Pause all videos
+  const handlePauseAll = useCallback(() => {
+    setPlaybackCommand('pause');
+    setTimeout(() => setPlaybackCommand(null), 100);
+  }, []);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -789,6 +806,9 @@ export const Canvas: React.FC = () => {
           onPresentationMode={enterFullscreenPresentation}
           onOpenMediaLibrary={handleOpenMediaLibrary}
           onOpenBackgroundSettings={() => setIsBackgroundSettingsOpen(true)}
+          onPlayAll={handlePlayAll}
+          onPauseAll={handlePauseAll}
+          hasVideos={hasVideos}
         />
       )}
 
@@ -892,6 +912,7 @@ export const Canvas: React.FC = () => {
             onRotateStart={(e) => !isPresentationMode && handleRotateStart(frame.id, e)}
             isPresentationMode={isPresentationMode}
             onOpenMediaLibrary={() => handleOpenMediaLibraryForFrame(frame.id)}
+            playbackCommand={playbackCommand}
           />
         ))}
 

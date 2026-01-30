@@ -13,6 +13,10 @@ import {
   Pentagon,
   FolderOpen,
   Palette,
+  ChevronDown,
+  ChevronUp,
+  Play,
+  Pause,
 } from 'lucide-react';
 import type { ShapeType } from '../types';
 
@@ -27,6 +31,9 @@ interface ControlPanelProps {
   onPresentationMode: () => void;
   onOpenMediaLibrary: () => void;
   onOpenBackgroundSettings: () => void;
+  onPlayAll: () => void;
+  onPauseAll: () => void;
+  hasVideos: boolean;
 }
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -40,10 +47,14 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onPresentationMode,
   onOpenMediaLibrary,
   onOpenBackgroundSettings,
+  onPlayAll,
+  onPauseAll,
+  hasVideos,
 }) => {
   const [url, setUrl] = useState('');
   const [mediaType, setMediaType] = useState<'video' | 'image'>('video');
   const [showUrlInput, setShowUrlInput] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleAddUrl = () => {
@@ -67,10 +78,24 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   };
 
   return (
-    <div className="fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white p-4 rounded-lg shadow-2xl z-50 min-w-[280px]">
-      <h2 className="text-lg font-bold mb-4">Video Mapper</h2>
+    <div className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-50 transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}>
+      <div 
+        className="flex items-center justify-between cursor-pointer"
+        onClick={() => setIsMinimized(!isMinimized)}
+      >
+        <h2 className={`font-bold ${isMinimized ? 'text-sm' : 'text-lg'}`}>
+          {isMinimized ? 'VM' : 'Video Mapper'}
+        </h2>
+        <button 
+          className="p-1 hover:bg-white/10 rounded transition-colors"
+          title={isMinimized ? 'Expand' : 'Minimize'}
+        >
+          {isMinimized ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+        </button>
+      </div>
       
-      <div className="space-y-4">
+      {!isMinimized && (
+      <div className="space-y-4 mt-4">
         {/* Draw Mode */}
         <div className="space-y-2">
           <p className="text-xs text-gray-400 uppercase font-semibold">Draw Frame</p>
@@ -227,6 +252,35 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           />
         </div>
 
+        {/* Playback Controls */}
+        {hasVideos && (
+          <div className="space-y-2 pt-4 border-t border-gray-700">
+            <p className="text-xs text-gray-400 uppercase font-semibold">Playback</p>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onPlayAll}
+                className="flex-1"
+                title="Play all videos"
+              >
+                <Play className="w-4 h-4 mr-1" />
+                Play All
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onPauseAll}
+                className="flex-1"
+                title="Pause all videos"
+              >
+                <Pause className="w-4 h-4 mr-1" />
+                Pause All
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* View & Background */}
         <div className="space-y-2 pt-4 border-t border-gray-700">
           <p className="text-xs text-gray-400 uppercase font-semibold">View</p>
@@ -271,6 +325,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </p>
         </div>
       </div>
+      )}
     </div>
   );
 };

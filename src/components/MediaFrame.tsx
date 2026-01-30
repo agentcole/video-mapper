@@ -28,6 +28,7 @@ interface MediaFrameComponentProps {
   onRotateStart: (e: React.MouseEvent) => void;
   isPresentationMode: boolean;
   onOpenMediaLibrary: () => void; // Open media library to change media for this frame
+  playbackCommand: 'play' | 'pause' | null; // Global playback command
 }
 
 // Helper to convert normalized vertices to clip-path polygon string
@@ -48,6 +49,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   onRotateStart,
   isPresentationMode,
   onOpenMediaLibrary,
+  playbackCommand,
 }) => {
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -117,15 +119,75 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     };
   }, []); // Empty dependency - handlers use refs
 
+  // Handle video playback settings
   useEffect(() => {
     if (videoRef.current && frame.type === 'video') {
       videoRef.current.playbackRate = frame.playbackRate;
-      videoRef.current.muted = frame.muted;
-      if (frame.loop) {
-        videoRef.current.play().catch(console.error);
-      }
     }
-  }, [frame.playbackRate, frame.muted, frame.loop, frame.type]);
+  }, [frame.playbackRate, frame.type]);
+
+  // Handle video muted state separately to avoid autoplay issues
+  useEffect(() => {
+    if (videoRef.current && frame.type === 'video') {
+      videoRef.current.muted = frame.muted;
+    }
+  }, [frame.muted, frame.type]);
+
+  // Auto-play video when URL changes or on mount
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || frame.type !== 'video' || !frame.url) return;
+
+    const attemptPlay = async () => {
+      try {
+        // Ensure video is muted for autoplay (browser policy)
+        video.muted = true;
+        await video.play();
+        // Restore muted state after successful autoplay
+        video.muted = frame.muted;
+      } catch (error) {
+        console.warn('Autoplay failed, will play on user interaction:', error);
+        // Try again with muted if unmuted failed
+        if (!video.muted) {
+          video.muted = true;
+          video.play().catch(() => {});
+        }
+      }
+    };
+
+    // Try to play when video data is loaded
+    const handleLoadedData = () => {
+      attemptPlay();
+    };
+
+    // If video is already loaded, play immediately
+    if (video.readyState >= 2) {
+      attemptPlay();
+    } else {
+      video.addEventListener('loadeddata', handleLoadedData);
+    }
+
+    return () => {
+      video.removeEventListener('loadeddata', handleLoadedData);
+    };
+  }, [frame.url, frame.type, frame.muted]);
+
+  // Handle global playback commands (Play All / Pause All)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || frame.type !== 'video' || !playbackCommand) return;
+
+    if (playbackCommand === 'play') {
+      video.play().catch((error) => {
+        console.warn('Play failed:', error);
+        // Try muted play as fallback
+        video.muted = true;
+        video.play().catch(() => {});
+      });
+    } else if (playbackCommand === 'pause') {
+      video.pause();
+    }
+  }, [playbackCommand, frame.type]);
 
   const handleMouseEnter = () => !isPresentationMode && setShowControls(true);
   const handleMouseLeave = () => {
@@ -217,7 +279,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
               ref={videoRef}
               src={frame.url}
               loop={frame.loop}
-              muted={frame.muted}
+              muted // Always muted for initial autoplay (browser requirement)
+              autoPlay
               className="w-full h-full object-cover pointer-events-none"
               style={{
                 filter: filterStyle,
