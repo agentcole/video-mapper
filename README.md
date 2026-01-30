@@ -2,6 +2,8 @@
 
 A high-performance web-based video mapping application built with React, TypeScript, Vite, Tailwind CSS, and shadcn/ui.
 
+**Live Demo**: [https://videomapper.symbolicinterfaces.com](https://videomapper.symbolicinterfaces.com)
+
 ## Features
 
 ### 🎥 Media Management
