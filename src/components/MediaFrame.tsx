@@ -165,11 +165,20 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     frame.sepia > 0 ? `sepia(${frame.sepia}%)` : '',
   ].filter(Boolean).join(' ');
 
-  // Build transform string for flips
+  // Build transform string for flips and content scale
+  const contentScale = frame.contentScale ?? 1;
+  const contentOffsetX = frame.contentOffsetX ?? 0;
+  const contentOffsetY = frame.contentOffsetY ?? 0;
+  
   const transformStyle = [
     frame.flipHorizontal ? 'scaleX(-1)' : '',
     frame.flipVertical ? 'scaleY(-1)' : '',
+    contentScale !== 1 ? `scale(${contentScale})` : '',
+    (contentOffsetX !== 0 || contentOffsetY !== 0) ? `translate(${contentOffsetX}%, ${contentOffsetY}%)` : '',
   ].filter(Boolean).join(' ');
+
+  // Counter-rotation for UI elements to keep them upright
+  const counterRotation = `rotate(${-frame.rotation}deg)`;
 
   const resizeHandles = ['nw', 'ne', 'sw', 'se', 'n', 's', 'e', 'w'];
 
@@ -312,9 +321,12 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         </div>
       )}
 
-      {/* Control Overlay */}
+      {/* Control Overlay - Counter-rotated to stay upright */}
       {showControls && (
-        <div className="absolute top-2 right-2 flex flex-col gap-1 z-20">
+        <div 
+          className="absolute top-2 right-2 flex flex-col gap-1 z-20"
+          style={{ transform: counterRotation, transformOrigin: 'top right' }}
+        >
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -376,10 +388,11 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         </div>
       )}
 
-      {/* Settings Panel */}
+      {/* Settings Panel - Counter-rotated to stay upright */}
       {showSettings && showControls && (
         <div 
-          className="absolute top-2 right-14 bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[200px] z-20"
+          className="absolute top-2 right-14 bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[220px] max-h-[400px] overflow-y-auto z-20"
+          style={{ transform: counterRotation, transformOrigin: 'top right' }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="space-y-4">
@@ -404,6 +417,50 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                 step={1}
               />
             </div>
+
+            {/* Content Scale/Zoom */}
+            <div className="pt-2 border-t border-white/20">
+              <label className="text-xs mb-2 block">Content Zoom</label>
+              <Slider
+                value={[contentScale * 100]}
+                onValueChange={(value) => onUpdate({ contentScale: value[0] / 100 })}
+                min={50}
+                max={300}
+                step={10}
+              />
+              <span className="text-xs text-gray-400">{Math.round(contentScale * 100)}%</span>
+            </div>
+
+            {contentScale > 1 && (
+              <>
+                <div>
+                  <label className="text-xs mb-2 block">Pan X</label>
+                  <Slider
+                    value={[contentOffsetX]}
+                    onValueChange={(value) => onUpdate({ contentOffsetX: value[0] })}
+                    min={-50}
+                    max={50}
+                    step={1}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs mb-2 block">Pan Y</label>
+                  <Slider
+                    value={[contentOffsetY]}
+                    onValueChange={(value) => onUpdate({ contentOffsetY: value[0] })}
+                    min={-50}
+                    max={50}
+                    step={1}
+                  />
+                </div>
+                <button
+                  onClick={() => onUpdate({ contentScale: 1, contentOffsetX: 0, contentOffsetY: 0 })}
+                  className="w-full py-1 bg-white/10 hover:bg-white/20 rounded text-xs"
+                >
+                  Reset Zoom
+                </button>
+              </>
+            )}
 
             {frame.type === 'video' && (
               <>
@@ -528,10 +585,11 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         </div>
       )}
 
-      {/* Effects Panel */}
+      {/* Effects Panel - Counter-rotated to stay upright */}
       {showEffects && showControls && (
         <div 
           className="absolute top-2 right-14 bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[240px] max-h-[500px] overflow-y-auto z-20"
+          style={{ transform: counterRotation, transformOrigin: 'top right' }}
           onClick={(e) => e.stopPropagation()}
         >
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">

@@ -1,10 +1,11 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import type { MediaFrame, DragState, ResizeState, RotateState, DrawState, ShapeType, Point, StoredMedia } from '../types';
+import type { MediaFrame, DragState, ResizeState, RotateState, DrawState, ShapeType, Point, StoredMedia, BackgroundSettings } from '../types';
 import { MediaFrameComponent } from './MediaFrame';
 import { ControlPanel } from './ControlPanel';
 import { MediaLibrary } from './MediaLibrary';
-import { saveProject, loadProject, exportProject, importProject, generateFrameId } from '../lib/storage';
-import { storeMedia, resolveMediaUrls } from '../lib/mediaStorage';
+import { BackgroundSettingsPanel } from './BackgroundSettings';
+import { saveProject, loadProject, exportProject, importProject, generateFrameId, DEFAULT_BACKGROUND } from '../lib/storage';
+import { storeMedia, resolveMediaUrls, createMediaUrl } from '../lib/mediaStorage';
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -62,9 +63,14 @@ export const Canvas: React.FC = () => {
   const [pendingMediaUrl, setPendingMediaUrl] = useState<{url: string, type: 'video' | 'image', mediaId?: string} | null>(null);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
+  const [mediaLibraryTargetBackground, setMediaLibraryTargetBackground] = useState(false); // Is media library for background?
   const [, setMediaUrlCache] = useState<Map<string, string>>(new Map());
+  const [background, setBackground] = useState<BackgroundSettings>(DEFAULT_BACKGROUND);
+  const [isBackgroundSettingsOpen, setIsBackgroundSettingsOpen] = useState(false);
+  const [showPresentationControls, setShowPresentationControls] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const backgroundVideoRef = useRef<HTMLVideoElement>(null);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -141,12 +147,15 @@ export const Canvas: React.FC = () => {
   // Load project on mount and resolve media URLs
   useEffect(() => {
     const loadAndResolveMedia = async () => {
-      const savedFrames = loadProject();
-      if (savedFrames) {
-        // Get all unique media IDs that need to be resolved
-        const mediaIds = savedFrames
-          .filter(f => f.mediaId)
-          .map(f => f.mediaId!);
+      const savedProject = loadProject();
+      if (savedProject) {
+        const { frames: savedFrames, background: savedBackground } = savedProject;
+        
+        // Get all unique media IDs that need to be resolved (frames + background)
+        const mediaIds = [
+          ...savedFrames.filter(f => f.mediaId).map(f => f.mediaId!),
+          ...(savedBackground.mediaId ? [savedBackground.mediaId] : []),
+        ];
         
         if (mediaIds.length > 0) {
           try {
@@ -161,12 +170,21 @@ export const Canvas: React.FC = () => {
               return frame;
             });
             setFrames(resolvedFrames);
+            
+            // Update background with resolved URL
+            if (savedBackground.mediaId && urlMap.has(savedBackground.mediaId)) {
+              setBackground({ ...savedBackground, url: urlMap.get(savedBackground.mediaId) });
+            } else {
+              setBackground(savedBackground);
+            }
           } catch (error) {
             console.error('Failed to resolve media URLs:', error);
             setFrames(savedFrames);
+            setBackground(savedBackground);
           }
         } else {
           setFrames(savedFrames);
+          setBackground(savedBackground);
         }
       }
     };
@@ -177,12 +195,12 @@ export const Canvas: React.FC = () => {
   // Auto-save
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (frames.length > 0) {
-        saveProject(frames);
+      if (frames.length > 0 || background.type !== 'color') {
+        saveProject(frames, background);
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [frames]);
+  }, [frames, background]);
 
   const addFrame = useCallback((frame: Omit<MediaFrame, 'id'>) => {
     const newFrame: MediaFrame = {
@@ -203,6 +221,9 @@ export const Canvas: React.FC = () => {
       lockAspectRatio: frame.lockAspectRatio ?? true,
       textureMode: frame.textureMode ?? 'clip',
       vertices: frame.vertices,
+      contentScale: frame.contentScale ?? 1,
+      contentOffsetX: frame.contentOffsetX ?? 0,
+      contentOffsetY: frame.contentOffsetY ?? 0,
     };
     setFrames(prev => [...prev, newFrame]);
     setSelectedFrameId(newFrame.id);
@@ -663,8 +684,17 @@ export const Canvas: React.FC = () => {
     const url = URL.createObjectURL(media.blob);
     setMediaUrlCache(prev => new Map(prev).set(media.id, url));
     
+    // Check if selecting for background
+    if (mediaLibraryTargetBackground) {
+      setBackground(prev => ({
+        ...prev,
+        url,
+        mediaId: media.id,
+      }));
+      setMediaLibraryTargetBackground(false);
+    }
     // Check if we're changing media for an existing frame
-    if (mediaLibraryTargetFrameId) {
+    else if (mediaLibraryTargetFrameId) {
       // Update the existing frame with new media
       updateFrame(mediaLibraryTargetFrameId, {
         url,
@@ -679,17 +709,26 @@ export const Canvas: React.FC = () => {
       setIsDrawMode(true);
       setDrawShape('rectangle');
     }
-  }, [mediaLibraryTargetFrameId, updateFrame]);
+  }, [mediaLibraryTargetFrameId, mediaLibraryTargetBackground, updateFrame]);
 
   // Handle opening media library for a specific frame (to change its media)
   const handleOpenMediaLibraryForFrame = useCallback((frameId: string) => {
     setMediaLibraryTargetFrameId(frameId);
+    setMediaLibraryTargetBackground(false);
     setIsMediaLibraryOpen(true);
   }, []);
 
   // Handle opening media library for new media selection
   const handleOpenMediaLibrary = useCallback(() => {
     setMediaLibraryTargetFrameId(null);
+    setMediaLibraryTargetBackground(false);
+    setIsMediaLibraryOpen(true);
+  }, []);
+
+  // Handle opening media library for background
+  const handleOpenMediaLibraryForBackground = useCallback(() => {
+    setMediaLibraryTargetFrameId(null);
+    setMediaLibraryTargetBackground(true);
     setIsMediaLibraryOpen(true);
   }, []);
 
@@ -704,18 +743,19 @@ export const Canvas: React.FC = () => {
   }, [isDrawMode, drawShape]);
 
   const handleSave = useCallback(() => {
-    saveProject(frames);
+    saveProject(frames, background);
     alert('Project saved!');
-  }, [frames]);
+  }, [frames, background]);
 
   const handleExport = useCallback(() => {
-    exportProject(frames);
-  }, [frames]);
+    exportProject(frames, background);
+  }, [frames, background]);
 
   const handleImport = useCallback(async (file: File) => {
     try {
-      const importedFrames = await importProject(file);
-      setFrames(importedFrames);
+      const imported = await importProject(file);
+      setFrames(imported.frames);
+      setBackground(imported.background);
       alert('Project imported successfully!');
     } catch (error) {
       alert('Failed to import project: ' + (error as Error).message);
@@ -748,6 +788,7 @@ export const Canvas: React.FC = () => {
           drawShape={drawShape}
           onPresentationMode={enterFullscreenPresentation}
           onOpenMediaLibrary={handleOpenMediaLibrary}
+          onOpenBackgroundSettings={() => setIsBackgroundSettingsOpen(true)}
         />
       )}
 
@@ -757,21 +798,63 @@ export const Canvas: React.FC = () => {
         onClose={() => {
           setIsMediaLibraryOpen(false);
           setMediaLibraryTargetFrameId(null);
+          setMediaLibraryTargetBackground(false);
         }}
         onSelectMedia={handleSelectMedia}
+      />
+
+      {/* Background Settings Panel */}
+      <BackgroundSettingsPanel
+        background={background}
+        onUpdate={setBackground}
+        onOpenMediaLibrary={handleOpenMediaLibraryForBackground}
+        isOpen={isBackgroundSettingsOpen}
+        onClose={() => setIsBackgroundSettingsOpen(false)}
       />
       
       <div
         ref={canvasRef}
-        className="w-full h-full bg-gradient-to-br from-slate-800 via-slate-700 to-slate-900 relative overflow-hidden cursor-crosshair"
+        className="w-full h-full relative overflow-hidden cursor-crosshair"
+        style={{ backgroundColor: background.type === 'color' ? background.color : undefined }}
         onMouseDown={handleCanvasMouseDown}
         onDoubleClick={handleCanvasDoubleClick}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
+        onMouseMove={(e) => {
+          // Show presentation controls when mouse is in top-right corner
+          if (isPresentationMode) {
+            const rect = canvasRef.current?.getBoundingClientRect();
+            if (rect) {
+              const isInCorner = e.clientX > rect.right - 150 && e.clientY < rect.top + 100;
+              setShowPresentationControls(isInCorner);
+            }
+          }
+        }}
+        onMouseLeave={() => isPresentationMode && setShowPresentationControls(false)}
       >
-        {/* Presentation Mode Controls */}
-        {isPresentationMode && (
-          <div className="absolute top-4 right-4 z-50 flex gap-2">
+        {/* Background Image/Video */}
+        {background.type === 'image' && background.url && (
+          <img
+            src={background.url}
+            alt="Background"
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          />
+        )}
+        {background.type === 'video' && background.url && (
+          <video
+            ref={backgroundVideoRef}
+            src={background.url}
+            loop={background.loop ?? true}
+            muted={background.muted ?? true}
+            autoPlay
+            playsInline
+            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          />
+        )}
+
+        {/* Presentation Mode Controls - only show on corner hover */}
+        {isPresentationMode && showPresentationControls && (
+          <div className="absolute top-4 right-4 z-50 flex gap-2 animate-fade-in">
             <button
               onClick={togglePresentationMode}
               className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg backdrop-blur-sm transition-colors flex items-center gap-2"

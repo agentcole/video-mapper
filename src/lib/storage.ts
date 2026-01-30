@@ -1,7 +1,12 @@
-import type { MediaFrame } from '../types';
+import type { MediaFrame, BackgroundSettings } from '../types';
 
 const STORAGE_KEY = 'video-mapper-project';
-const VERSION = '2.0.0'; // Bumped for polygon & media storage support
+const VERSION = '3.0.0'; // Bumped for background & content scale support
+
+export const DEFAULT_BACKGROUND: BackgroundSettings = {
+  type: 'color',
+  color: '#1e293b', // slate-800
+};
 
 // Prepare frames for storage - remove temporary blob URLs
 const prepareFramesForStorage = (frames: MediaFrame[]): MediaFrame[] => {
@@ -18,6 +23,16 @@ const prepareFramesForStorage = (frames: MediaFrame[]): MediaFrame[] => {
   });
 };
 
+// Prepare background for storage
+const prepareBackgroundForStorage = (bg: BackgroundSettings): BackgroundSettings => {
+  const stored = { ...bg };
+  // If background has a mediaId, clear the url
+  if (stored.mediaId) {
+    stored.url = '';
+  }
+  return stored;
+};
+
 // Migrate old frame format to new format
 const migrateFrame = (frame: MediaFrame): MediaFrame => {
   return {
@@ -26,14 +41,18 @@ const migrateFrame = (frame: MediaFrame): MediaFrame => {
     textureMode: frame.textureMode || 'clip',
     vertices: frame.vertices,
     mediaId: frame.mediaId,
+    contentScale: frame.contentScale ?? 1,
+    contentOffsetX: frame.contentOffsetX ?? 0,
+    contentOffsetY: frame.contentOffsetY ?? 0,
   };
 };
 
-export const saveProject = (frames: MediaFrame[]): void => {
+export const saveProject = (frames: MediaFrame[], background?: BackgroundSettings): void => {
   try {
     const preparedFrames = prepareFramesForStorage(frames);
     const projectData = {
       frames: preparedFrames,
+      background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
       version: VERSION,
       timestamp: new Date().toISOString(),
     };
@@ -44,7 +63,12 @@ export const saveProject = (frames: MediaFrame[]): void => {
   }
 };
 
-export const loadProject = (): MediaFrame[] | null => {
+export interface LoadedProject {
+  frames: MediaFrame[];
+  background: BackgroundSettings;
+}
+
+export const loadProject = (): LoadedProject | null => {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (!data) return null;
@@ -53,17 +77,21 @@ export const loadProject = (): MediaFrame[] | null => {
     if (!projectData.frames) return null;
     
     // Migrate frames to ensure they have all new properties
-    return projectData.frames.map(migrateFrame);
+    return {
+      frames: projectData.frames.map(migrateFrame),
+      background: projectData.background || DEFAULT_BACKGROUND,
+    };
   } catch (error) {
     console.error('Failed to load project:', error);
     return null;
   }
 };
 
-export const exportProject = (frames: MediaFrame[]): void => {
+export const exportProject = (frames: MediaFrame[], background?: BackgroundSettings): void => {
   try {
     const projectData = {
       frames,
+      background: background || DEFAULT_BACKGROUND,
       version: VERSION,
       timestamp: new Date().toISOString(),
     };
@@ -86,7 +114,7 @@ export const exportProject = (frames: MediaFrame[]): void => {
   }
 };
 
-export const importProject = (file: File): Promise<MediaFrame[]> => {
+export const importProject = (file: File): Promise<LoadedProject> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     
@@ -101,8 +129,10 @@ export const importProject = (file: File): Promise<MediaFrame[]> => {
         }
         
         // Migrate frames to ensure they have all new properties
-        const migratedFrames = projectData.frames.map(migrateFrame);
-        resolve(migratedFrames);
+        resolve({
+          frames: projectData.frames.map(migrateFrame),
+          background: projectData.background || DEFAULT_BACKGROUND,
+        });
       } catch (error) {
         reject(new Error('Failed to parse project file'));
       }

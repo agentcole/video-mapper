@@ -12,6 +12,7 @@ import {
   Video,
   Pentagon,
   FolderOpen,
+  Palette,
 } from 'lucide-react';
 import type { ShapeType } from '../types';
 
@@ -25,6 +26,7 @@ interface ControlPanelProps {
   drawShape: ShapeType | null;
   onPresentationMode: () => void;
   onOpenMediaLibrary: () => void;
+  onOpenBackgroundSettings: () => void;
 }
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
@@ -37,6 +39,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   drawShape,
   onPresentationMode,
   onOpenMediaLibrary,
+  onOpenBackgroundSettings,
 }) => {
   const [url, setUrl] = useState('');
   const [mediaType, setMediaType] = useState<'video' | 'image'>('video');
@@ -224,9 +227,18 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           />
         </div>
 
-        {/* Presentation Mode */}
+        {/* View & Background */}
         <div className="space-y-2 pt-4 border-t border-gray-700">
           <p className="text-xs text-gray-400 uppercase font-semibold">View</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onOpenBackgroundSettings}
+            className="w-full"
+          >
+            <Palette className="w-4 h-4 mr-1" />
+            Background
+          </Button>
           <Button
             variant="default"
             size="sm"

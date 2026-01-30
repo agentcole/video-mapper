@@ -4,6 +4,17 @@ export type MediaType = 'video' | 'image'
 export type ShapeType = 'rectangle' | 'circle' | 'polygon'
 export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'color-dodge' | 'color-burn' | 'hard-light' | 'soft-light' | 'difference' | 'exclusion' | 'hue' | 'saturation' | 'color' | 'luminosity'
 export type TextureMode = 'clip' | 'warp'
+export type BackgroundType = 'color' | 'image' | 'video'
+
+// Canvas background settings
+export interface BackgroundSettings {
+  type: BackgroundType
+  color: string // hex color
+  url?: string // for image/video
+  mediaId?: string // reference to stored media
+  loop?: boolean // for video
+  muted?: boolean // for video
+}
 
 // Point for polygon vertices (relative to frame, 0-1 normalized)
 export interface Point {
@@ -64,6 +75,11 @@ export interface MediaFrame {
   flipVertical: boolean
   // Scaling
   lockAspectRatio: boolean
+  // Content zoom/scale (1 = 100%, 2 = 200%, etc.)
+  contentScale: number
+  // Content position offset (for panning zoomed content)
+  contentOffsetX: number
+  contentOffsetY: number
 }
 
 export interface ProjectData {
