@@ -59,16 +59,3 @@ export interface DrawState {
   currentX: number;
   currentY: number;
 }
-
-// Explicit export
-export type {
-  MediaFrame as default,
-  MediaType,
-  ShapeType,
-  ProjectData,
-  DragState,
-  ResizeState,
-  RotateState,
-  DrawState,
-};
-

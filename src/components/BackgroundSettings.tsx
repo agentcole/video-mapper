@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import type { BackgroundSettings, StoredMedia } from '../types';
+import type { BackgroundSettings } from '../types';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import {

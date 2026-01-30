@@ -5,7 +5,7 @@ import { ControlPanel } from './ControlPanel';
 import { MediaLibrary } from './MediaLibrary';
 import { BackgroundSettingsPanel } from './BackgroundSettings';
 import { saveProject, loadProject, exportProject, importProject, generateFrameId, DEFAULT_BACKGROUND } from '../lib/storage';
-import { storeMedia, resolveMediaUrls, createMediaUrl } from '../lib/mediaStorage';
+import { storeMedia, resolveMediaUrls } from '../lib/mediaStorage';
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -378,6 +378,9 @@ export const Canvas: React.FC = () => {
       flipHorizontal: false,
       flipVertical: false,
       lockAspectRatio: false, // Polygons don't have aspect ratio lock
+      contentScale: 1,
+      contentOffsetX: 0,
+      contentOffsetY: 0,
     };
 
     if (pendingMediaUrl?.url) {
@@ -583,6 +586,9 @@ export const Canvas: React.FC = () => {
           flipHorizontal: false,
           flipVertical: false,
           lockAspectRatio: true,
+          contentScale: 1,
+          contentOffsetX: 0,
+          contentOffsetY: 0,
         };
 
         // Add filename if URL is provided
@@ -676,6 +682,9 @@ export const Canvas: React.FC = () => {
             flipHorizontal: false,
             flipVertical: false,
             lockAspectRatio: true,
+            contentScale: 1,
+            contentOffsetX: 0,
+            contentOffsetY: 0,
           });
         } catch (error) {
           console.error('Failed to store media:', error);

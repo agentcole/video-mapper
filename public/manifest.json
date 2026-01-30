@@ -1,0 +1,29 @@
+{
+  "name": "Video Mapper",
+  "short_name": "VideoMapper",
+  "description": "A high-performance web-based video mapping application",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1e293b",
+  "theme_color": "#1e293b",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/videomapper.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["productivity", "multimedia", "utilities"],
+  "screenshots": [],
+  "shortcuts": [
+    {
+      "name": "New Project",
+      "short_name": "New",
+      "description": "Create a new video mapping project",
+      "url": "/",
+      "icons": [{ "src": "/videomapper.svg", "sizes": "any" }]
+    }
+  ]
+}

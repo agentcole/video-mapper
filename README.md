@@ -49,6 +49,13 @@ A high-performance web-based video mapping application built with React, TypeScr
 - **Export**: Download project as JSON file
 - **Import**: Load previously exported projects
 
+### 📱 Progressive Web App (PWA)
+- **Offline Support**: Works without internet connection
+- **Installable**: Can be installed as a desktop/mobile app
+- **Persistent Storage**: Media and projects persist across sessions using IndexedDB
+- **Fast Loading**: Service Worker caching for instant loads
+- **Background Sync**: Automatic updates available when online
+
 ## Getting Started
 
 ### Installation
@@ -76,6 +83,28 @@ npm run build
 ```bash
 npm run preview
 ```
+
+## PWA Installation
+
+### Desktop Installation
+1. Open the application in Chrome, Edge, or Firefox
+2. Look for the install icon in the browser's address bar
+3. Click the icon and select "Install" or "Add to Home Screen"
+4. The app will be installed and accessible from your desktop
+
+### Mobile Installation (iOS)
+1. Open the application in Safari
+2. Tap the Share button (square with arrow)
+3. Scroll down and tap "Add to Home Screen"
+4. Tap "Add" to confirm
+5. The app will appear on your home screen
+
+### Mobile Installation (Android)
+1. Open the application in Chrome
+2. Tap the menu button (three dots)
+3. Tap "Add to Home Screen" or "Install App"
+4. Confirm by tapping "Add" or "Install"
+5. The app will appear on your home screen
 
 ## Usage Guide
 
@@ -109,6 +138,18 @@ npm run preview
 - **ESC**: Cancel draw mode (coming soon)
 - **Delete**: Delete selected frame (coming soon)
 
+## Offline Usage
+
+Thanks to PWA capabilities, Video Mapper works offline:
+
+1. **First Visit**: Visit the app once while connected to the internet
+2. **Service Worker**: The service worker will cache all necessary files
+3. **Offline Access**: The app will work even without an internet connection
+4. **Media Storage**: All media is stored in IndexedDB and persists offline
+5. **Project Storage**: Projects are saved to localStorage and work offline
+
+**Note**: Media loaded from URLs will only be cached if visited once while online. For full offline capability, upload your media files directly or ensure they're cached by visiting them first.
+
 ## Performance Optimization
 
 This application is built with performance in mind:
@@ -120,6 +161,7 @@ This application is built with performance in mind:
   - Poster frames and lazy loading can be added for better initial load times
 - **Event Throttling**: Mouse events are efficiently handled to prevent performance issues
 - **Memory Management**: Object URLs are properly managed to prevent memory leaks
+- **Service Worker Caching**: Assets are cached for fast offline access
 
 ### Recommended Best Practices
 
@@ -138,6 +180,8 @@ This application is built with performance in mind:
 - **shadcn/ui**: High-quality component library
 - **Lucide React**: Icon library
 - **Radix UI**: Accessible component primitives
+- **vite-plugin-pwa**: Progressive Web App support
+- **Workbox**: Service Worker caching strategies
 
 ## Browser Support
 
@@ -157,10 +201,12 @@ src/
 │   └── ControlPanel.tsx # Control panel UI
 ├── lib/
 │   ├── utils.ts         # Utility functions
-│   └── storage.ts       # localStorage management
+│   ├── storage.ts       # localStorage management
+│   └── mediaStorage.ts  # IndexedDB media management
 ├── types/
 │   └── index.ts         # TypeScript type definitions
 ├── App.tsx              # Root component
+├── main.tsx             # Entry point with SW registration
 └── index.css            # Global styles
 ```
 
@@ -176,6 +222,8 @@ src/
 - [ ] Export as video file
 - [ ] Advanced polygon warp with mesh deformation
 - [ ] Bezier curve mask edges
+- [ ] Background sync for offline changes
+- [ ] Push notifications for project updates
 
 ## License
 
