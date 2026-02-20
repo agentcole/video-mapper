@@ -208,22 +208,39 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   }, [onUpdate]);
 
   // Handle vertex drag for polygon editing
-  const handleVertexMouseDown = useCallback((index: number, e: React.MouseEvent) => {
+  const handleVertexMouseDown = useCallback((index: number, e: React.MouseEvent | React.TouchEvent) => {
     e.stopPropagation();
     e.preventDefault();
     setDraggingVertexIndex(index);
   }, []);
 
   // Handle corner drag for perspective mode
-  const handleCornerMouseDown = useCallback((corner: keyof PerspectiveCorners, e: React.MouseEvent) => {
+  const handleCornerPointerDown = useCallback((corner: keyof PerspectiveCorners, e: React.MouseEvent | React.TouchEvent) => {
     e.stopPropagation();
     e.preventDefault();
     setDraggingCorner(corner);
   }, []);
 
-  // Global mouse move/up handlers for vertex & corner dragging - always attached
+  // Global move/up handlers for vertex & corner dragging — mouse + touch
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const getClientXY = (e: MouseEvent | TouchEvent): { clientX: number; clientY: number } => {
+      if ('touches' in e) {
+        const t = e.touches[0] ?? e.changedTouches[0];
+        return { clientX: t.clientX, clientY: t.clientY };
+      }
+      return { clientX: e.clientX, clientY: e.clientY };
+    };
+
+    const handleMove = (e: MouseEvent | TouchEvent) => {
+      const isDraggingAnything =
+        draggingVertexIndexRef.current !== null || draggingCornerRef.current !== null;
+      if (!isDraggingAnything) return;
+
+      // Prevent page scroll while dragging on touch
+      if ('touches' in e) e.preventDefault();
+
+      const { clientX, clientY } = getClientXY(e);
+
       // --- Vertex dragging ---
       const currentIndex = draggingVertexIndexRef.current;
       if (currentIndex !== null) {
@@ -231,8 +248,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         if (!currentFrame.vertices || !containerRef.current) return;
 
         const rect = containerRef.current.getBoundingClientRect();
-        const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / currentFrame.width));
-        const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / currentFrame.height));
+        const newX = Math.max(0, Math.min(1, (clientX - rect.left) / currentFrame.width));
+        const newY = Math.max(0, Math.min(1, (clientY - rect.top) / currentFrame.height));
 
         const newVertices = [...currentFrame.vertices];
         newVertices[currentIndex] = { x: newX, y: newY };
@@ -247,11 +264,9 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         if (!containerRef.current) return;
 
         const rect = containerRef.current.getBoundingClientRect();
-        // Mouse position in frame-local pixels
-        const localX = e.clientX - rect.left;
-        const localY = e.clientY - rect.top;
+        const localX = clientX - rect.left;
+        const localY = clientY - rect.top;
 
-        // Default corner positions (before any offset)
         const defaultX = corner === 'tl' || corner === 'bl' ? 0 : currentFrame.width;
         const defaultY = corner === 'tl' || corner === 'tr' ? 0 : currentFrame.height;
 
@@ -261,7 +276,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       }
     };
 
-    const handleMouseUp = () => {
+    const handleUp = () => {
       if (draggingVertexIndexRef.current !== null) {
         setDraggingVertexIndex(null);
         draggingVertexIndexRef.current = null;
@@ -272,14 +287,19 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       }
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    // passive: false on touchmove so we can call preventDefault() to block scroll
+    window.addEventListener('mousemove', handleMove as EventListener);
+    window.addEventListener('mouseup', handleUp);
+    window.addEventListener('touchmove', handleMove as EventListener, { passive: false });
+    window.addEventListener('touchend', handleUp);
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('mousemove', handleMove as EventListener);
+      window.removeEventListener('mouseup', handleUp);
+      window.removeEventListener('touchmove', handleMove as EventListener);
+      window.removeEventListener('touchend', handleUp);
     };
-  }, []); // Empty dependency - handlers use refs
+  }, []); // Empty dependency — handlers use refs
 
   // Handle video playback settings
   useEffect(() => {
@@ -551,25 +571,10 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         )}
       </div>
 
-      {/* Perspective Corner Handles */}
-      {isSelected && frame.perspectiveMode && cornerPositions && !isPresentationMode && (
+      {/* Perspective Corner Handles — visible on hover OR when selected */}
+      {(showControls || isSelected) && frame.perspectiveMode && cornerPositions && !isPresentationMode && (
         <>
-          {(Object.entries(cornerPositions) as [keyof PerspectiveCorners, { x: number; y: number }][]).map(
-            ([corner, pos]) => (
-              <div
-                key={corner}
-                className="absolute w-5 h-5 bg-orange-500 border-2 border-white rounded-sm cursor-move z-30 shadow-lg hover:bg-orange-400 transition-colors"
-                style={{
-                  left: pos.x - 10,
-                  top: pos.y - 10,
-                  boxShadow: '0 0 0 2px rgba(0,0,0,0.5)',
-                }}
-                onMouseDown={(e) => handleCornerMouseDown(corner, e)}
-                title={`Corner pin: ${corner.toUpperCase()}`}
-              />
-            )
-          )}
-          {/* Quad outline overlay */}
+          {/* Quad outline */}
           <svg
             className="absolute pointer-events-none"
             style={{ left: 0, top: 0, width: '100%', height: '100%', overflow: 'visible' }}
@@ -587,36 +592,78 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
               strokeDasharray="5 3"
             />
           </svg>
+
+          {(Object.entries(cornerPositions) as [keyof PerspectiveCorners, { x: number; y: number }][]).map(
+            ([corner, pos]) => (
+              <div
+                key={corner}
+                className="absolute z-30 cursor-move"
+                style={{
+                  // Visible dot is 20×20; the clickable/touchable area is padded to 44×44
+                  // so it meets mobile touch-target guidelines without looking bulky
+                  left: pos.x - 22,
+                  top: pos.y - 22,
+                  width: 44,
+                  height: 44,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  touchAction: 'none',
+                }}
+                onMouseDown={(e) => handleCornerPointerDown(corner, e)}
+                onTouchStart={(e) => handleCornerPointerDown(corner, e)}
+                title={`Corner pin: ${corner.toUpperCase()}`}
+              >
+                {/* Visual dot */}
+                <div
+                  className="w-5 h-5 bg-orange-500 border-2 border-white rounded-sm shadow-lg hover:bg-orange-400 transition-colors"
+                  style={{ boxShadow: '0 0 0 2px rgba(0,0,0,0.4)' }}
+                />
+              </div>
+            )
+          )}
         </>
       )}
 
-      {/* Resize Handles */}
-      {isSelected && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
-        <div
-          key={handle}
-          className={`absolute w-4 h-4 bg-yellow-400 border-2 border-yellow-600 cursor-${handle}-resize z-10 shadow-md`}
-          style={{
-            ...getHandlePosition(handle),
-          }}
-          onMouseDown={(e) => {
-            e.stopPropagation();
-            onResizeStart(e, handle);
-          }}
-        />
-      ))}
+      {/* Resize Handles
+          In perspective mode the four corner slots (nw/ne/sw/se) are occupied by
+          the orange perspective-pin handles, so we only render the edge handles
+          (n/s/e/w) to avoid overlap. All eight handles are shown otherwise. */}
+      {isSelected && frame.shape !== 'polygon' && resizeHandles
+        .filter(h => !frame.perspectiveMode || !['nw', 'ne', 'sw', 'se'].includes(h))
+        .map((handle) => (
+          <div
+            key={handle}
+            className={`absolute w-4 h-4 bg-yellow-400 border-2 border-yellow-600 cursor-${handle}-resize z-10 shadow-md`}
+            style={{ ...getHandlePosition(handle) }}
+            onMouseDown={(e) => {
+              e.stopPropagation();
+              onResizeStart(e, handle);
+            }}
+          />
+        ))}
 
       {/* Polygon Vertex Handles */}
       {isSelected && frame.shape === 'polygon' && frame.vertices && frame.vertices.map((vertex, index) => (
         <div
           key={`vertex-${index}`}
-          className="absolute w-4 h-4 bg-purple-500 border-2 border-purple-700 rounded-full cursor-move z-20 shadow-md hover:bg-purple-400 transition-colors"
+          className="absolute z-20 cursor-move"
           style={{
-            left: vertex.x * frame.width - 8,
-            top: vertex.y * frame.height - 8,
+            left: vertex.x * frame.width - 22,
+            top: vertex.y * frame.height - 22,
+            width: 44,
+            height: 44,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            touchAction: 'none',
           }}
           onMouseDown={(e) => handleVertexMouseDown(index, e)}
+          onTouchStart={(e) => handleVertexMouseDown(index, e)}
           title={`Vertex ${index + 1}`}
-        />
+        >
+          <div className="w-4 h-4 bg-purple-500 border-2 border-purple-700 rounded-full shadow-md hover:bg-purple-400 transition-colors" />
+        </div>
       ))}
 
       {/* Rotation Handle */}
