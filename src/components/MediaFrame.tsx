@@ -590,8 +590,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         </>
       )}
 
-      {/* Resize Handles — hidden in perspective mode (corners are the handles) */}
-      {isSelected && !frame.perspectiveMode && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
+      {/* Resize Handles */}
+      {isSelected && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
         <div
           key={handle}
           className={`absolute w-4 h-4 bg-yellow-400 border-2 border-yellow-600 cursor-${handle}-resize z-10 shadow-md`}
