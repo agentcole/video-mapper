@@ -6,6 +6,15 @@ export type BlendMode = 'normal' | 'multiply' | 'screen' | 'overlay' | 'darken' 
 export type TextureMode = 'clip' | 'warp'
 export type BackgroundType = 'color' | 'image' | 'video'
 
+// Per-corner pixel offsets from the frame's default rectangle corners
+// Default (no distortion): all offsets are { x: 0, y: 0 }
+export interface PerspectiveCorners {
+  tl: Point // offset from top-left  (frame.x,            frame.y)
+  tr: Point // offset from top-right (frame.x+frame.width, frame.y)
+  br: Point // offset from bot-right (frame.x+frame.width, frame.y+frame.height)
+  bl: Point // offset from bot-left  (frame.x,            frame.y+frame.height)
+}
+
 // Canvas background settings
 export interface BackgroundSettings {
   type: BackgroundType
@@ -80,6 +89,9 @@ export interface MediaFrame {
   // Content position offset (for panning zoomed content)
   contentOffsetX: number
   contentOffsetY: number
+  // Perspective / corner-pin distortion
+  perspectiveMode: boolean
+  perspectiveCorners: PerspectiveCorners
 }
 
 export interface ProjectData {

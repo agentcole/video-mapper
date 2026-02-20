@@ -1,9 +1,9 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import type { MediaFrame, Point } from '../types';
-import { 
-  RotateCw, 
-  Trash2, 
-  Volume2, 
+import type { MediaFrame, Point, PerspectiveCorners } from '../types';
+import {
+  RotateCw,
+  Trash2,
+  Volume2,
   VolumeX,
   Layers,
   Upload,
@@ -14,8 +14,133 @@ import {
   Unlock,
   Scissors,
   Move3D,
+  Grid3X3,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
+
+// ---------------------------------------------------------------------------
+// Perspective / Homography utilities
+// ---------------------------------------------------------------------------
+
+/**
+ * Solve an 8×8 linear system (A·x = b) via Gaussian elimination with partial
+ * pivoting.  Returns null if the matrix is (near-)singular.
+ */
+function gaussianSolve(A: number[][], b: number[]): number[] | null {
+  const n = A.length;
+  // Augmented matrix [A | b]
+  const mat = A.map((row, i) => [...row, b[i]]);
+
+  for (let col = 0; col < n; col++) {
+    // Partial pivot
+    let maxRow = col;
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(mat[row][col]) > Math.abs(mat[maxRow][col])) maxRow = row;
+    }
+    [mat[col], mat[maxRow]] = [mat[maxRow], mat[col]];
+    if (Math.abs(mat[col][col]) < 1e-10) return null;
+
+    // Eliminate column
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const factor = mat[row][col] / mat[col][col];
+      for (let k = col; k <= n; k++) mat[row][k] -= factor * mat[col][k];
+    }
+  }
+
+  return mat.map((row, i) => row[n] / row[i]);
+}
+
+/**
+ * Compute the 2-D projective transformation (homography) that maps four
+ * source points to four destination points.
+ *
+ * src[i] and dst[i] are [x, y] pairs.
+ *
+ * Returns [h00, h01, h02, h10, h11, h12, h20, h21] with h22 = 1, or null on
+ * failure.
+ */
+function computeHomography(
+  src: [number, number][],
+  dst: [number, number][]
+): number[] | null {
+  const A: number[][] = [];
+  const b: number[] = [];
+
+  for (let i = 0; i < 4; i++) {
+    const [sx, sy] = src[i];
+    const [dx, dy] = dst[i];
+    // Row for x
+    A.push([sx, sy, 1, 0, 0, 0, -sx * dx, -sy * dx]);
+    b.push(dx);
+    // Row for y
+    A.push([0, 0, 0, sx, sy, 1, -sx * dy, -sy * dy]);
+    b.push(dy);
+  }
+
+  return gaussianSolve(A, b);
+}
+
+/**
+ * Convert an 8-element homography vector (h22 = 1) to a CSS matrix3d() string.
+ *
+ * The homography H maps [x, y, 1]^T → [x', y', w']^T where the final point
+ * is (x'/w', y'/w').  We embed it in a 4×4 column-major matrix for CSS:
+ *
+ *   matrix3d(h00, h10, 0, h20,
+ *             h01, h11, 0, h21,
+ *             0,   0,   1, 0,
+ *             h02, h12, 0, 1)
+ */
+function homographyToCSS(h: number[]): string {
+  const [h00, h01, h02, h10, h11, h12, h20, h21] = h;
+  return `matrix3d(${h00},${h10},0,${h20},${h01},${h11},0,${h21},0,0,1,0,${h02},${h12},0,1)`;
+}
+
+/**
+ * Given a frame and its perspective corners (stored as pixel offsets from the
+ * default rectangle corners), compute the CSS matrix3d transform that warps
+ * the content element (width × height) to fill the quad.
+ */
+function getPerspectiveTransform(
+  width: number,
+  height: number,
+  corners: PerspectiveCorners
+): string | null {
+  // Source: the element's own 4 corners in local pixels
+  const src: [number, number][] = [
+    [0, 0],
+    [width, 0],
+    [width, height],
+    [0, height],
+  ];
+
+  // Destination: corner positions in the frame's local coordinate space
+  const dst: [number, number][] = [
+    [corners.tl.x, corners.tl.y],
+    [width + corners.tr.x, corners.tr.y],
+    [width + corners.br.x, height + corners.br.y],
+    [corners.bl.x, height + corners.bl.y],
+  ];
+
+  const h = computeHomography(src, dst);
+  if (!h) return null;
+  return homographyToCSS(h);
+}
+
+/** Corner positions in the frame's local coordinate space (pixels). */
+function getCornerLocalPositions(
+  width: number,
+  height: number,
+  corners: PerspectiveCorners
+) {
+  return {
+    tl: { x: corners.tl.x, y: corners.tl.y },
+    tr: { x: width + corners.tr.x, y: corners.tr.y },
+    br: { x: width + corners.br.x, y: height + corners.br.y },
+    bl: { x: corners.bl.x, y: height + corners.bl.y },
+  };
+}
 
 interface MediaFrameComponentProps {
   frame: MediaFrame;
@@ -55,19 +180,25 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [showEffects, setShowEffects] = useState(false);
   const [draggingVertexIndex, setDraggingVertexIndex] = useState<number | null>(null);
+  const [draggingCorner, setDraggingCorner] = useState<keyof PerspectiveCorners | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Use refs to avoid stale closures in event handlers
   const draggingVertexIndexRef = useRef<number | null>(null);
+  const draggingCornerRef = useRef<keyof PerspectiveCorners | null>(null);
   const frameRef = useRef(frame);
   const onUpdateRef = useRef(onUpdate);
-  
+
   // Keep refs in sync
   useEffect(() => {
     draggingVertexIndexRef.current = draggingVertexIndex;
   }, [draggingVertexIndex]);
-  
+
+  useEffect(() => {
+    draggingCornerRef.current = draggingCorner;
+  }, [draggingCorner]);
+
   useEffect(() => {
     frameRef.current = frame;
   }, [frame]);
@@ -83,23 +214,51 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     setDraggingVertexIndex(index);
   }, []);
 
-  // Global mouse move/up handlers for vertex dragging - always attached when dragging
+  // Handle corner drag for perspective mode
+  const handleCornerMouseDown = useCallback((corner: keyof PerspectiveCorners, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setDraggingCorner(corner);
+  }, []);
+
+  // Global mouse move/up handlers for vertex & corner dragging - always attached
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
+      // --- Vertex dragging ---
       const currentIndex = draggingVertexIndexRef.current;
-      if (currentIndex === null) return;
-      
-      const currentFrame = frameRef.current;
-      if (!currentFrame.vertices || !containerRef.current) return;
+      if (currentIndex !== null) {
+        const currentFrame = frameRef.current;
+        if (!currentFrame.vertices || !containerRef.current) return;
 
-      const rect = containerRef.current.getBoundingClientRect();
-      // Calculate new normalized position
-      const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / currentFrame.width));
-      const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / currentFrame.height));
+        const rect = containerRef.current.getBoundingClientRect();
+        const newX = Math.max(0, Math.min(1, (e.clientX - rect.left) / currentFrame.width));
+        const newY = Math.max(0, Math.min(1, (e.clientY - rect.top) / currentFrame.height));
 
-      const newVertices = [...currentFrame.vertices];
-      newVertices[currentIndex] = { x: newX, y: newY };
-      onUpdateRef.current({ vertices: newVertices });
+        const newVertices = [...currentFrame.vertices];
+        newVertices[currentIndex] = { x: newX, y: newY };
+        onUpdateRef.current({ vertices: newVertices });
+        return;
+      }
+
+      // --- Corner dragging (perspective mode) ---
+      const corner = draggingCornerRef.current;
+      if (corner !== null) {
+        const currentFrame = frameRef.current;
+        if (!containerRef.current) return;
+
+        const rect = containerRef.current.getBoundingClientRect();
+        // Mouse position in frame-local pixels
+        const localX = e.clientX - rect.left;
+        const localY = e.clientY - rect.top;
+
+        // Default corner positions (before any offset)
+        const defaultX = corner === 'tl' || corner === 'bl' ? 0 : currentFrame.width;
+        const defaultY = corner === 'tl' || corner === 'tr' ? 0 : currentFrame.height;
+
+        const newOffset = { x: localX - defaultX, y: localY - defaultY };
+        const newCorners = { ...currentFrame.perspectiveCorners, [corner]: newOffset };
+        onUpdateRef.current({ perspectiveCorners: newCorners });
+      }
     };
 
     const handleMouseUp = () => {
@@ -107,12 +266,15 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         setDraggingVertexIndex(null);
         draggingVertexIndexRef.current = null;
       }
+      if (draggingCornerRef.current !== null) {
+        setDraggingCorner(null);
+        draggingCornerRef.current = null;
+      }
     };
 
-    // Always add listeners - they check the ref internally
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-    
+
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
@@ -202,8 +364,13 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     onOpenMediaLibrary();
   };
 
-  // Determine clip path based on shape and texture mode
+  // Determine clip path based on shape / perspective mode
   const getClipPath = (): string => {
+    if (frame.perspectiveMode) {
+      // Clip to the quad defined by the 4 perspective corners (in local pixels)
+      const cp = getCornerLocalPositions(frame.width, frame.height, frame.perspectiveCorners);
+      return `polygon(${cp.tl.x}px ${cp.tl.y}px, ${cp.tr.x}px ${cp.tr.y}px, ${cp.br.x}px ${cp.br.y}px, ${cp.bl.x}px ${cp.bl.y}px)`;
+    }
     if (frame.shape === 'circle') {
       return 'ellipse(50% 50% at 50% 50%)';
     }
@@ -212,7 +379,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     }
     return 'none';
   };
-  
+
   const clipPathStyle = getClipPath();
 
   // Build CSS filter string
@@ -231,13 +398,23 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const contentScale = frame.contentScale ?? 1;
   const contentOffsetX = frame.contentOffsetX ?? 0;
   const contentOffsetY = frame.contentOffsetY ?? 0;
-  
+
   const transformStyle = [
     frame.flipHorizontal ? 'scaleX(-1)' : '',
     frame.flipVertical ? 'scaleY(-1)' : '',
     contentScale !== 1 ? `scale(${contentScale})` : '',
     (contentOffsetX !== 0 || contentOffsetY !== 0) ? `translate(${contentOffsetX}%, ${contentOffsetY}%)` : '',
   ].filter(Boolean).join(' ');
+
+  // Perspective transform (matrix3d) — computed when perspective mode is active
+  const perspectiveTransform = frame.perspectiveMode
+    ? getPerspectiveTransform(frame.width, frame.height, frame.perspectiveCorners)
+    : null;
+
+  // Corner positions for handle rendering
+  const cornerPositions = frame.perspectiveMode
+    ? getCornerLocalPositions(frame.width, frame.height, frame.perspectiveCorners)
+    : null;
 
   // Counter-rotation for UI elements to keep them upright
   const counterRotation = `rotate(${-frame.rotation}deg)`;
@@ -256,6 +433,9 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         transform: `rotate(${frame.rotation}deg)`,
         zIndex: frame.zIndex,
         opacity: frame.opacity,
+        // overflow must be visible when perspective mode is active so that
+        // corner handles (which can be dragged outside the frame) are shown
+        overflow: frame.perspectiveMode ? 'visible' : undefined,
       }}
       onMouseDown={(e) => {
         e.stopPropagation();
@@ -265,9 +445,9 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       onMouseLeave={handleMouseLeave}
     >
       {/* Media Content */}
-      <div 
+      <div
         className={`w-full h-full relative overflow-hidden bg-gray-100 ${isPresentationMode ? '' : 'border-4 border-blue-500/50'}`}
-        style={{ 
+        style={{
           clipPath: clipPathStyle,
           mixBlendMode: frame.blendMode,
         }}
@@ -282,10 +462,25 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
               muted // Always muted for initial autoplay (browser requirement)
               autoPlay
               className="w-full h-full object-cover pointer-events-none"
-              style={{
-                filter: filterStyle,
-                transform: transformStyle,
-              }}
+              style={
+                frame.perspectiveMode && perspectiveTransform
+                  ? {
+                      // Perspective mode: warp content to fill the quad
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      transformOrigin: '0 0',
+                      transform: perspectiveTransform,
+                      filter: filterStyle || undefined,
+                    }
+                  : {
+                      filter: filterStyle,
+                      transform: transformStyle,
+                    }
+              }
               playsInline
             />
           ) : (
@@ -293,15 +488,29 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
               src={frame.url}
               alt="Media"
               className="w-full h-full object-cover pointer-events-none"
-              style={{
-                filter: filterStyle,
-                transform: transformStyle,
-              }}
+              style={
+                frame.perspectiveMode && perspectiveTransform
+                  ? {
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: '100%',
+                      objectFit: 'cover',
+                      transformOrigin: '0 0',
+                      transform: perspectiveTransform,
+                      filter: filterStyle || undefined,
+                    }
+                  : {
+                      filter: filterStyle,
+                      transform: transformStyle,
+                    }
+              }
               draggable={false}
             />
           )
         ) : (
-          <div 
+          <div
             className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300 cursor-pointer hover:from-gray-300 hover:to-gray-400 transition-colors"
             onClick={(e) => {
               e.stopPropagation();
@@ -335,15 +544,54 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
             {frame.filename}
           </div>
         )}
-        
+
         {/* Selection Border */}
         {isSelected && (
           <div className="absolute inset-0 border-4 border-yellow-400 pointer-events-none shadow-lg" />
         )}
       </div>
 
-      {/* Resize Handles (not for polygons) */}
-      {isSelected && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
+      {/* Perspective Corner Handles */}
+      {isSelected && frame.perspectiveMode && cornerPositions && !isPresentationMode && (
+        <>
+          {(Object.entries(cornerPositions) as [keyof PerspectiveCorners, { x: number; y: number }][]).map(
+            ([corner, pos]) => (
+              <div
+                key={corner}
+                className="absolute w-5 h-5 bg-orange-500 border-2 border-white rounded-sm cursor-move z-30 shadow-lg hover:bg-orange-400 transition-colors"
+                style={{
+                  left: pos.x - 10,
+                  top: pos.y - 10,
+                  boxShadow: '0 0 0 2px rgba(0,0,0,0.5)',
+                }}
+                onMouseDown={(e) => handleCornerMouseDown(corner, e)}
+                title={`Corner pin: ${corner.toUpperCase()}`}
+              />
+            )
+          )}
+          {/* Quad outline overlay */}
+          <svg
+            className="absolute pointer-events-none"
+            style={{ left: 0, top: 0, width: '100%', height: '100%', overflow: 'visible' }}
+          >
+            <polygon
+              points={[
+                `${cornerPositions.tl.x},${cornerPositions.tl.y}`,
+                `${cornerPositions.tr.x},${cornerPositions.tr.y}`,
+                `${cornerPositions.br.x},${cornerPositions.br.y}`,
+                `${cornerPositions.bl.x},${cornerPositions.bl.y}`,
+              ].join(' ')}
+              fill="none"
+              stroke="rgba(249, 115, 22, 0.7)"
+              strokeWidth="1.5"
+              strokeDasharray="5 3"
+            />
+          </svg>
+        </>
+      )}
+
+      {/* Resize Handles — hidden in perspective mode (corners are the handles) */}
+      {isSelected && !frame.perspectiveMode && frame.shape !== 'polygon' && resizeHandles.map((handle) => (
         <div
           key={handle}
           className={`absolute w-4 h-4 bg-yellow-400 border-2 border-yellow-600 cursor-${handle}-resize z-10 shadow-md`}
@@ -615,6 +863,46 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                 </p>
               </div>
             )}
+
+            {/* Perspective / Corner Pin */}
+            <div className="pt-2 border-t border-white/20">
+              <label className="text-xs mb-2 block font-medium text-orange-400 flex items-center gap-1">
+                <Grid3X3 className="w-3 h-3" />
+                Perspective Mapping
+              </label>
+              <button
+                onClick={() => onUpdate({ perspectiveMode: !frame.perspectiveMode })}
+                className={`w-full p-2 rounded text-xs flex items-center justify-center gap-1 transition-colors ${
+                  frame.perspectiveMode ? 'bg-orange-600 hover:bg-orange-500' : 'bg-white/10 hover:bg-white/20'
+                }`}
+                title="Toggle perspective / corner-pin mode"
+              >
+                <Grid3X3 className="w-3 h-3" />
+                {frame.perspectiveMode ? 'Corner Pin Active' : 'Enable Corner Pin'}
+              </button>
+              {frame.perspectiveMode && (
+                <button
+                  onClick={() =>
+                    onUpdate({
+                      perspectiveCorners: {
+                        tl: { x: 0, y: 0 },
+                        tr: { x: 0, y: 0 },
+                        br: { x: 0, y: 0 },
+                        bl: { x: 0, y: 0 },
+                      },
+                    })
+                  }
+                  className="w-full mt-1 py-1 bg-white/10 hover:bg-white/20 rounded text-xs"
+                >
+                  Reset Corners
+                </button>
+              )}
+              {frame.perspectiveMode && (
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Drag the orange handles to distort the content. Resize handles are disabled while corner pin is active.
+                </p>
+              )}
+            </div>
 
             <div className="pt-2 border-t border-white/20">
               <label className="flex items-center gap-2 text-xs cursor-pointer">

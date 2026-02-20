@@ -241,6 +241,13 @@ export const Canvas: React.FC = () => {
       contentScale: frame.contentScale ?? 1,
       contentOffsetX: frame.contentOffsetX ?? 0,
       contentOffsetY: frame.contentOffsetY ?? 0,
+      perspectiveMode: frame.perspectiveMode ?? false,
+      perspectiveCorners: frame.perspectiveCorners ?? {
+        tl: { x: 0, y: 0 },
+        tr: { x: 0, y: 0 },
+        br: { x: 0, y: 0 },
+        bl: { x: 0, y: 0 },
+      },
     };
     setFrames(prev => [...prev, newFrame]);
     setSelectedFrameId(newFrame.id);
@@ -381,6 +388,8 @@ export const Canvas: React.FC = () => {
       contentScale: 1,
       contentOffsetX: 0,
       contentOffsetY: 0,
+      perspectiveMode: false,
+      perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
     };
 
     if (pendingMediaUrl?.url) {
@@ -589,6 +598,8 @@ export const Canvas: React.FC = () => {
           contentScale: 1,
           contentOffsetX: 0,
           contentOffsetY: 0,
+          perspectiveMode: false,
+          perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
         };
 
         // Add filename if URL is provided
@@ -685,6 +696,8 @@ export const Canvas: React.FC = () => {
             contentScale: 1,
             contentOffsetX: 0,
             contentOffsetY: 0,
+            perspectiveMode: false,
+            perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
           });
         } catch (error) {
           console.error('Failed to store media:', error);

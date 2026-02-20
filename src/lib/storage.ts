@@ -33,6 +33,13 @@ const prepareBackgroundForStorage = (bg: BackgroundSettings): BackgroundSettings
   return stored;
 };
 
+const DEFAULT_PERSPECTIVE_CORNERS = {
+  tl: { x: 0, y: 0 },
+  tr: { x: 0, y: 0 },
+  br: { x: 0, y: 0 },
+  bl: { x: 0, y: 0 },
+};
+
 // Migrate old frame format to new format
 const migrateFrame = (frame: MediaFrame): MediaFrame => {
   return {
@@ -44,6 +51,8 @@ const migrateFrame = (frame: MediaFrame): MediaFrame => {
     contentScale: frame.contentScale ?? 1,
     contentOffsetX: frame.contentOffsetX ?? 0,
     contentOffsetY: frame.contentOffsetY ?? 0,
+    perspectiveMode: frame.perspectiveMode ?? false,
+    perspectiveCorners: frame.perspectiveCorners ?? DEFAULT_PERSPECTIVE_CORNERS,
   };
 };
 
