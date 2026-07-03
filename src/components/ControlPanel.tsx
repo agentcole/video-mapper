@@ -1,12 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import { 
-  Download, 
-  Upload, 
-  Save, 
-  Link, 
-  Square, 
+import { Slider } from './ui/slider';
+import {
+  Download,
+  Upload,
+  Save,
+  Link,
+  Square,
   Circle,
   Image as ImageIcon,
   Video,
@@ -17,13 +18,20 @@ import {
   ChevronUp,
   Play,
   Pause,
+  Grid3X3,
+  Magnet,
+  Package,
+  MonitorOff,
+  LayoutTemplate,
+  Monitor,
 } from 'lucide-react';
-import type { ShapeType } from '../types';
+import type { ShapeType, GridSettings, CompositionSettings } from '../types';
 
 interface ControlPanelProps {
   onAddUrl: (url: string, type: 'video' | 'image') => void;
   onSave: () => void;
   onExport: () => void;
+  onExportWithMedia: () => void;
   onImport: (file: File) => void;
   onDrawMode: (shape: ShapeType) => void;
   isDrawMode: boolean;
@@ -34,12 +42,34 @@ interface ControlPanelProps {
   onPlayAll: () => void;
   onPauseAll: () => void;
   hasVideos: boolean;
+  grid: GridSettings;
+  onUpdateGrid: (updates: Partial<GridSettings>) => void;
+  composition: CompositionSettings;
+  onUpdateComposition: (updates: Partial<CompositionSettings>) => void;
+  masterOpacity: number;
+  onMasterOpacityChange: (value: number) => void;
+  blackout: boolean;
+  onToggleBlackout: () => void;
+  showTestCard: boolean;
+  onToggleTestCard: () => void;
 }
+
+const GRID_SIZES = [8, 16, 24, 32, 48, 64, 96, 128];
+
+const COMPOSITION_PRESETS: { label: string; width: number; height: number }[] = [
+  { label: '1280 × 720 (HD)', width: 1280, height: 720 },
+  { label: '1920 × 1080 (Full HD)', width: 1920, height: 1080 },
+  { label: '2560 × 1440 (QHD)', width: 2560, height: 1440 },
+  { label: '3840 × 2160 (4K)', width: 3840, height: 2160 },
+];
+
+const clampDimension = (value: number) => Math.max(320, Math.min(8192, Math.round(value)));
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   onAddUrl,
   onSave,
   onExport,
+  onExportWithMedia,
   onImport,
   onDrawMode,
   isDrawMode,
@@ -50,6 +80,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onPlayAll,
   onPauseAll,
   hasVideos,
+  grid,
+  onUpdateGrid,
+  composition,
+  onUpdateComposition,
+  masterOpacity,
+  onMasterOpacityChange,
+  blackout,
+  onToggleBlackout,
+  showTestCard,
+  onToggleTestCard,
 }) => {
   const [url, setUrl] = useState('');
   const [mediaType, setMediaType] = useState<'video' | 'image'>('video');
@@ -78,7 +118,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   };
 
   return (
-    <div className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-50 transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}>
+    <div className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] max-h-[calc(100vh-2rem)] overflow-y-auto transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}>
       <div 
         className="flex items-center justify-between cursor-pointer"
         onClick={() => setIsMinimized(!isMinimized)}
@@ -237,6 +277,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           <Button
             variant="outline"
             size="sm"
+            onClick={onExportWithMedia}
+            className="w-full"
+            title="Export the project with all media files embedded (portable, but large)"
+          >
+            <Package className="w-4 h-4 mr-1" />
+            Export + Media
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={handleImportClick}
             className="w-full"
           >
@@ -281,6 +331,149 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </div>
         )}
 
+        {/* Grid & Snapping */}
+        <div className="space-y-2 pt-4 border-t border-gray-700">
+          <p className="text-xs text-gray-400 uppercase font-semibold">Grid</p>
+          <div className="flex gap-2">
+            <Button
+              variant={grid.show ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => onUpdateGrid({ show: !grid.show })}
+              className="flex-1"
+              title="Show grid (G)"
+            >
+              <Grid3X3 className="w-4 h-4 mr-1" />
+              Grid
+            </Button>
+            <Button
+              variant={grid.snap ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => onUpdateGrid({ snap: !grid.snap })}
+              className="flex-1"
+              title="Snap to grid (Shift+G)"
+            >
+              <Magnet className="w-4 h-4 mr-1" />
+              Snap
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-gray-400 whitespace-nowrap">Size</label>
+            <select
+              value={grid.size}
+              onChange={(e) => onUpdateGrid({ size: Number(e.target.value) })}
+              className="flex-1 bg-white/10 rounded px-2 py-1 text-xs"
+            >
+              {GRID_SIZES.map(size => (
+                <option key={size} value={size} className="bg-gray-900">
+                  {size} px
+                </option>
+              ))}
+            </select>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={grid.showInPresentation}
+              onChange={(e) => onUpdateGrid({ showInPresentation: e.target.checked })}
+              className="rounded"
+            />
+            Keep visible in present mode (projector alignment)
+          </label>
+        </div>
+
+        {/* Composition (output resolution) */}
+        <div className="space-y-2 pt-4 border-t border-gray-700">
+          <p className="text-xs text-gray-400 uppercase font-semibold flex items-center gap-1">
+            <Monitor className="w-3 h-3" />
+            Composition
+          </p>
+          <select
+            value={`${composition.width}x${composition.height}`}
+            onChange={(e) => {
+              const preset = COMPOSITION_PRESETS.find(p => `${p.width}x${p.height}` === e.target.value);
+              if (preset) onUpdateComposition({ width: preset.width, height: preset.height });
+            }}
+            className="w-full bg-white/10 rounded px-2 py-1.5 text-xs"
+          >
+            {!COMPOSITION_PRESETS.some(p => p.width === composition.width && p.height === composition.height) && (
+              <option value={`${composition.width}x${composition.height}`} className="bg-gray-900">
+                {composition.width} × {composition.height} (custom)
+              </option>
+            )}
+            {COMPOSITION_PRESETS.map(p => (
+              <option key={p.label} value={`${p.width}x${p.height}`} className="bg-gray-900">
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              value={composition.width}
+              min={320}
+              max={8192}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (!Number.isNaN(n)) onUpdateComposition({ width: clampDimension(n) });
+              }}
+              className="w-full min-w-0 bg-white/10 rounded px-2 py-1 text-xs"
+              title="Composition width (px)"
+            />
+            <span className="text-xs text-gray-500">×</span>
+            <input
+              type="number"
+              value={composition.height}
+              min={320}
+              max={8192}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (!Number.isNaN(n)) onUpdateComposition({ height: clampDimension(n) });
+              }}
+              className="w-full min-w-0 bg-white/10 rounded px-2 py-1 text-xs"
+              title="Composition height (px)"
+            />
+          </div>
+        </div>
+
+        {/* Output (live controls) */}
+        <div className="space-y-2 pt-4 border-t border-gray-700">
+          <p className="text-xs text-gray-400 uppercase font-semibold">Output</p>
+          <div>
+            <label className="text-xs text-gray-400 mb-1 block">
+              Master — {Math.round(masterOpacity * 100)}%
+            </label>
+            <Slider
+              value={[masterOpacity * 100]}
+              onValueChange={(value) => onMasterOpacityChange(value[0] / 100)}
+              min={0}
+              max={100}
+              step={1}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant={blackout ? 'destructive' : 'outline'}
+              size="sm"
+              onClick={onToggleBlackout}
+              className="flex-1"
+              title="Blackout — instantly hide all output (B)"
+            >
+              <MonitorOff className="w-4 h-4 mr-1" />
+              {blackout ? 'Blackout ON' : 'Blackout'}
+            </Button>
+            <Button
+              variant={showTestCard ? 'default' : 'outline'}
+              size="sm"
+              onClick={onToggleTestCard}
+              className="flex-1"
+              title="Show the output test card for projector setup"
+            >
+              <LayoutTemplate className="w-4 h-4 mr-1" />
+              Test Card
+            </Button>
+          </div>
+        </div>
+
         {/* View & Background */}
         <div className="space-y-2 pt-4 border-t border-gray-700">
           <p className="text-xs text-gray-400 uppercase font-semibold">View</p>
@@ -312,16 +505,25 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <strong>Keyboard Shortcuts:</strong><br />
             • <strong>P</strong> - Present mode<br />
             • <strong>F</strong> - Fullscreen<br />
-            • <strong>ESC</strong> - Exit mode/cancel draw<br />
+            • <strong>B</strong> - Blackout<br />
+            • <strong>G</strong> / <strong>Shift+G</strong> - Grid / snap<br />
+            • <strong>Del</strong> - Delete selection<br />
+            • <strong>Arrows</strong> - Nudge (Shift = faster)<br />
+            • <strong>Cmd/Ctrl+Z</strong> - Undo (Shift = redo)<br />
+            • <strong>Cmd/Ctrl+C/X/V</strong> - Copy/cut/paste<br />
+            • <strong>Cmd/Ctrl+D</strong> - Duplicate<br />
+            • <strong>Cmd/Ctrl+A</strong> - Select all<br />
+            • <strong>ESC</strong> - Exit mode/cancel/deselect<br />
             <br />
             <strong>Tips:</strong><br />
             • Rectangle/Circle: Click & drag<br />
             • Polygon: Click vertices, dbl-click to close<br />
-            • Drag frames to move<br />
-            • Blue handles to resize<br />
+            • Drag empty canvas to marquee-select<br />
+            • Shift+click for multi-select<br />
+            • Yellow handles to resize<br />
             • Green handle to rotate<br />
             • Purple handles to edit polygon vertices<br />
-            • Hover for controls
+            • Hover a frame for its controls
           </p>
         </div>
       </div>

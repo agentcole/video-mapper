@@ -45,7 +45,7 @@ export const BackgroundSettingsPanel: React.FC<BackgroundSettingsProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed top-4 left-[300px] bg-black/90 text-white p-4 rounded-lg shadow-2xl z-50 min-w-[280px] backdrop-blur-md border border-slate-700">
+    <div className="fixed top-4 left-[300px] bg-black/90 text-white p-4 rounded-lg shadow-2xl z-[1000] min-w-[280px] backdrop-blur-md border border-slate-700">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-bold flex items-center gap-2">
           <Palette className="w-4 h-4" />

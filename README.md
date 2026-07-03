@@ -137,8 +137,45 @@ npm run preview
 
 ### Keyboard Shortcuts
 
-- **ESC**: Cancel draw mode (coming soon)
-- **Delete**: Delete selected frame (coming soon)
+- **P**: Toggle presentation mode
+- **F**: Toggle fullscreen
+- **B**: Blackout (kill all output instantly)
+- **G** / **Shift+G**: Toggle grid / snap-to-grid
+- **Delete/Backspace**: Delete selection
+- **Arrow keys**: Nudge selection by 1px (Shift = grid-size steps)
+- **Cmd/Ctrl+Z** / **Shift+Cmd/Ctrl+Z**: Undo / redo
+- **Cmd/Ctrl+C / X / V**: Copy / cut / paste frames
+- **Cmd/Ctrl+D**: Duplicate selection
+- **Cmd/Ctrl+A**: Select all frames
+- **ESC**: Exit presentation mode, cancel draw mode, or deselect
+
+### Composition & Output (Resolume-style)
+
+- **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
+- The editor letterboxes and scales the composition to your window; Present mode maps it to the output
+- **Master fader** dims the whole output; **Blackout (B)** kills it instantly
+- **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
+- **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
+
+### Warping (unified corner pin)
+
+- Corner pin works on **every shape**: the shape's outline warps through the same homography as the content (Photoshop-style — polygons/triangles keep straight edges, circles warp as conics)
+- A warped editing grid renders inside the frame while corner-pin editing, Resolume slice-style
+- Corner-pin handles and polygon vertices snap to the canvas grid when snapping is on
+- Polygon **warp** texture mode stretches media onto 4-vertex polygons (quads)
+
+### Layers & Selection
+
+- **Layers panel** (right dock): visibility toggles, rename (double-click), reorder, duplicate/delete, plus numeric X/Y/W/H/rotation, opacity and blend mode for the selected frame
+- **Multi-select**: shift+click frames or drag a marquee on empty canvas; group drag, nudge, duplicate, copy/paste and delete all operate on the selection
+- **Undo/redo** across frames, background and composition changes (gestures coalesce into single steps)
+
+### Grid & Snapping
+
+- Toggle the grid overlay and snap-to-grid from the "Grid" section in the control panel (or **G** / **Shift+G**)
+- Grid size is selectable (8–128 px); accent lines mark every 5th cell
+- Snapping applies to drawing, dragging, resizing (rotation-aware), corner-pin handles, polygon vertices, and file drops
+- Optionally keep the grid visible in presentation mode for projector alignment
 
 ## Offline Usage
 
@@ -214,15 +251,20 @@ src/
 
 ## Future Enhancements
 
-- [ ] Multi-select frames
-- [ ] Copy/paste frames
-- [ ] Undo/redo functionality
+- [x] Grid and snap-to-grid
+- [x] More keyboard shortcuts (delete, nudge, duplicate, clipboard, undo)
+- [x] Multi-select frames (shift+click, marquee)
+- [x] Copy/paste frames
+- [x] Undo/redo functionality
+- [x] Fixed composition resolution with letterboxed editing
+- [x] Unified corner pin for all shapes + warped editing grid
+- [x] Layers panel with numeric transform properties
+- [x] Soft edge blending, test patterns, master fader & blackout
+- [x] Export with embedded media (portable project files)
 - [ ] Timeline for synchronized playback
 - [ ] Audio waveform visualization
-- [ ] Grid and snap-to-grid
-- [ ] More keyboard shortcuts
 - [ ] Export as video file
-- [ ] Advanced polygon warp with mesh deformation
+- [ ] Advanced polygon warp with mesh deformation (WebGL)
 - [ ] Bezier curve mask edges
 - [ ] Background sync for offline changes
 - [ ] Push notifications for project updates

@@ -1,4 +1,4 @@
-import type { StoredMedia, MediaType, MediaLibraryStats } from '../types';
+import type { StoredMedia, MediaType, MediaLibraryStats, ExportedMediaRecord } from '../types';
 
 const DB_NAME = 'video-mapper-media';
 const DB_VERSION = 1;
@@ -264,6 +264,81 @@ export const resolveMediaUrls = async (mediaIds: string[]): Promise<Map<string, 
   }
   
   return urlMap;
+};
+
+/**
+ * Read a blob as a base64 data URL
+ */
+const blobToDataURL = (blob: Blob): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Failed to read blob'));
+    reader.readAsDataURL(blob);
+  });
+};
+
+/**
+ * Collect media records (base64-encoded) for embedding into a project export.
+ * Unknown ids are skipped.
+ */
+export const exportMediaRecords = async (mediaIds: string[]): Promise<ExportedMediaRecord[]> => {
+  const records: ExportedMediaRecord[] = [];
+  for (const id of [...new Set(mediaIds)]) {
+    const media = await getMedia(id);
+    if (!media) continue;
+    records.push({
+      id: media.id,
+      name: media.name,
+      type: media.type,
+      mimeType: media.mimeType,
+      dataUrl: await blobToDataURL(media.blob),
+    });
+  }
+  return records;
+};
+
+/**
+ * Restore embedded media records from an imported project, preserving their
+ * original ids so frame.mediaId references keep working. Records whose id
+ * already exists locally are skipped.
+ */
+export const importMediaRecords = async (records: ExportedMediaRecord[]): Promise<void> => {
+  const db = await getDB();
+
+  for (const record of records) {
+    const existing = await getMedia(record.id);
+    if (existing) continue;
+
+    const response = await fetch(record.dataUrl);
+    const blob = await response.blob();
+
+    let thumbnail: string | undefined;
+    try {
+      thumbnail = await generateThumbnail(blob, record.type);
+    } catch (error) {
+      console.warn('Failed to generate thumbnail for imported media:', error);
+    }
+
+    const media: StoredMedia = {
+      id: record.id,
+      name: record.name,
+      type: record.type,
+      mimeType: record.mimeType,
+      size: blob.size,
+      blob,
+      thumbnail,
+      dateAdded: Date.now(),
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readwrite');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.put(media);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(new Error('Failed to import media'));
+    });
+  }
 };
 
 /**

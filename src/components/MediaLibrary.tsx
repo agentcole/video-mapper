@@ -112,7 +112,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
       try {
         await deleteMedia(id);
         await loadMedia();
-      } catch (err) {
+      } catch {
         setError('Failed to delete media');
       }
     }
@@ -123,7 +123,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
       try {
         await clearAllMedia();
         await loadMedia();
-      } catch (err) {
+      } catch {
         setError('Failed to clear media');
       }
     }
@@ -144,7 +144,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4">
       <div className="bg-slate-900 rounded-xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden border border-slate-700">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-700">

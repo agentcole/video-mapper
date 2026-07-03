@@ -15,6 +15,29 @@ export interface PerspectiveCorners {
   bl: Point // offset from bot-left  (frame.x,            frame.y+frame.height)
 }
 
+// Grid overlay & snapping settings
+export interface GridSettings {
+  show: boolean
+  snap: boolean
+  size: number // grid cell size in composition px
+  showInPresentation: boolean // keep grid visible in present mode (projector calibration)
+}
+
+// Fixed composition (output) resolution — frames are stored in composition
+// coordinates so projects are portable across machines/projectors
+export interface CompositionSettings {
+  width: number
+  height: number
+}
+
+// Per-edge feathering (px in frame-local space) for projection blending
+export interface SoftEdge {
+  left: number
+  right: number
+  top: number
+  bottom: number
+}
+
 // Canvas background settings
 export interface BackgroundSettings {
   type: BackgroundType
@@ -43,6 +66,15 @@ export interface StoredMedia {
   dateAdded: number
 }
 
+// Media record embedded in an exported project file (base64 data URL)
+export interface ExportedMediaRecord {
+  id: string
+  name: string
+  type: MediaType
+  mimeType: string
+  dataUrl: string
+}
+
 // Media library stats
 export interface MediaLibraryStats {
   totalSize: number
@@ -55,6 +87,10 @@ export interface MediaFrame {
   type: MediaType
   url: string
   filename?: string
+  name?: string // user-set layer name (falls back to filename)
+  visible: boolean // layer visibility (eye toggle)
+  testPattern: boolean // render calibration test card instead of media
+  softEdge: SoftEdge // per-edge feather for projection blending
   mediaId?: string // Reference to stored media in IndexedDB
   x: number
   y: number
@@ -102,22 +138,39 @@ export interface ProjectData {
 export interface DragState {
   isDragging: boolean
   frameId: string | null
-  startX: number
+  startX: number // pointer start (composition coords)
   startY: number
   offsetX: number
   offsetY: number
+  // Start positions of every selected frame so group drags move together
+  groupStartPositions?: Record<string, Point>
 }
+
+export type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w'
 
 export interface ResizeState {
   isResizing: boolean
   frameId: string | null
-  handle: 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'e' | 'w' | null
-  startX: number
+  handle: ResizeHandle | null
+  startX: number // pointer start (composition coords)
   startY: number
   startWidth: number
   startHeight: number
   startFrameX: number
   startFrameY: number
+  rotation: number // frame rotation at resize start (degrees)
+  // Snapshot of perspective corners at the moment resize started (if perspectiveMode)
+  startPerspectiveCorners?: PerspectiveCorners
+}
+
+// Rubber-band selection marquee (composition coords)
+export interface MarqueeState {
+  isActive: boolean
+  startX: number
+  startY: number
+  currentX: number
+  currentY: number
+  additive: boolean // shift held — add to existing selection
 }
 
 export interface RotateState {
