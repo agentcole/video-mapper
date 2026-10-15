@@ -499,6 +499,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             </svg>
             Present (P)
           </Button>
+          <a
+            href="?benchmark"
+            target="_blank"
+            rel="noopener"
+            className="block text-center text-xs text-gray-400 hover:text-white underline"
+            title="How many video layers does this machine play smoothly?"
+          >
+            Performance benchmark
+          </a>
         </div>
 
         {/* Instructions */}

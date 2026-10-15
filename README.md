@@ -80,6 +80,10 @@ The application will start at `http://localhost:5173` (default Vite port).
 npm run build
 ```
 
+### Performance benchmark
+
+Open `/?benchmark` (or *Performance benchmark* in the control panel) on the show machine. It plays 1–16 corner-pinned video layers through the same render path as the output — with a generated 1080p/4K test clip, your own file, or a clip from the media library — and reports display fps, p95/p99 frame times, stutter, dropped video frames, the highest stable layer count, the GPU and hardware-decode support per codec. Results export as JSON.
+
 ### Tests & Lint
 
 ```bash

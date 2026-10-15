@@ -5,17 +5,20 @@ import App from './App.tsx'
 import { OutputApp } from './output/OutputApp.tsx'
 import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 import { OUTPUT_QUERY_PARAM } from './output/protocol.ts'
+import { BenchmarkApp } from './benchmark/BenchmarkApp.tsx'
 
 // The service worker is registered by <UpdatePrompt /> (vite-plugin-pwa).
-// `?output` opens the projector output instead of the editor.
-const isOutputWindow = new URLSearchParams(window.location.search).has(OUTPUT_QUERY_PARAM)
+// `?output` opens the projector output, `?benchmark` the video benchmark.
+const params = new URLSearchParams(window.location.search)
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    {isOutputWindow ? (
+    {params.has(OUTPUT_QUERY_PARAM) ? (
       <ErrorBoundary>
         <OutputApp />
       </ErrorBoundary>
+    ) : params.has('benchmark') ? (
+      <BenchmarkApp />
     ) : (
       <App />
     )}
