@@ -256,23 +256,26 @@ The current renderer is DOM/CSS based:
 src/
 ├── components/
 │   ├── ui/                  # shadcn/ui components
-│   ├── Canvas.tsx           # Stage, gestures, history, persistence
-│   ├── MediaFrame.tsx       # Frame content + editor overlay (handles, outlines, hit area)
+│   ├── Canvas.tsx           # Stage, gestures, editor wiring
+│   ├── MediaFrame.tsx       # Frame editor overlay (handles, outlines, hit area)
+│   ├── FrameContent.tsx     # Frame content for the CSS renderer
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
-│   ├── MediaLibrary.tsx     # IndexedDB media library modal
-│   ├── BackgroundSettings.tsx
+│   ├── ProjectsPanel.tsx    # Projects + versions dialog
+│   ├── MediaLibrary.tsx     # Media library (IndexedDB) + linked folders
+│   ├── OutputWindowControls.tsx
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
-├── lib/
-│   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
-│   └── …
+├── state/                   # zustand stores, undo history, project session
+├── output/                  # Output window app + editor ⇄ output sync
 ├── render/
 │   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)
 │   ├── GpuStage.tsx         # React host for the compositor
 │   └── webgl/               # WebGL2 compositor, shaders, media pool
+├── benchmark/               # Video layer benchmark (?benchmark)
 ├── lib/
+│   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
 │   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
 │   ├── projectRepository.ts # Projects + versions in IndexedDB (+ tests)
 │   ├── storage.ts           # Serialization, JSON export, zip packages, import (+ tests)
@@ -280,8 +283,8 @@ src/
 │   ├── mediaFolders.ts      # Linked media folders (File System Access)
 │   └── utils.ts
 ├── types.ts                 # TypeScript type definitions
-├── App.tsx                  # Root component
-├── main.tsx                 # Entry point
+├── App.tsx                  # Editor root
+├── main.tsx                 # Entry point (editor, ?output, ?benchmark)
 └── index.css                # Global styles
 ```
 
