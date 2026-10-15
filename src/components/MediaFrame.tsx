@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { MediaFrame, Point, PerspectiveCorners, BlendMode, ResizeHandle } from '../types';
+import type { LiveState } from '../state/liveStore';
 import {
   RotateCw,
   Trash2,
@@ -33,17 +34,19 @@ import {
   pinFrameToQuadVertices,
 } from '../lib/geometry';
 
+// Callbacks take the frame id so the parent can pass stable functions and
+// the component can be memoized (only frames that change re-render)
 interface MediaFrameComponentProps {
   frame: MediaFrame;
   isSelected: boolean;
-  onUpdate: (updates: Partial<MediaFrame>) => void;
-  onDelete: () => void;
-  onDragStart: (e: React.MouseEvent) => void;
-  onResizeStart: (e: React.MouseEvent, handle: ResizeHandle) => void;
-  onRotateStart: (e: React.MouseEvent) => void;
+  onUpdateFrame: (id: string, updates: Partial<MediaFrame>) => void;
+  onDeleteFrame: (id: string) => void;
+  onFrameDragStart: (id: string, e: React.MouseEvent) => void;
+  onFrameResizeStart: (id: string, handle: ResizeHandle, e: React.MouseEvent) => void;
+  onFrameRotateStart: (id: string, e: React.MouseEvent) => void;
   isPresentationMode: boolean;
-  onOpenMediaLibrary: () => void; // Open media library to change media for this frame
-  playbackCommand: 'play' | 'pause' | null; // Global playback command
+  onOpenFrameMediaLibrary: (id: string) => void; // Open media library to change media for this frame
+  playback: LiveState['playback']; // Global transport (play / pause all)
   clientToComp: (clientX: number, clientY: number) => Point; // pointer → composition coords
   snapToGrid: (value: number) => number; // identity when snapping is off
   // Editor overlay layer (portal target) — handles, outlines and hit areas
@@ -78,23 +81,34 @@ const RESIZE_HANDLES: { handle: ResizeHandle; fx: number; fy: number }[] = [
 // Frame UI layers (outlines, handles, controls) stack above every hit area
 const UI_LAYER_Z = 100000;
 
-export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
+export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   frame,
   isSelected,
-  onUpdate,
-  onDelete,
-  onDragStart,
-  onResizeStart,
-  onRotateStart,
+  onUpdateFrame,
+  onDeleteFrame,
+  onFrameDragStart,
+  onFrameResizeStart,
+  onFrameRotateStart,
   isPresentationMode,
-  onOpenMediaLibrary,
-  playbackCommand,
+  onOpenFrameMediaLibrary,
+  playback,
   clientToComp,
   snapToGrid,
   overlayContainer,
   viewScale,
   outputGain,
-}) => {
+}: MediaFrameComponentProps) {
+  const frameId = frame.id;
+  const onUpdate = useCallback(
+    (updates: Partial<MediaFrame>) => onUpdateFrame(frameId, updates),
+    [onUpdateFrame, frameId]
+  );
+  const onDelete = () => onDeleteFrame(frameId);
+  const onDragStart = (e: React.MouseEvent) => onFrameDragStart(frameId, e);
+  const onResizeStart = (e: React.MouseEvent, handle: ResizeHandle) => onFrameResizeStart(frameId, handle, e);
+  const onRotateStart = (e: React.MouseEvent) => onFrameRotateStart(frameId, e);
+  const onOpenMediaLibrary = () => onOpenFrameMediaLibrary(frameId);
+
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEffects, setShowEffects] = useState(false);
@@ -330,22 +344,26 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     };
   }, [frame.url, frame.type, frame.muted]);
 
-  // Handle global playback commands (Play All / Pause All)
+  // Handle global playback commands (Play All / Pause All). Only commands
+  // sent after this frame mounted apply — a new frame keeps autoplaying.
+  const lastPlaybackSeqRef = useRef(playback.seq);
   useEffect(() => {
+    if (playback.seq === lastPlaybackSeqRef.current) return;
+    lastPlaybackSeqRef.current = playback.seq;
     const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !playbackCommand) return;
+    if (!video || frame.type !== 'video' || !playback.command) return;
 
-    if (playbackCommand === 'play') {
+    if (playback.command === 'play') {
       video.play().catch((error) => {
         console.warn('Play failed:', error);
         // Try muted play as fallback
         video.muted = true;
         video.play().catch(() => {});
       });
-    } else if (playbackCommand === 'pause') {
+    } else if (playback.command === 'pause') {
       video.pause();
     }
-  }, [playbackCommand, frame.type]);
+  }, [playback, frame.type]);
 
   // Hover shows the controls; hiding is delayed slightly so the pointer can
   // cross the gap between the shape and its (outside-anchored) buttons
@@ -1350,4 +1368,4 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       {overlayContainer && uiLayer && createPortal(uiLayer, overlayContainer)}
     </>
   );
-};
+});
