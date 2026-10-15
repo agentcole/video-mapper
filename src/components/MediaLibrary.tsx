@@ -26,12 +26,14 @@ interface MediaLibraryProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectMedia: (media: StoredMedia) => void;
+  getMediaUsage?: (mediaId: string) => string[]; // layer names using a media
 }
 
 export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   isOpen,
   onClose,
   onSelectMedia,
+  getMediaUsage,
 }) => {
   const [mediaList, setMediaList] = useState<StoredMedia[]>([]);
   const [loading, setLoading] = useState(true);
@@ -108,7 +110,11 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('Delete this media file?')) {
+    const users = getMediaUsage?.(id) ?? [];
+    const message = users.length > 0
+      ? `This media is used by ${users.length} layer${users.length === 1 ? '' : 's'}: ${users.join(', ')}.\n\nDeleting it removes the media from ${users.length === 1 ? 'that layer' : 'those layers'} after the next reload. Delete anyway?`
+      : 'Delete this media file?';
+    if (confirm(message)) {
       try {
         await deleteMedia(id);
         await loadMedia();
@@ -119,7 +125,11 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   };
 
   const handleClearAll = async () => {
-    if (confirm('Delete ALL media files? This cannot be undone.')) {
+    const usedCount = mediaList.filter(m => (getMediaUsage?.(m.id).length ?? 0) > 0).length;
+    const message = usedCount > 0
+      ? `Delete ALL media files? ${usedCount} of them are used by layers in this project and will be lost. This cannot be undone.`
+      : 'Delete ALL media files? This cannot be undone.';
+    if (confirm(message)) {
       try {
         await clearAllMedia();
         await loadMedia();

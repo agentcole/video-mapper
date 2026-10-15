@@ -10,6 +10,38 @@ export const MAX_TOTAL_SIZE = 500 * 1024 * 1024; // 500MB total
 
 let dbInstance: IDBDatabase | null = null;
 
+// One object URL per stored media for the whole session. Reusing it (instead
+// of minting a URL per frame, drop or project load) bounds memory to the
+// library itself; URLs are revoked when their media is deleted.
+const objectUrlCache = new Map<string, string>();
+
+/** Session-wide object URL for a stored media (created once, then reused). */
+export const getMediaObjectUrl = (media: StoredMedia): string => {
+  let url = objectUrlCache.get(media.id);
+  if (!url) {
+    url = URL.createObjectURL(media.blob);
+    objectUrlCache.set(media.id, url);
+  }
+  return url;
+};
+
+const revokeMediaObjectUrl = (id: string): void => {
+  const url = objectUrlCache.get(id);
+  if (url) {
+    URL.revokeObjectURL(url);
+    objectUrlCache.delete(id);
+  }
+};
+
+// Ask the browser not to evict the media library under storage pressure.
+// Requested on the first store (a user action) rather than on page load.
+let persistRequested = false;
+const requestPersistentStorage = (): void => {
+  if (persistRequested) return;
+  persistRequested = true;
+  navigator.storage?.persist?.().catch(() => {});
+};
+
 /**
  * Initialize and get the IndexedDB database
  */
@@ -133,7 +165,8 @@ export const storeMedia = async (
   }
 
   const db = await getDB();
-  
+  requestPersistentStorage();
+
   // Generate thumbnail
   let thumbnail: string | undefined;
   try {
@@ -206,7 +239,10 @@ export const deleteMedia = async (id: string): Promise<void> => {
     const store = transaction.objectStore(STORE_NAME);
     const request = store.delete(id);
 
-    request.onsuccess = () => resolve();
+    request.onsuccess = () => {
+      revokeMediaObjectUrl(id);
+      resolve();
+    };
     request.onerror = () => reject(new Error('Failed to delete media'));
   });
 };
@@ -222,7 +258,10 @@ export const clearAllMedia = async (): Promise<void> => {
     const store = transaction.objectStore(STORE_NAME);
     const request = store.clear();
 
-    request.onsuccess = () => resolve();
+    request.onsuccess = () => {
+      [...objectUrlCache.keys()].forEach(revokeMediaObjectUrl);
+      resolve();
+    };
     request.onerror = () => reject(new Error('Failed to clear media'));
   });
 };
@@ -241,12 +280,14 @@ export const getStorageStats = async (): Promise<MediaLibraryStats> => {
 };
 
 /**
- * Create a blob URL for a stored media
+ * Object URL for a stored media (cached for the session)
  */
 export const createMediaUrl = async (mediaId: string): Promise<string | null> => {
+  const cached = objectUrlCache.get(mediaId);
+  if (cached) return cached;
   const media = await getMedia(mediaId);
   if (!media) return null;
-  return URL.createObjectURL(media.blob);
+  return getMediaObjectUrl(media);
 };
 
 /**

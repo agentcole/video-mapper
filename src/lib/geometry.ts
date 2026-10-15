@@ -90,6 +90,35 @@ export function applyHomography(h: number[], x: number, y: number): Point {
 }
 
 /**
+ * Inverse of a homography (8-element vector, h22 = 1), normalized so that its
+ * h22 is 1 again. Returns null for singular matrices.
+ */
+export function invertHomography(h: number[]): number[] | null {
+  const [a, b, c, d, e, f, g, hh] = h;
+  const i = 1;
+  // Cofactors of the 3×3 matrix [a b c; d e f; g hh i]
+  const A = e * i - f * hh;
+  const B = -(d * i - f * g);
+  const C = d * hh - e * g;
+  const det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-12) return null;
+  const inv = [
+    A, -(b * i - c * hh), b * f - c * e,
+    B, a * i - c * g, -(a * f - c * d),
+    C, -(a * hh - b * g), a * e - b * d,
+  ].map(v => v / det);
+  if (Math.abs(inv[8]) < 1e-12) return null;
+  return inv.slice(0, 8).map(v => v / inv[8]);
+}
+
+/** True when all corner-pin offsets are (near) zero — i.e. no warp. */
+export function isIdentityCorners(corners: PerspectiveCorners, epsilon = 1e-6): boolean {
+  return (['tl', 'tr', 'br', 'bl'] as const).every(
+    k => Math.abs(corners[k].x) < epsilon && Math.abs(corners[k].y) < epsilon
+  );
+}
+
+/**
  * Homography that warps a width×height rectangle onto the quad defined by the
  * frame's 4 perspective corner offsets. Identity-ish (null) on degenerate quads.
  */
@@ -125,6 +154,238 @@ export function getCornerLocalPositions(
     br: { x: width + corners.br.x, y: height + corners.br.y },
     bl: { x: corners.bl.x, y: height + corners.bl.y },
   };
+}
+
+/**
+ * True for a strictly convex quad whose points run clockwise on screen
+ * (y down) in TL, TR, BR, BL order — the orientation of an unwarped frame.
+ * Folded, flipped or degenerate quads return false.
+ */
+export function isConvexQuad(quad: Point[], epsilon = 1e-6): boolean {
+  if (quad.length !== 4) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i];
+    const b = quad[(i + 1) % 4];
+    const c = quad[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (cross <= epsilon) return false;
+  }
+  return true;
+}
+
+/**
+ * Reorder 4 points so they run clockwise on screen, starting at the point
+ * nearest the top-left — the TL, TR, BR, BL order corner pins expect.
+ */
+export function canonicalQuadOrder(points: Point[]): Point[] {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i];
+    const b = points[(i + 1) % points.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  const ring = area < 0 ? [...points].reverse() : [...points];
+  let start = 0;
+  for (let i = 1; i < ring.length; i++) {
+    if (ring[i].x + ring[i].y < ring[start].x + ring[start].y) start = i;
+  }
+  return ring.map((_, k) => ring[(start + k) % ring.length]);
+}
+
+// ---------------------------------------------------------------------------
+// Frame geometry (Photoshop-style: one homography per frame)
+//
+// A frame is an axis-aligned box (x, y, width, height) rotated about its
+// centre. Its shape is a set of vertices normalized to that box, and its four
+// corner pins warp the box — and everything drawn in it — through a single
+// homography H. Local "unwarped" coordinates are box pixels; H maps them to
+// "warped" local coordinates; rotation + position map those to composition.
+// ---------------------------------------------------------------------------
+
+export interface FrameGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  perspectiveMode: boolean;
+  perspectiveCorners: PerspectiveCorners;
+}
+
+/** The homography used for rendering, or null when the frame is not warped. */
+export function getFrameHomography(frame: FrameGeometry): number[] | null {
+  if (!frame.perspectiveMode || isIdentityCorners(frame.perspectiveCorners)) return null;
+  return getPerspectiveHomography(frame.width, frame.height, frame.perspectiveCorners);
+}
+
+/** Warped frame-local point → composition coordinates (applies rotation). */
+export function frameLocalToComp(lx: number, ly: number, frame: FrameGeometry): Point {
+  const cx = frame.width / 2;
+  const cy = frame.height / 2;
+  const v = rotateVector(lx - cx, ly - cy, frame.rotation);
+  return { x: frame.x + cx + v.x, y: frame.y + cy + v.y };
+}
+
+/** The frame's rendered outline (shape through H, then rotation) in composition space. */
+export function getFrameCompOutline(
+  frame: FrameGeometry & { shape: 'rectangle' | 'circle' | 'polygon'; vertices?: Point[] }
+): Point[] {
+  const H = getFrameHomography(frame);
+  return getShapeVertices(frame.shape, frame.vertices).map(v => {
+    const p = { x: v.x * frame.width, y: v.y * frame.height };
+    const warped = H ? applyHomography(H, p.x, p.y) : p;
+    return frameLocalToComp(warped.x, warped.y, frame);
+  });
+}
+
+/**
+ * Shrink/grow a polygon frame's box so it tightly fits its vertices again
+ * (after vertex edits), without moving anything on screen: the vertices are
+ * renormalized, the corner pins are carried over (H'(q) = H(q + m) − m) and
+ * the position compensates for the moved rotation pivot.
+ * Returns null when the box already fits.
+ */
+export function refitFrameToVertices(frame: FrameGeometry & { vertices?: Point[] }): {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  vertices: Point[];
+  perspectiveCorners: PerspectiveCorners;
+} | null {
+  const verts = frame.vertices;
+  if (!verts || verts.length < 3) return null;
+  const { width: w, height: h } = frame;
+  const px = verts.map(v => ({ x: v.x * w, y: v.y * h }));
+  const minX = Math.min(...px.map(p => p.x));
+  const maxX = Math.max(...px.map(p => p.x));
+  const minY = Math.min(...px.map(p => p.y));
+  const maxY = Math.max(...px.map(p => p.y));
+  const newW = maxX - minX;
+  const newH = maxY - minY;
+  if (newW < 1 || newH < 1) return null;
+
+  const tolerance = 1e-6 * Math.max(w, h);
+  if (
+    Math.abs(minX) < tolerance && Math.abs(minY) < tolerance &&
+    Math.abs(maxX - w) < tolerance && Math.abs(maxY - h) < tolerance
+  ) {
+    return null;
+  }
+
+  const vertices = px.map(p => ({ x: (p.x - minX) / newW, y: (p.y - minY) / newH }));
+
+  // Carry the (possibly latent) corner-pin warp over to the new box
+  let perspectiveCorners = frame.perspectiveCorners;
+  const storedH = getPerspectiveHomography(w, h, frame.perspectiveCorners);
+  if (storedH) {
+    const map = (x: number, y: number): Point => {
+      const p = applyHomography(storedH, x + minX, y + minY);
+      return { x: p.x - minX, y: p.y - minY };
+    };
+    const tl = map(0, 0);
+    const tr = map(newW, 0);
+    const br = map(newW, newH);
+    const bl = map(0, newH);
+    perspectiveCorners = {
+      tl: { x: tl.x, y: tl.y },
+      tr: { x: tr.x - newW, y: tr.y },
+      br: { x: br.x - newW, y: br.y - newH },
+      bl: { x: bl.x, y: bl.y - newH },
+    };
+  }
+
+  // Rotation happens about the box centre, which moves with the box:
+  // pos' = pos + c − R·c − c' + R·(m + c')
+  const c = { x: w / 2, y: h / 2 };
+  const c2 = { x: newW / 2, y: newH / 2 };
+  const rc = rotateVector(c.x, c.y, frame.rotation);
+  const rmc2 = rotateVector(minX + c2.x, minY + c2.y, frame.rotation);
+
+  return {
+    x: frame.x + c.x - rc.x - c2.x + rmc2.x,
+    y: frame.y + c.y - rc.y - c2.y + rmc2.y,
+    width: newW,
+    height: newH,
+    vertices,
+    perspectiveCorners,
+  };
+}
+
+/** Resize a frame box (top-left fixed), scaling the corner pins with it. */
+export function scaleFrameSize(
+  frame: Pick<FrameGeometry, 'width' | 'height' | 'perspectiveCorners'>,
+  width: number,
+  height: number
+): { width: number; height: number; perspectiveCorners: PerspectiveCorners } {
+  const sx = width / frame.width;
+  const sy = height / frame.height;
+  const c = frame.perspectiveCorners;
+  return {
+    width,
+    height,
+    perspectiveCorners: {
+      tl: { x: c.tl.x * sx, y: c.tl.y * sy },
+      tr: { x: c.tr.x * sx, y: c.tr.y * sy },
+      br: { x: c.br.x * sx, y: c.br.y * sy },
+      bl: { x: c.bl.x * sx, y: c.bl.y * sy },
+    },
+  };
+}
+
+/**
+ * Turn a 4-vertex polygon into a corner-pinned rectangle whose pins sit where
+ * the polygon's vertices are currently rendered, so the media stretches onto
+ * the quad (the old "warp" texture mode, expressed in the single-homography
+ * model). Returns null when the vertices don't form a convex quad.
+ */
+export function pinFrameToQuadVertices(frame: FrameGeometry & { vertices?: Point[] }): {
+  shape: 'rectangle';
+  vertices: undefined;
+  textureMode: 'clip';
+  perspectiveMode: true;
+  perspectiveCorners: PerspectiveCorners;
+} | null {
+  if (!frame.vertices || frame.vertices.length !== 4) return null;
+  const { width: w, height: h } = frame;
+  const H = getFrameHomography(frame);
+  const rendered = frame.vertices.map(v => {
+    const p = { x: v.x * w, y: v.y * h };
+    return H ? applyHomography(H, p.x, p.y) : p;
+  });
+  const q = canonicalQuadOrder(rendered);
+  if (!isConvexQuad(q)) return null;
+  return {
+    shape: 'rectangle',
+    vertices: undefined,
+    textureMode: 'clip',
+    perspectiveMode: true,
+    perspectiveCorners: {
+      tl: { x: q[0].x, y: q[0].y },
+      tr: { x: q[1].x - w, y: q[1].y },
+      br: { x: q[2].x - w, y: q[2].y - h },
+      bl: { x: q[3].x, y: q[3].y - h },
+    },
+  };
+}
+
+/**
+ * Drop consecutive (near-)duplicate points, including a last point that
+ * repeats the first — e.g. the extra click of a double-click.
+ */
+export function dedupePolygon(points: Point[], epsilon = 1): Point[] {
+  const out: Point[] = [];
+  for (const p of points) {
+    const prev = out[out.length - 1];
+    if (!prev || Math.hypot(p.x - prev.x, p.y - prev.y) > epsilon) out.push(p);
+  }
+  while (out.length > 1) {
+    const first = out[0];
+    const last = out[out.length - 1];
+    if (Math.hypot(first.x - last.x, first.y - last.y) > epsilon) break;
+    out.pop();
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

@@ -9,12 +9,13 @@ import { LayersPanel } from './LayersPanel';
 import { MediaLibrary } from './MediaLibrary';
 import { BackgroundSettingsPanel } from './BackgroundSettings';
 import { TestCard } from './TestCard';
+import { UpdatePrompt } from './UpdatePrompt';
 import {
   saveProject, loadProject, exportProject, importProject, generateFrameId,
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, type LoadedProject,
 } from '../lib/storage';
-import { storeMedia, resolveMediaUrls, exportMediaRecords, importMediaRecords } from '../lib/mediaStorage';
-import { rotateVector } from '../lib/geometry';
+import { storeMedia, resolveMediaUrls, exportMediaRecords, importMediaRecords, getMediaObjectUrl } from '../lib/mediaStorage';
+import { dedupePolygon, getFrameCompOutline, rotateVector } from '../lib/geometry';
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -79,18 +80,12 @@ const filenameFromUrl = (url: string): string | undefined => {
   }
 };
 
-// Axis-aligned bounding box of a (possibly rotated) frame in composition space
+// Axis-aligned bounding box of a frame's rendered outline (shape through
+// corner pin and rotation) in composition space
 const frameAABB = (f: MediaFrame) => {
-  const cx = f.x + f.width / 2;
-  const cy = f.y + f.height / 2;
-  const corners = [
-    rotateVector(-f.width / 2, -f.height / 2, f.rotation),
-    rotateVector(f.width / 2, -f.height / 2, f.rotation),
-    rotateVector(f.width / 2, f.height / 2, f.rotation),
-    rotateVector(-f.width / 2, f.height / 2, f.rotation),
-  ];
-  const xs = corners.map(c => cx + c.x);
-  const ys = corners.map(c => cy + c.y);
+  const outline = getFrameCompOutline(f);
+  const xs = outline.map(p => p.x);
+  const ys = outline.map(p => p.y);
   return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
 };
 
@@ -152,7 +147,6 @@ export const Canvas: React.FC = () => {
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
   const [mediaLibraryTargetBackground, setMediaLibraryTargetBackground] = useState(false); // Is media library for background?
-  const [, setMediaUrlCache] = useState<Map<string, string>>(new Map());
   const [background, setBackground] = useState<BackgroundSettings>(DEFAULT_BACKGROUND);
   const [grid, setGrid] = useState<GridSettings>(DEFAULT_GRID);
   const [composition, setComposition] = useState<CompositionSettings>(DEFAULT_COMPOSITION);
@@ -163,6 +157,8 @@ export const Canvas: React.FC = () => {
   const [masterOpacity, setMasterOpacity] = useState(1);
   const [blackout, setBlackout] = useState(false);
   const [showTestCard, setShowTestCard] = useState(false);
+  // Last autosave failure (e.g. storage full) — shown until the next success
+  const [autosaveError, setAutosaveError] = useState<string | null>(null);
   // Guards auto-save so an empty initial state doesn't overwrite the stored
   // project before it has been loaded
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
@@ -171,6 +167,8 @@ export const Canvas: React.FC = () => {
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  // Editor overlay (frame handles/outlines/hit areas are portalled here)
+  const [overlayEl, setOverlayEl] = useState<HTMLDivElement | null>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement>(null);
   const clipboardRef = useRef<MediaFrame[] | null>(null);
   const dragMovedRef = useRef(false);
@@ -282,7 +280,6 @@ export const Canvas: React.FC = () => {
     if (mediaIds.length > 0) {
       try {
         const urlMap = await resolveMediaUrls(mediaIds);
-        setMediaUrlCache(urlMap);
         resolvedFrames = newFrames.map(frame =>
           frame.mediaId && urlMap.has(frame.mediaId)
             ? { ...frame, url: urlMap.get(frame.mediaId)! }
@@ -321,7 +318,12 @@ export const Canvas: React.FC = () => {
   useEffect(() => {
     if (!isProjectLoaded) return;
     const timer = setTimeout(() => {
-      saveProject(frames, background, grid, composition);
+      try {
+        saveProject(frames, background, grid, composition);
+        setAutosaveError(null);
+      } catch (error) {
+        setAutosaveError((error as Error).message);
+      }
     }, 1000);
     return () => clearTimeout(timer);
   }, [frames, background, grid, composition, isProjectLoaded]);
@@ -389,6 +391,21 @@ export const Canvas: React.FC = () => {
     h.last = next;
     applySnapshot(next);
   }, [applySnapshot]);
+
+  // Master fader and blackout apply to audio as well as pixels
+  const outputGain = blackout ? 0 : masterOpacity;
+  useEffect(() => {
+    if (backgroundVideoRef.current) backgroundVideoRef.current.volume = outputGain;
+  }, [outputGain, background.type, background.url]);
+
+  // Names of the layers using a stored media (for the library's delete warning)
+  const getMediaUsage = useCallback((mediaId: string): string[] => {
+    const users = frames
+      .filter(f => f.mediaId === mediaId)
+      .map(f => f.name || f.filename || 'Untitled layer');
+    if (background.mediaId === mediaId) users.push('Background');
+    return users;
+  }, [frames, background.mediaId]);
 
   // ------------------------------------------------------------------
   // Frame CRUD
@@ -625,14 +642,17 @@ export const Canvas: React.FC = () => {
 
   // Finish polygon and create frame
   const finishPolygon = useCallback(() => {
-    if (polygonDrawState.vertices.length < 3) {
+    // A double-click (or closing on the first point) can repeat a vertex,
+    // which would degenerate the shape — drop near-duplicates first
+    const drawnVertices = dedupePolygon(polygonDrawState.vertices, 1 / viewScale);
+    if (drawnVertices.length < 3) {
       setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
       return;
     }
 
     // Calculate bounding box
-    const xs = polygonDrawState.vertices.map(v => v.x);
-    const ys = polygonDrawState.vertices.map(v => v.y);
+    const xs = drawnVertices.map(v => v.x);
+    const ys = drawnVertices.map(v => v.y);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -647,7 +667,7 @@ export const Canvas: React.FC = () => {
     }
 
     // Convert vertices to normalized coordinates (0-1) relative to bounding box
-    const normalizedVertices: Point[] = polygonDrawState.vertices.map(v => ({
+    const normalizedVertices: Point[] = drawnVertices.map(v => ({
       x: (v.x - minX) / width,
       y: (v.y - minY) / height,
     }));
@@ -670,7 +690,7 @@ export const Canvas: React.FC = () => {
     setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
     setIsDrawMode(false);
     setDrawShape(null);
-  }, [polygonDrawState, pendingMediaUrl, frames.length, addFrame]);
+  }, [polygonDrawState, pendingMediaUrl, frames.length, addFrame, viewScale]);
 
   // Handle canvas mouse down (empty area: draw or marquee-select)
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -683,6 +703,9 @@ export const Canvas: React.FC = () => {
     if (isDrawMode && drawShape) {
       setSelectedFrameIds([]);
       if (drawShape === 'polygon') {
+        // The second press of a double-click closes the polygon (onDoubleClick)
+        // — it must not add a duplicate vertex
+        if (e.detail >= 2) return;
         // Polygon drawing: add vertex on click
         const x = snapToGrid(comp.x);
         const y = snapToGrid(comp.y);
@@ -1073,10 +1096,7 @@ export const Canvas: React.FC = () => {
         try {
           // Store in IndexedDB
           const storedMedia = await storeMedia(file, file.name, type);
-          const url = URL.createObjectURL(storedMedia.blob);
-
-          // Update cache
-          setMediaUrlCache(prev => new Map(prev).set(storedMedia.id, url));
+          const url = getMediaObjectUrl(storedMedia);
 
           addFrame(createFrame({
             type,
@@ -1112,8 +1132,7 @@ export const Canvas: React.FC = () => {
 
   // Handle media selection from library
   const handleSelectMedia = useCallback(async (media: StoredMedia) => {
-    const url = URL.createObjectURL(media.blob);
-    setMediaUrlCache(prev => new Map(prev).set(media.id, url));
+    const url = getMediaObjectUrl(media);
 
     // Check if selecting for background
     if (mediaLibraryTargetBackground) {
@@ -1174,8 +1193,13 @@ export const Canvas: React.FC = () => {
   }, [isDrawMode, drawShape]);
 
   const handleSave = useCallback(() => {
-    saveProject(frames, background, grid, composition);
-    alert('Project saved!');
+    try {
+      saveProject(frames, background, grid, composition);
+      setAutosaveError(null);
+      alert('Project saved!');
+    } catch (error) {
+      alert((error as Error).message);
+    }
   }, [frames, background, grid, composition]);
 
   const handleExport = useCallback(() => {
@@ -1241,6 +1265,22 @@ export const Canvas: React.FC = () => {
 
   return (
     <>
+      {/* Non-blocking notices — never shown on the output. The update prompt
+          stays mounted so the service worker is registered once. */}
+      <div
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[2000] flex flex-col items-center gap-2"
+        style={{ display: isPresentationMode ? 'none' : undefined }}
+      >
+        <UpdatePrompt />
+        {autosaveError && (
+          <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+            <span>Autosave failed: {autosaveError}</span>
+            <button onClick={handleExport} className="underline whitespace-nowrap">Export project</button>
+            <button onClick={() => setAutosaveError(null)} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
+      </div>
+
       {!isPresentationMode && (
         <ControlPanel
           onAddUrl={handleAddUrl}
@@ -1292,6 +1332,7 @@ export const Canvas: React.FC = () => {
           setMediaLibraryTargetBackground(false);
         }}
         onSelectMedia={handleSelectMedia}
+        getMediaUsage={getMediaUsage}
       />
 
       {/* Background Settings Panel */}
@@ -1369,7 +1410,6 @@ export const Canvas: React.FC = () => {
                 key={frame.id}
                 frame={frame}
                 isSelected={selectedFrameIds.includes(frame.id) && !isPresentationMode}
-                onSelect={(e) => !isPresentationMode && selectFrame(frame.id, e.shiftKey)}
                 onUpdate={(updates) => updateFrame(frame.id, updates)}
                 onDelete={() => deleteFrames([frame.id])}
                 onDragStart={(e) => !isPresentationMode && handleDragStart(frame.id, e)}
@@ -1380,9 +1420,16 @@ export const Canvas: React.FC = () => {
                 playbackCommand={playbackCommand}
                 clientToComp={toComp}
                 snapToGrid={snapToGrid}
+                overlayContainer={overlayEl}
+                viewScale={viewScale}
+                outputGain={outputGain}
               />
             ))}
           </div>
+
+          {/* Editor overlay — outlines, handles and hit areas of every frame,
+              above the content and outside the master fader */}
+          <div ref={setOverlayEl} className="absolute inset-0 pointer-events-none" style={{ zIndex: 700 }} />
 
           {/* Grid Overlay — minor lines every cell, accent lines every 5 cells.
               Optionally stays visible in presentation mode for projector alignment. */}

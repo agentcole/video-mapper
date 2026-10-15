@@ -1,7 +1,8 @@
 import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord } from '../types';
+import { pinFrameToQuadVertices } from './geometry';
 
 const STORAGE_KEY = 'video-mapper-project';
-const VERSION = '4.0.0'; // Bumped for fixed composition resolution
+const VERSION = '4.1.0'; // Bumped for the single-homography warp model
 
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
   type: 'color',
@@ -53,8 +54,8 @@ const DEFAULT_PERSPECTIVE_CORNERS = {
 };
 
 // Migrate old frame format to new format
-const migrateFrame = (frame: MediaFrame): MediaFrame => {
-  return {
+export const migrateFrame = (frame: MediaFrame): MediaFrame => {
+  const migrated: MediaFrame = {
     ...frame,
     // Add defaults for new properties if missing
     textureMode: frame.textureMode || 'clip',
@@ -69,6 +70,15 @@ const migrateFrame = (frame: MediaFrame): MediaFrame => {
     testPattern: frame.testPattern ?? false,
     softEdge: frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 },
   };
+
+  // The old "warp" texture mode stretched media onto a 4-vertex polygon with
+  // a second homography. It is now a corner-pinned rectangle whose pins sit
+  // on those vertices (one homography per frame); anything else just clips.
+  if (migrated.textureMode === 'warp') {
+    const pinned = migrated.shape === 'polygon' ? pinFrameToQuadVertices(migrated) : null;
+    return pinned ? { ...migrated, ...pinned } : { ...migrated, textureMode: 'clip' };
+  }
+  return migrated;
 };
 
 export const saveProject = (
@@ -90,7 +100,10 @@ export const saveProject = (
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projectData));
   } catch (error) {
     console.error('Failed to save project:', error);
-    throw new Error('Failed to save project to localStorage');
+    const isQuota = error instanceof DOMException && error.name === 'QuotaExceededError';
+    throw new Error(isQuota
+      ? 'browser storage is full — export the project to keep your changes'
+      : 'could not write to browser storage');
   }
 };
 

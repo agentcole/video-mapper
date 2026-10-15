@@ -16,6 +16,7 @@ import {
   Pentagon,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
+import { scaleFrameSize } from '../lib/geometry';
 
 interface LayersPanelProps {
   frames: MediaFrame[];
@@ -213,8 +214,9 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <NumberField label="X" value={selectedFrame.x} onCommit={(v) => onUpdate(selectedFrame.id, { x: v })} />
                   <NumberField label="Y" value={selectedFrame.y} onCommit={(v) => onUpdate(selectedFrame.id, { y: v })} />
-                  <NumberField label="W" value={selectedFrame.width} onCommit={(v) => v >= 10 && onUpdate(selectedFrame.id, { width: v })} />
-                  <NumberField label="H" value={selectedFrame.height} onCommit={(v) => v >= 10 && onUpdate(selectedFrame.id, { height: v })} />
+                  {/* Same pin scaling as the resize handles, so a warp keeps its shape */}
+                  <NumberField label="W" value={selectedFrame.width} onCommit={(v) => v >= 10 && onUpdate(selectedFrame.id, scaleFrameSize(selectedFrame, v, selectedFrame.height))} />
+                  <NumberField label="H" value={selectedFrame.height} onCommit={(v) => v >= 10 && onUpdate(selectedFrame.id, scaleFrameSize(selectedFrame, selectedFrame.width, v))} />
                 </div>
                 <NumberField label="∠" value={selectedFrame.rotation} onCommit={(v) => onUpdate(selectedFrame.id, { rotation: v })} />
                 <div>
