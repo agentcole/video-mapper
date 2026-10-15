@@ -160,6 +160,7 @@ npm run preview
 
 - **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
 - The editor letterboxes and scales the composition to your window; Present mode maps it to the output
+- **Output window**: opens the composition in its own window for the projector while you keep editing. In Chromium browsers, *Detect screens* lets you pick the target display (Window Management API); elsewhere drag the window over. The output mirrors the editor live, shows no editor UI, hides the cursor, keeps the display awake and starts from the autosaved project (it keeps its last picture if the editor reloads). In the output window: click or **F** for fullscreen, **B** for blackout. While an output is live the editor preview is muted.
 - **Master fader** dims the whole output (and scales audio volume); **Blackout (B)** kills picture and sound instantly
 - **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
 - **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors

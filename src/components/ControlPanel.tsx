@@ -26,6 +26,7 @@ import {
   Monitor,
 } from 'lucide-react';
 import type { ShapeType, GridSettings, CompositionSettings } from '../types';
+import { OutputWindowControls } from './OutputWindowControls';
 
 interface ControlPanelProps {
   onAddUrl: (url: string, type: 'video' | 'image') => void;
@@ -472,6 +473,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               Test Card
             </Button>
           </div>
+          <OutputWindowControls />
         </div>
 
         {/* View & Background */}

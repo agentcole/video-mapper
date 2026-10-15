@@ -10,6 +10,7 @@ import { MediaLibrary } from './MediaLibrary';
 import { BackgroundSettingsPanel } from './BackgroundSettings';
 import { TestCard } from './TestCard';
 import { UpdatePrompt } from './UpdatePrompt';
+import { BackgroundLayer, GridOverlay } from './StageLayers';
 import {
   saveProject, loadProject, exportProject, importProject, generateFrameId,
   type LoadedProject,
@@ -19,6 +20,7 @@ import { dedupePolygon, getFrameCompOutline, rotateVector } from '../lib/geometr
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { projectHistory } from '../state/history';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
+import { startControlSync, useOutputStatus } from '../output/controlSync';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition, replaceDocument } = projectStore.getState();
@@ -170,7 +172,6 @@ export const Canvas: React.FC = () => {
   const stageRef = useRef<HTMLDivElement>(null);
   // Editor overlay (frame handles/outlines/hit areas are portalled here)
   const [overlayEl, setOverlayEl] = useState<HTMLDivElement | null>(null);
-  const backgroundVideoRef = useRef<HTMLVideoElement>(null);
   const clipboardRef = useRef<MediaFrame[] | null>(null);
   const dragMovedRef = useRef(false);
   // Latest selection for stable (memo-friendly) gesture callbacks
@@ -345,11 +346,14 @@ export const Canvas: React.FC = () => {
     pruneSelection();
   }, [pruneSelection]);
 
-  // Master fader and blackout apply to audio as well as pixels
+  // Mirror the project + live state to output windows
+  useEffect(() => startControlSync(), []);
+  const outputsConnected = useOutputStatus(s => s.connected) > 0;
+
+  // Master fader and blackout apply to audio as well as pixels. While an
+  // output window is live it carries the sound, so the editor stays silent.
   const outputGain = outputGainOf({ masterOpacity, blackout });
-  useEffect(() => {
-    if (backgroundVideoRef.current) backgroundVideoRef.current.volume = outputGain;
-  }, [outputGain, background.type, background.url]);
+  const editorGain = outputsConnected ? 0 : outputGain;
 
   // Names of the layers using a stored media (for the library's delete warning)
   const getMediaUsage = useCallback((mediaId: string): string[] => {
@@ -1346,32 +1350,7 @@ export const Canvas: React.FC = () => {
         >
           {/* Master-faded output (background + frames) */}
           <div data-canvas-bg="true" className="absolute inset-0" style={{ opacity: masterOpacity }}>
-            {/* Background */}
-            {background.type === 'color' && (
-              <div
-                data-canvas-bg="true"
-                className="absolute inset-0"
-                style={{ backgroundColor: background.color }}
-              />
-            )}
-            {background.type === 'image' && background.url && (
-              <img
-                src={background.url}
-                alt="Background"
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              />
-            )}
-            {background.type === 'video' && background.url && (
-              <video
-                ref={backgroundVideoRef}
-                src={background.url}
-                loop={background.loop ?? true}
-                muted={background.muted ?? true}
-                autoPlay
-                playsInline
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              />
-            )}
+            <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
 
             {/* Frames */}
             {frames.filter(f => f.visible !== false).map(frame => (
@@ -1391,7 +1370,7 @@ export const Canvas: React.FC = () => {
                 snapToGrid={snapToGrid}
                 overlayContainer={overlayEl}
                 viewScale={viewScale}
-                outputGain={outputGain}
+                outputGain={editorGain}
               />
             ))}
           </div>
@@ -1400,28 +1379,9 @@ export const Canvas: React.FC = () => {
               above the content and outside the master fader */}
           <div ref={setOverlayEl} className="absolute inset-0 pointer-events-none" style={{ zIndex: 700 }} />
 
-          {/* Grid Overlay — minor lines every cell, accent lines every 5 cells.
-              Optionally stays visible in presentation mode for projector alignment. */}
-          {gridVisible && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                zIndex: 500,
-                backgroundImage: [
-                  'linear-gradient(to right, rgba(34,211,238,0.35) 1px, transparent 1px)',
-                  'linear-gradient(to bottom, rgba(34,211,238,0.35) 1px, transparent 1px)',
-                  'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                  'linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                ].join(', '),
-                backgroundSize: [
-                  `${grid.size * 5}px ${grid.size * 5}px`,
-                  `${grid.size * 5}px ${grid.size * 5}px`,
-                  `${grid.size}px ${grid.size}px`,
-                  `${grid.size}px ${grid.size}px`,
-                ].join(', '),
-              }}
-            />
-          )}
+          {/* Grid overlay — optionally stays visible in presentation mode for
+              projector alignment */}
+          {gridVisible && <GridOverlay grid={grid} />}
 
           {/* Global output test card (projector setup) */}
           {showTestCard && (
