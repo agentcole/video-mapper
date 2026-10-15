@@ -128,6 +128,43 @@ describe('parseProjectData', () => {
   });
 });
 
+describe('format 5', () => {
+  it('converts a legacy project into surfaces, layers and clips', () => {
+    const project = parseProjectData({ version: '4.1.0', frames: [legacyFrame({ opacity: 0.5, blendMode: 'screen', mediaId: 'm1', type: 'video' })] });
+    expect(project.surfaces).toHaveLength(1);
+    expect(project.layers).toHaveLength(1);
+    expect(project.columns.length).toBeGreaterThan(0);
+    const [layer] = project.layers;
+    expect(layer.opacity).toBe(0.5);
+    expect(layer.blendMode).toBe('screen');
+    expect(layer.slots[0]?.source.mediaId).toBe('m1');
+    expect(layer.activeClipId).toBe(layer.slots[0]?.id);
+    expect(project.surfaces[0].layerId).toBe(layer.id);
+  });
+
+  it('round-trips through the format-5 shape', () => {
+    const legacy = parseProjectData({ frames: [legacyFrame({ hueRotate: 45 })] });
+    const { surfaces, layers, columns } = legacy;
+    const again = parseProjectData({ version: PROJECT_VERSION, surfaces, layers, columns });
+    expect(again.frames).toEqual(legacy.frames);
+    expect(again.warnings).toEqual([]);
+  });
+
+  it('skips broken clips and surfaces individually and repairs references', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const project = parseProjectData({
+      version: PROJECT_VERSION,
+      columns,
+      layers: [{ ...layers[0], slots: [{ id: 'bad', source: { type: 'hologram' } }, ...layers[0].slots.slice(1)] }],
+      surfaces: [...surfaces, { ...surfaces[0], id: 's2', layerId: 'missing-layer' }, { id: 'broken' }],
+    });
+    expect(project.layers[0].activeClipId).toBeNull(); // its clip was invalid
+    expect(project.surfaces.map(s => s.id)).toEqual([surfaces[0].id, 's2']);
+    expect(project.layers.map(l => l.id)).toContain('missing-layer');
+    expect(project.warnings).toHaveLength(3);
+  });
+});
+
 describe('compareVersions', () => {
   it('compares numerically', () => {
     expect(compareVersions('4.10.0', '4.9.0')).toBeGreaterThan(0);

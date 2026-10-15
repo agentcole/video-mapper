@@ -20,7 +20,7 @@ The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) w
 - [x] 1.2 Validated, versioned project format (zod) with migration chain; unreadable autosaves are backed up
 - [x] 1.7 Output window (BroadcastChannel sync, screen selection via Window Management API, wake lock, cursor hiding)
 - [x] 1.6 Video benchmark page (`?benchmark`) — still needs real runs on show hardware: in the automated test browser rAF fell to ~35 fps as soon as 2 videos played, independent of codec and CSS warp (likely an artifact of that browser instance, unconfirmed)
-- [ ] 1.3 Data model: surfaces/slices (stage) + layers with clip slots (show) — needs a product decision
+- [x] 1.3 Data model (Resolume model, see docs/design/data-model.md): format 5 stores surfaces (mapping) + layers (opacity/blend) with clip slots in 8 columns (media, transport, look); frames are a derived view (surface ⨝ layer ⨝ active clip) so editor, renderers and output keep working; 4.x projects convert on open; packages carry every clip's media. No launcher UI yet (2.1)
 - [x] 1.4 Project management: multiple projects + versions in IndexedDB (legacy slot migrated), import always creates a new project, zip packages, linked media folders (Chromium, not yet clicked through in a real browser — the folder picker can't be automated), storage limits from the browser quota
 - [x] 1.5 Renderer abstraction + GPU renderer: WebGL2 compositor at parity behind the renderer switch (editor + output), context-loss recovery, CSS fallback. Chose raw WebGL2 over three.js/WebGPU: ISF effects (GLSL) run natively, works where WebGPU is missing, no 600 KB dependency. Open: WebGPU backend (zero-copy video) if the benchmark shows upload costs matter; mesh warp (3.2) builds on this compositor
 

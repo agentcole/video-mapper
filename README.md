@@ -46,6 +46,10 @@ A high-performance web-based video mapping application built with React, TypeScr
   - Delete individual frames
   - Settings panel with all adjustments
 
+### 🧱 Data model
+
+Projects (format 5) separate **mapping** from **content**, like Resolume: *surfaces* hold the mapping (geometry, shape, corner pin, soft edge); *layers* hold the mix (opacity, blend mode) and a row of *clip slots* across 8 columns; *clips* hold media, transport and look. A surface shows its layer's active clip. Older projects are converted on open. Details: [docs/design/data-model.md](docs/design/data-model.md).
+
 ### 💾 Project Management
 - **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
 - **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
@@ -267,7 +271,7 @@ src/
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
-├── state/                   # zustand stores, undo history, project session
+├── state/                   # zustand stores, show model (surfaces/layers/clips), undo, project session
 ├── output/                  # Output window app + editor ⇄ output sync
 ├── render/
 │   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)

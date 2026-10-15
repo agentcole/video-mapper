@@ -304,10 +304,15 @@ export const Canvas: React.FC = () => {
     setRendererNotice(`${reason} — switched back to the CSS renderer.`);
   }, []);
 
-  // Names of the layers using a stored media (for the library's delete warning)
+  // Surfaces whose layer holds a clip of a stored media — any clip, not only
+  // the playing one (for the library's delete warning)
   const getMediaUsage = useCallback((mediaId: string): string[] => {
+    const { layers } = projectStore.getState();
+    const layerIds = new Set(
+      layers.filter(l => l.slots.some(c => c?.source.mediaId === mediaId)).map(l => l.id)
+    );
     const users = frames
-      .filter(f => f.mediaId === mediaId)
+      .filter(f => f.layerId && layerIds.has(f.layerId))
       .map(f => f.name || f.filename || 'Untitled layer');
     if (background.mediaId === mediaId) users.push('Background');
     return users;

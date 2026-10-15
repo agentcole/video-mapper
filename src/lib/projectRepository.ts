@@ -70,9 +70,11 @@ export const closeProjectDB = async () => {
   dbPromise = null;
 };
 
+// Surfaces in format 5, frames before
 const frameCountOf = (data: unknown): number => {
-  const frames = (data as { frames?: unknown } | null)?.frames;
-  return Array.isArray(frames) ? frames.length : 0;
+  const d = data as { surfaces?: unknown; frames?: unknown } | null;
+  if (Array.isArray(d?.surfaces)) return d.surfaces.length;
+  return Array.isArray(d?.frames) ? d.frames.length : 0;
 };
 
 const withoutData = <T extends { data: unknown }>(record: T): Omit<T, 'data'> => {

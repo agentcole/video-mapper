@@ -6,6 +6,10 @@ import {
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_PERSPECTIVE_CORNERS, DEFAULT_SOFT_EDGE,
 } from './defaults';
 import { pinFrameToQuadVertices } from './geometry';
+import {
+  createColumns, emptyShow, framesFromShow, showFromFrames,
+  type Clip, type Column, type Layer, type ShowDocument, type Surface,
+} from '../state/showModel';
 
 // ---------------------------------------------------------------------------
 // Project file format: validation + migrations
@@ -15,9 +19,12 @@ import { pinFrameToQuadVertices } from './geometry';
 // schema; semantic changes run as versioned migrations. A broken layer (NaN
 // geometry, unknown shape, …) is skipped with a warning instead of taking
 // the whole output down.
+//
+// Format 5 stores surfaces + layers (clips in columns); older files store
+// frames and are converted (one layer + clip per frame).
 // ---------------------------------------------------------------------------
 
-export const PROJECT_VERSION = '4.1.0';
+export const PROJECT_VERSION = '5.0.0';
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
 
@@ -85,6 +92,69 @@ const FrameSchema = z.object({
   path: ['vertices'],
 });
 
+// ---- Format 5: surfaces, layers, clips, columns ----
+
+const SurfaceSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  layerId: z.string().min(1),
+  visible: z.boolean().default(true),
+  testPattern: z.boolean().default(false),
+  zIndex: z.number().default(0),
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive(),
+  height: z.number().positive(),
+  rotation: z.number().default(0),
+  shape: z.enum(['rectangle', 'circle', 'polygon']).default('rectangle'),
+  vertices: z.array(PointSchema).min(3).optional(),
+  lockAspectRatio: z.boolean().default(true),
+  perspectiveMode: z.boolean().default(false),
+  perspectiveCorners: CornersSchema.default(DEFAULT_PERSPECTIVE_CORNERS),
+  softEdge: SoftEdgeSchema.default(DEFAULT_SOFT_EDGE),
+}).refine(s => s.shape !== 'polygon' || (s.vertices?.length ?? 0) >= 3, {
+  message: 'polygon without vertices',
+  path: ['vertices'],
+});
+
+const ClipSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  source: z.object({
+    type: z.enum(['video', 'image']),
+    url: z.string().default(''),
+    mediaId: z.string().optional(),
+    filename: z.string().optional(),
+  }),
+  loop: z.boolean().default(true),
+  playbackRate: z.number().positive().default(1),
+  muted: z.boolean().default(false),
+  flipHorizontal: z.boolean().default(false),
+  flipVertical: z.boolean().default(false),
+  contentScale: z.number().positive().default(1),
+  contentOffsetX: z.number().default(0),
+  contentOffsetY: z.number().default(0),
+  blur: z.number().min(0).default(0),
+  brightness: z.number().min(0).default(100),
+  contrast: z.number().min(0).default(100),
+  grayscale: z.number().min(0).default(0),
+  saturate: z.number().min(0).default(100),
+  hueRotate: z.number().default(0),
+  invert: z.number().min(0).default(0),
+  sepia: z.number().min(0).default(0),
+});
+
+const LayerSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().default('Layer'),
+  opacity: z.number().min(0).max(1).default(1),
+  blendMode: z.enum(BLEND_MODES).default('normal'),
+  slots: z.array(z.unknown()).default([]), // clips are validated one by one
+  activeClipId: z.string().nullable().default(null),
+});
+
+const ColumnSchema = z.object({ id: z.string().min(1), name: z.string().default('') });
+
 const BackgroundSchema = z.object({
   type: z.enum(['color', 'image', 'video']),
   color: z.string(),
@@ -125,8 +195,8 @@ const MediaRecordSchema = z.object({
   dataUrl: z.string().startsWith('data:'),
 });
 
-export interface ParsedProject {
-  frames: MediaFrame[];
+export interface ParsedProject extends ShowDocument {
+  frames: MediaFrame[]; // derived view of the show (surface ⨝ layer ⨝ active clip)
   background: BackgroundSettings;
   grid: GridSettings;
   composition: CompositionSettings;
@@ -192,8 +262,77 @@ const describeIssue = (error: z.ZodError): string => {
  * data isn't a project at all; individual bad layers/settings are skipped or
  * replaced by defaults and reported in `warnings`.
  */
+/** Format ≤ 4: frames, converted into one layer + clip per frame. */
+const parseLegacyFrames = (rawFrames: unknown[], version: string, warnings: string[]): ShowDocument => {
+  const frames: MediaFrame[] = [];
+  rawFrames.forEach((value, index) => {
+    const result = FrameSchema.safeParse(value);
+    if (!result.success) {
+      const label = isRecord(value) && typeof value.name === 'string' ? `"${value.name}"` : `#${index + 1}`;
+      warnings.push(`Layer ${label} was skipped (${describeIssue(result.error)}).`);
+      return;
+    }
+    frames.push(migrateFrame(result.data as MediaFrame, version));
+  });
+  return showFromFrames(emptyShow(), frames);
+};
+
+/** Format 5: surfaces + layers + columns, each entry validated on its own. */
+const parseShow = (raw: Record<string, unknown>, warnings: string[]): ShowDocument => {
+  const columns: Column[] = [];
+  if (Array.isArray(raw.columns)) {
+    for (const value of raw.columns) {
+      const result = ColumnSchema.safeParse(value);
+      if (result.success) columns.push(result.data);
+    }
+  }
+  if (columns.length === 0) columns.push(...createColumns());
+
+  const layers: Layer[] = [];
+  for (const value of Array.isArray(raw.layers) ? raw.layers : []) {
+    const result = LayerSchema.safeParse(value);
+    if (!result.success) {
+      warnings.push(`A layer was skipped (${describeIssue(result.error)}).`);
+      continue;
+    }
+    const { slots: rawSlots, ...layer } = result.data;
+    const slots: (Clip | null)[] = rawSlots.map(slot => {
+      if (slot === null || slot === undefined) return null;
+      const clip = ClipSchema.safeParse(slot);
+      if (clip.success) return clip.data;
+      warnings.push(`A clip in "${layer.name}" was skipped (${describeIssue(clip.error)}).`);
+      return null;
+    });
+    while (slots.length < columns.length) slots.push(null);
+    const activeClipId = slots.some(c => c?.id === layer.activeClipId) ? layer.activeClipId : null;
+    layers.push({ ...layer, slots, activeClipId });
+  }
+
+  const layerIds = new Set(layers.map(l => l.id));
+  const surfaces: Surface[] = [];
+  (Array.isArray(raw.surfaces) ? raw.surfaces : []).forEach((value, index) => {
+    const result = SurfaceSchema.safeParse(value);
+    if (!result.success) {
+      const label = isRecord(value) && typeof value.name === 'string' ? `"${value.name}"` : `#${index + 1}`;
+      warnings.push(`Surface ${label} was skipped (${describeIssue(result.error)}).`);
+      return;
+    }
+    const surface = result.data;
+    // Keep the mapping even if its layer is gone: give it an empty layer
+    if (!layerIds.has(surface.layerId)) {
+      warnings.push(`Surface "${surface.name ?? surface.id}" lost its layer; an empty one was created.`);
+      layers.push({ id: surface.layerId, name: surface.name ?? 'Layer', opacity: 1, blendMode: 'normal', slots: columns.map(() => null), activeClipId: null });
+      layerIds.add(surface.layerId);
+    }
+    surfaces.push(surface);
+  });
+
+  return { surfaces, layers, columns };
+};
+
 export const parseProjectData = (raw: unknown): ParsedProject => {
-  if (!isRecord(raw) || !Array.isArray(raw.frames)) {
+  const isShow = isRecord(raw) && (Array.isArray(raw.surfaces) || Array.isArray(raw.layers));
+  if (!isRecord(raw) || (!isShow && !Array.isArray(raw.frames))) {
     throw new Error('Invalid project file format');
   }
   const warnings: string[] = [];
@@ -203,16 +342,10 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
     warnings.push(`Saved by a newer version (${version}); unknown settings were ignored.`);
   }
 
-  const frames: MediaFrame[] = [];
-  raw.frames.forEach((value, index) => {
-    const result = FrameSchema.safeParse(value);
-    if (!result.success) {
-      const label = isRecord(value) && typeof value.name === 'string' ? `"${value.name}"` : `#${index + 1}`;
-      warnings.push(`Layer ${label} was skipped (${describeIssue(result.error)}).`);
-      return;
-    }
-    frames.push(migrateFrame(result.data as MediaFrame, version));
-  });
+  const show = isShow
+    ? parseShow(raw, warnings)
+    : parseLegacyFrames(raw.frames as unknown[], version, warnings);
+  const frames = framesFromShow(show);
 
   let background = DEFAULT_BACKGROUND;
   if (raw.background !== undefined) {
@@ -253,5 +386,5 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
 
-  return { frames, background, grid, composition, media, mediaFiles, name, warnings };
+  return { ...show, frames, background, grid, composition, media, mediaFiles, name, warnings };
 };
