@@ -11,19 +11,18 @@ import { BackgroundSettingsPanel } from './BackgroundSettings';
 import { TestCard } from './TestCard';
 import { UpdatePrompt } from './UpdatePrompt';
 import { BackgroundLayer, GridOverlay } from './StageLayers';
-import {
-  saveProject, loadProject, exportProject, importProject, generateFrameId,
-  type LoadedProject,
-} from '../lib/storage';
-import { storeMedia, resolveMediaUrls, exportMediaRecords, importMediaRecords, getMediaObjectUrl } from '../lib/mediaStorage';
+import { generateFrameId } from '../lib/storage';
+import { storeMedia, getMediaObjectUrl } from '../lib/mediaStorage';
 import { dedupePolygon, getFrameCompOutline, rotateVector } from '../lib/geometry';
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { projectHistory } from '../state/history';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { startControlSync, useOutputStatus } from '../output/controlSync';
+import { useProjectSession } from '../state/useProjectSession';
+import { ProjectsPanel } from './ProjectsPanel';
 
 // Store actions are stable for the app's lifetime
-const { setFrames, updateFrame, setBackground, setGrid, setComposition, replaceDocument } = projectStore.getState();
+const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
 const { setMasterOpacity, setBlackout, setShowTestCard, sendPlayback } = liveStore.getState();
 
 // State for polygon drawing (click to add vertices)
@@ -158,13 +157,11 @@ export const Canvas: React.FC = () => {
   const blackout = useLiveStore(s => s.blackout);
   const showTestCard = useLiveStore(s => s.showTestCard);
   const playback = useLiveStore(s => s.playback);
-  // Last autosave failure (e.g. storage full) — shown until the next success
-  const [autosaveError, setAutosaveError] = useState<string | null>(null);
-  // What loading the stored project skipped or repaired (dismissable)
-  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
-  // Guards auto-save so an empty initial state doesn't overwrite the stored
-  // project before it has been loaded
-  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+  const [isProjectsOpen, setIsProjectsOpen] = useState(false);
+  // Open project, autosave, versions, import/export (see useProjectSession)
+  const clearSelection = useCallback(() => setSelectedFrameIds([]), []);
+  const session = useProjectSession(clearSelection);
+  const { saveVersion, exportJson, exportPackage, importFile } = session;
   // Viewport (editor window) size — drives the letterboxed stage transform
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
 
@@ -257,75 +254,6 @@ export const Canvas: React.FC = () => {
   // ------------------------------------------------------------------
   // Project load / save
   // ------------------------------------------------------------------
-
-  // Resolve mediaId references to fresh blob URLs and apply project state.
-  // Shared by initial load and project import.
-  const applyProject = useCallback(async ({ frames: newFrames, background: newBackground, grid: newGrid, composition: newComposition }: LoadedProject) => {
-    const mediaIds = [
-      ...newFrames.filter(f => f.mediaId).map(f => f.mediaId!),
-      ...(newBackground.mediaId ? [newBackground.mediaId] : []),
-    ];
-
-    let resolvedFrames = newFrames;
-    let resolvedBackground = newBackground;
-    if (mediaIds.length > 0) {
-      try {
-        const urlMap = await resolveMediaUrls(mediaIds);
-        resolvedFrames = newFrames.map(frame =>
-          frame.mediaId && urlMap.has(frame.mediaId)
-            ? { ...frame, url: urlMap.get(frame.mediaId)! }
-            : frame
-        );
-        if (newBackground.mediaId && urlMap.has(newBackground.mediaId)) {
-          resolvedBackground = { ...newBackground, url: urlMap.get(newBackground.mediaId) };
-        }
-      } catch (error) {
-        console.error('Failed to resolve media URLs:', error);
-      }
-    }
-
-    replaceDocument({
-      frames: resolvedFrames,
-      background: resolvedBackground,
-      grid: newGrid,
-      composition: newComposition,
-    });
-    setSelectedFrameIds([]);
-  }, []);
-
-  // Load project on mount
-  useEffect(() => {
-    const load = async () => {
-      const savedProject = loadProject();
-      if (savedProject) {
-        await applyProject(savedProject);
-        if (savedProject.warnings.length > 0) {
-          console.warn('Project loaded with warnings:', savedProject.warnings);
-          setLoadWarnings(savedProject.warnings);
-        }
-      }
-      // Undo history starts from the loaded project
-      projectHistory.reset();
-      setIsProjectLoaded(true);
-    };
-    load();
-  }, [applyProject]);
-
-  // Auto-save (debounced). Waits for the initial load so the empty first
-  // render doesn't overwrite the stored project, then persists every change —
-  // including deleting the last frame.
-  useEffect(() => {
-    if (!isProjectLoaded) return;
-    const timer = setTimeout(() => {
-      try {
-        saveProject(frames, background, grid, composition);
-        setAutosaveError(null);
-      } catch (error) {
-        setAutosaveError((error as Error).message);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [frames, background, grid, composition, isProjectLoaded]);
 
   // ------------------------------------------------------------------
   // Undo / redo (see state/history.ts) — drops selection entries that no
@@ -497,6 +425,13 @@ export const Canvas: React.FC = () => {
 
       const hasSelection = selectedFrameIds.length > 0;
 
+      // Save a version
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        void saveVersion();
+        return;
+      }
+
       // Undo / redo
       if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
@@ -587,7 +522,7 @@ export const Canvas: React.FC = () => {
   }, [
     isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen,
     selectedFrameIds, frames, grid.snap, grid.size,
-    deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo,
+    deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo, saveVersion,
     togglePresentationMode, toggleFullscreen,
   ]);
 
@@ -1151,51 +1086,22 @@ export const Canvas: React.FC = () => {
     }
   }, [isDrawMode, drawShape]);
 
-  const handleSave = useCallback(() => {
+  const handleExportPackage = useCallback(async () => {
     try {
-      saveProject(frames, background, grid, composition);
-      setAutosaveError(null);
-      alert('Project saved!');
+      await exportPackage();
     } catch (error) {
-      alert((error as Error).message);
+      alert('Failed to export the project package: ' + (error as Error).message);
     }
-  }, [frames, background, grid, composition]);
+  }, [exportPackage]);
 
-  const handleExport = useCallback(() => {
-    exportProject(frames, background, grid, composition);
-  }, [frames, background, grid, composition]);
-
-  // Export with all referenced media embedded (base64) — portable but large
-  const handleExportWithMedia = useCallback(async () => {
-    try {
-      const mediaIds = [
-        ...frames.filter(f => f.mediaId).map(f => f.mediaId!),
-        ...(background.mediaId ? [background.mediaId] : []),
-      ];
-      const records = await exportMediaRecords(mediaIds);
-      exportProject(frames, background, grid, composition, records);
-    } catch (error) {
-      alert('Failed to export with media: ' + (error as Error).message);
-    }
-  }, [frames, background, grid, composition]);
-
+  // Imports always become a new project — the open one is never overwritten
   const handleImport = useCallback(async (file: File) => {
     try {
-      const imported = await importProject(file);
-      // Restore embedded media (if the file carries it) before resolving
-      if (imported.media && imported.media.length > 0) {
-        await importMediaRecords(imported.media);
-      }
-      // Resolve mediaId references against the local media library so
-      // imported frames show their media without a page reload
-      await applyProject(imported);
-      alert(imported.warnings.length > 0
-        ? `Project imported with ${imported.warnings.length} warning(s):\n\n${imported.warnings.join('\n')}`
-        : 'Project imported successfully!');
+      await importFile(file);
     } catch (error) {
       alert('Failed to import project: ' + (error as Error).message);
     }
-  }, [applyProject]);
+  }, [importFile]);
 
   // ------------------------------------------------------------------
   // Render
@@ -1233,23 +1139,28 @@ export const Canvas: React.FC = () => {
         style={{ display: isPresentationMode ? 'none' : undefined }}
       >
         <UpdatePrompt />
-        {loadWarnings.length > 0 && (
-          <div className="flex items-start gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm max-w-xl">
-            <div>
-              <p>The saved project was repaired while loading:</p>
-              <ul className="list-disc pl-4 text-xs text-white/80 mt-1">
-                {loadWarnings.slice(0, 5).map((warning, i) => <li key={i}>{warning}</li>)}
-                {loadWarnings.length > 5 && <li>…and {loadWarnings.length - 5} more (see console)</li>}
-              </ul>
-            </div>
-            <button onClick={() => setLoadWarnings([])} className="text-white/70 hover:text-white">Dismiss</button>
+        {session.notice && (
+          <div className="bg-black/85 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+            {session.notice}
           </div>
         )}
-        {autosaveError && (
+        {session.loadWarnings.length > 0 && (
+          <div className="flex items-start gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm max-w-xl">
+            <div>
+              <p>The project was repaired while opening:</p>
+              <ul className="list-disc pl-4 text-xs text-white/80 mt-1">
+                {session.loadWarnings.slice(0, 5).map((warning, i) => <li key={i}>{warning}</li>)}
+                {session.loadWarnings.length > 5 && <li>…and {session.loadWarnings.length - 5} more (see console)</li>}
+              </ul>
+            </div>
+            <button onClick={session.dismissLoadWarnings} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
+        {session.autosaveError && (
           <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
-            <span>Autosave failed: {autosaveError}</span>
-            <button onClick={handleExport} className="underline whitespace-nowrap">Export project</button>
-            <button onClick={() => setAutosaveError(null)} className="text-white/70 hover:text-white">Dismiss</button>
+            <span>Autosave failed: {session.autosaveError}</span>
+            <button onClick={exportJson} className="underline whitespace-nowrap">Export project</button>
+            <button onClick={session.dismissAutosaveError} className="text-white/70 hover:text-white">Dismiss</button>
           </div>
         )}
       </div>
@@ -1257,9 +1168,11 @@ export const Canvas: React.FC = () => {
       {!isPresentationMode && (
         <ControlPanel
           onAddUrl={handleAddUrl}
-          onSave={handleSave}
-          onExport={handleExport}
-          onExportWithMedia={handleExportWithMedia}
+          projectName={session.project?.name ?? '…'}
+          onOpenProjects={() => setIsProjectsOpen(true)}
+          onSaveVersion={saveVersion}
+          onExport={exportJson}
+          onExportPackage={handleExportPackage}
           onImport={handleImport}
           onDrawMode={handleDrawMode}
           isDrawMode={isDrawMode}
@@ -1307,6 +1220,8 @@ export const Canvas: React.FC = () => {
         onSelectMedia={handleSelectMedia}
         getMediaUsage={getMediaUsage}
       />
+
+      <ProjectsPanel isOpen={isProjectsOpen} onClose={() => setIsProjectsOpen(false)} session={session} />
 
       {/* Background Settings Panel */}
       <BackgroundSettingsPanel

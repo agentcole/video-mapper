@@ -106,6 +106,17 @@ const CompositionSchema = z.object({
   height: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.height),
 });
 
+// Media files stored next to project.json in a project package (zip)
+const PackageMediaSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  type: z.enum(['video', 'image']),
+  mimeType: z.string(),
+  path: z.string().min(1),
+});
+
+export type PackageMediaEntry = z.infer<typeof PackageMediaSchema>;
+
 const MediaRecordSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -119,7 +130,9 @@ export interface ParsedProject {
   background: BackgroundSettings;
   grid: GridSettings;
   composition: CompositionSettings;
-  media?: ExportedMediaRecord[];
+  media?: ExportedMediaRecord[]; // legacy: base64-embedded media
+  mediaFiles?: PackageMediaEntry[]; // project packages: media files in the zip
+  name?: string; // project name stored in exported files
   // Human-readable notes about what was skipped or repaired
   warnings: string[];
 }
@@ -228,5 +241,17 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
     }
   }
 
-  return { frames, background, grid, composition, media, warnings };
+  let mediaFiles: PackageMediaEntry[] | undefined;
+  if (Array.isArray(raw.mediaFiles)) {
+    mediaFiles = [];
+    for (const value of raw.mediaFiles) {
+      const result = PackageMediaSchema.safeParse(value);
+      if (result.success) mediaFiles.push(result.data);
+      else warnings.push('A packaged media file was skipped (unreadable entry).');
+    }
+  }
+
+  const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
+
+  return { frames, background, grid, composition, media, mediaFiles, name, warnings };
 };

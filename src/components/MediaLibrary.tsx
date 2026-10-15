@@ -8,7 +8,6 @@ import {
   getStorageStats,
   formatBytes,
   MAX_FILE_SIZE,
-  MAX_TOTAL_SIZE,
 } from '../lib/mediaStorage';
 import {
   X,
@@ -21,6 +20,8 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { Button } from './ui/button';
+import { FolderBrowser } from './FolderBrowser';
+import { supportsLinkedFolders } from '../lib/mediaFolders';
 
 interface MediaLibraryProps {
   isOpen: boolean;
@@ -39,8 +40,12 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [totalSize, setTotalSize] = useState(0);
+  const [maxSize, setMaxSize] = useState(0);
   const [mediaCount, setMediaCount] = useState(0);
   const [filter, setFilter] = useState<'all' | 'video' | 'image'>('all');
+  // Library = copies in browser storage; folders = files played from disk
+  const [source, setSource] = useState<'library' | 'folders'>('library');
+  const canLinkFolders = supportsLinkedFolders();
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +57,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
       setMediaList(media.sort((a, b) => b.dateAdded - a.dateAdded));
       const stats = await getStorageStats();
       setTotalSize(stats.totalSize);
+      setMaxSize(stats.maxSize);
       setMediaCount(stats.count);
     } catch (err) {
       setError('Failed to load media library');
@@ -149,7 +155,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
     return m.type === filter;
   });
 
-  const storagePercentage = (totalSize / MAX_TOTAL_SIZE) * 100;
+  const storagePercentage = maxSize > 0 ? (totalSize / maxSize) * 100 : 0;
 
   if (!isOpen) return null;
 
@@ -176,7 +182,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
             <div className="flex items-center gap-2">
               <HardDrive className="w-4 h-4" />
               <span>
-                {formatBytes(totalSize)} / {formatBytes(MAX_TOTAL_SIZE)} used ({mediaCount} files)
+                {formatBytes(totalSize)} of {formatBytes(maxSize)} browser storage ({mediaCount} files)
               </span>
             </div>
             <span className="text-xs">Max file: {formatBytes(MAX_FILE_SIZE)}</span>
@@ -198,6 +204,23 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
         {/* Toolbar */}
         <div className="flex items-center justify-between p-3 border-b border-slate-700">
           <div className="flex gap-2">
+            {canLinkFolders && (
+              <div className="flex rounded-md overflow-hidden border border-slate-600 mr-2">
+                <button
+                  onClick={() => setSource('library')}
+                  className={`px-3 text-sm ${source === 'library' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                >
+                  Library
+                </button>
+                <button
+                  onClick={() => setSource('folders')}
+                  className={`px-3 text-sm ${source === 'folders' ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-700'}`}
+                  title="Play files straight from a folder on disk"
+                >
+                  Folders
+                </button>
+              </div>
+            )}
             <Button
               variant={filter === 'all' ? 'default' : 'outline'}
               size="sm"
@@ -222,7 +245,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
               Images
             </Button>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2" style={{ display: source === 'folders' ? 'none' : undefined }}>
             <Button
               variant="outline"
               size="sm"
@@ -274,7 +297,9 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
           onDragLeave={() => setDragOver(false)}
           onDrop={handleDrop}
         >
-          {loading ? (
+          {source === 'folders' ? (
+            <FolderBrowser filter={filter} onSelect={handleSelect} />
+          ) : loading ? (
             <div className="flex items-center justify-center h-full text-slate-400">
               <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full" />
             </div>

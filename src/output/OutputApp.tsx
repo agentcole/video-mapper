@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
-import { loadProject } from '../lib/storage';
+import { getCurrentProjectId, getProject } from '../lib/projectRepository';
+import { parseProjectData } from '../lib/projectSchema';
 import { resolveMediaUrls } from '../lib/mediaStorage';
 import { FrameContent } from '../components/FrameContent';
 import { BackgroundLayer, GridOverlay } from '../components/StageLayers';
@@ -12,6 +13,7 @@ import { OUTPUT_CHANNEL, HEARTBEAT_INTERVAL_MS, type OutputMessage } from './pro
 // Output window: the composition only — no editor UI, ever. It mirrors the
 // editor over a BroadcastChannel, and starts from the autosaved project so it
 // also works on its own (or keeps the last picture if the editor goes away).
+// It starts from the editor's open project as last saved.
 // ---------------------------------------------------------------------------
 
 const CURSOR_IDLE_MS = 2000;
@@ -19,10 +21,17 @@ const HINT_MS = 5000;
 
 const useOutputSync = () => {
   useEffect(() => {
-    const saved = loadProject();
-    if (saved) {
-      const { frames, background, grid, composition } = saved;
-      projectStore.getState().replaceDocument({ frames, background, grid, composition });
+    // Live state from the editor always wins over the saved project
+    let receivedLiveState = false;
+    const projectId = getCurrentProjectId();
+    if (projectId) {
+      getProject(projectId)
+        .then(record => {
+          if (receivedLiveState || record?.data == null) return;
+          const { frames, background, grid, composition } = parseProjectData(record.data);
+          projectStore.getState().replaceDocument({ frames, background, grid, composition });
+        })
+        .catch(error => console.warn('Could not load the saved project for the output:', error));
     }
     if (typeof BroadcastChannel === 'undefined') return;
 
@@ -33,6 +42,7 @@ const useOutputSync = () => {
     channel.onmessage = (event: MessageEvent<OutputMessage>) => {
       const message = event.data;
       if (message.type === 'state') {
+        receivedLiveState = true;
         projectStore.getState().replaceDocument(message.snapshot.doc);
         liveStore.setState(message.snapshot.live);
       } else if (message.type === 'control-ready') {

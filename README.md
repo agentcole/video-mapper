@@ -10,9 +10,10 @@ A high-performance web-based video mapping application built with React, TypeScr
 - **Multiple Media Types**: Support for both videos and images
 - **Persistent Media Library**:
   - Media files are stored in browser IndexedDB (persists across sessions)
-  - 50MB per file limit, 500MB total storage
+  - Up to 2 GB per file; the total is limited by the browser's storage quota
   - Thumbnail previews for all media
   - Filter by video/image type
+- **Linked media folders** (Chromium): play files straight from a folder on disk — nothing is copied, no size limit; one click reconnects the folder after a browser restart
 - **Flexible Input Methods**:
   - Draw frames directly on canvas (rectangle, circle, or polygon shapes)
   - Add media via URL input
@@ -46,15 +47,16 @@ A high-performance web-based video mapping application built with React, TypeScr
   - Settings panel with all adjustments
 
 ### 💾 Project Management
-- **Auto-save**: Automatic saving to localStorage (one project slot); a failed save (e.g. storage full) shows a notice with an export shortcut
-- **Manual Save**: Save current project state
-- **Export**: Download project as JSON file (optionally with embedded media)
-- **Import**: Load previously exported projects; older formats are migrated on load
+- **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
+- **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
+- **Versions**: kept automatically every 5 minutes while you work, plus on demand (*Version* button or **Cmd/Ctrl+S**); restoring keeps the current state as a version first and can be undone
+- **Export**: the project file (JSON, media referenced by id) or a portable **package** (zip with project.json and every media file)
+- **Import**: project files and packages always open as a *new* project — the open one is never overwritten; broken layers are skipped and reported
 
 ### 📱 Progressive Web App (PWA)
 - **Offline Support**: Works without internet connection
 - **Installable**: Can be installed as a desktop/mobile app
-- **Persistent Storage**: Media persists in IndexedDB (persistent storage is requested on the first upload), projects in localStorage
+- **Persistent Storage**: Media and projects persist in IndexedDB (persistent storage is requested on the first upload)
 - **Fast Loading**: Service Worker caching for instant loads
 - **Show-safe updates**: a new version is offered as a small notice in the editor — never a blocking dialog or an automatic reload, and never on the output
 
@@ -257,8 +259,11 @@ src/
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
 ├── lib/
 │   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
-│   ├── storage.ts           # Project persistence + migrations (+ tests)
-│   ├── mediaStorage.ts      # IndexedDB media management
+│   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
+│   ├── projectRepository.ts # Projects + versions in IndexedDB (+ tests)
+│   ├── storage.ts           # Serialization, JSON export, zip packages, import (+ tests)
+│   ├── mediaStorage.ts      # IndexedDB media library
+│   ├── mediaFolders.ts      # Linked media folders (File System Access)
 │   └── utils.ts
 ├── types.ts                 # TypeScript type definitions
 ├── App.tsx                  # Root component
