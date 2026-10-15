@@ -1,6 +1,6 @@
 import { createStore, useStore, type StoreApi } from 'zustand';
 import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings } from '../types';
-import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from '../lib/storage';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from '../lib/defaults';
 
 // ---------------------------------------------------------------------------
 // Project store — the document being edited (frames, background, grid,

@@ -158,6 +158,8 @@ export const Canvas: React.FC = () => {
   const playback = useLiveStore(s => s.playback);
   // Last autosave failure (e.g. storage full) — shown until the next success
   const [autosaveError, setAutosaveError] = useState<string | null>(null);
+  // What loading the stored project skipped or repaired (dismissable)
+  const [loadWarnings, setLoadWarnings] = useState<string[]>([]);
   // Guards auto-save so an empty initial state doesn't overwrite the stored
   // project before it has been loaded
   const [isProjectLoaded, setIsProjectLoaded] = useState(false);
@@ -296,6 +298,10 @@ export const Canvas: React.FC = () => {
       const savedProject = loadProject();
       if (savedProject) {
         await applyProject(savedProject);
+        if (savedProject.warnings.length > 0) {
+          console.warn('Project loaded with warnings:', savedProject.warnings);
+          setLoadWarnings(savedProject.warnings);
+        }
       }
       // Undo history starts from the loaded project
       projectHistory.reset();
@@ -1179,7 +1185,9 @@ export const Canvas: React.FC = () => {
       // Resolve mediaId references against the local media library so
       // imported frames show their media without a page reload
       await applyProject(imported);
-      alert('Project imported successfully!');
+      alert(imported.warnings.length > 0
+        ? `Project imported with ${imported.warnings.length} warning(s):\n\n${imported.warnings.join('\n')}`
+        : 'Project imported successfully!');
     } catch (error) {
       alert('Failed to import project: ' + (error as Error).message);
     }
@@ -1221,6 +1229,18 @@ export const Canvas: React.FC = () => {
         style={{ display: isPresentationMode ? 'none' : undefined }}
       >
         <UpdatePrompt />
+        {loadWarnings.length > 0 && (
+          <div className="flex items-start gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm max-w-xl">
+            <div>
+              <p>The saved project was repaired while loading:</p>
+              <ul className="list-disc pl-4 text-xs text-white/80 mt-1">
+                {loadWarnings.slice(0, 5).map((warning, i) => <li key={i}>{warning}</li>)}
+                {loadWarnings.length > 5 && <li>…and {loadWarnings.length - 5} more (see console)</li>}
+              </ul>
+            </div>
+            <button onClick={() => setLoadWarnings([])} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
         {autosaveError && (
           <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
             <span>Autosave failed: {autosaveError}</span>

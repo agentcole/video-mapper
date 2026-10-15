@@ -1,25 +1,12 @@
 import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord } from '../types';
-import { pinFrameToQuadVertices } from './geometry';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from './defaults';
+import { parseProjectData, PROJECT_VERSION, type ParsedProject } from './projectSchema';
+
+export { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION };
 
 const STORAGE_KEY = 'video-mapper-project';
-const VERSION = '4.1.0'; // Bumped for the single-homography warp model
-
-export const DEFAULT_BACKGROUND: BackgroundSettings = {
-  type: 'color',
-  color: '#1e293b', // slate-800
-};
-
-export const DEFAULT_GRID: GridSettings = {
-  show: false,
-  snap: false,
-  size: 32,
-  showInPresentation: false,
-};
-
-export const DEFAULT_COMPOSITION: CompositionSettings = {
-  width: 1920,
-  height: 1080,
-};
+// Unreadable autosaves are moved here instead of being overwritten
+const CORRUPT_BACKUP_PREFIX = 'video-mapper-project-unreadable-';
 
 // Prepare frames for storage - remove temporary blob URLs
 const prepareFramesForStorage = (frames: MediaFrame[]): MediaFrame[] => {
@@ -46,41 +33,6 @@ const prepareBackgroundForStorage = (bg: BackgroundSettings): BackgroundSettings
   return stored;
 };
 
-const DEFAULT_PERSPECTIVE_CORNERS = {
-  tl: { x: 0, y: 0 },
-  tr: { x: 0, y: 0 },
-  br: { x: 0, y: 0 },
-  bl: { x: 0, y: 0 },
-};
-
-// Migrate old frame format to new format
-export const migrateFrame = (frame: MediaFrame): MediaFrame => {
-  const migrated: MediaFrame = {
-    ...frame,
-    // Add defaults for new properties if missing
-    textureMode: frame.textureMode || 'clip',
-    vertices: frame.vertices,
-    mediaId: frame.mediaId,
-    contentScale: frame.contentScale ?? 1,
-    contentOffsetX: frame.contentOffsetX ?? 0,
-    contentOffsetY: frame.contentOffsetY ?? 0,
-    perspectiveMode: frame.perspectiveMode ?? false,
-    perspectiveCorners: frame.perspectiveCorners ?? DEFAULT_PERSPECTIVE_CORNERS,
-    visible: frame.visible ?? true,
-    testPattern: frame.testPattern ?? false,
-    softEdge: frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 },
-  };
-
-  // The old "warp" texture mode stretched media onto a 4-vertex polygon with
-  // a second homography. It is now a corner-pinned rectangle whose pins sit
-  // on those vertices (one homography per frame); anything else just clips.
-  if (migrated.textureMode === 'warp') {
-    const pinned = migrated.shape === 'polygon' ? pinFrameToQuadVertices(migrated) : null;
-    return pinned ? { ...migrated, ...pinned } : { ...migrated, textureMode: 'clip' };
-  }
-  return migrated;
-};
-
 export const saveProject = (
   frames: MediaFrame[],
   background?: BackgroundSettings,
@@ -94,7 +46,7 @@ export const saveProject = (
       background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
       grid: grid || DEFAULT_GRID,
       composition: composition || DEFAULT_COMPOSITION,
-      version: VERSION,
+      version: PROJECT_VERSION,
       timestamp: new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projectData));
@@ -107,32 +59,24 @@ export const saveProject = (
   }
 };
 
-export interface LoadedProject {
-  frames: MediaFrame[];
-  background: BackgroundSettings;
-  grid: GridSettings;
-  composition: CompositionSettings;
-  // Present when the project file embeds its media (export-with-media)
-  media?: ExportedMediaRecord[];
-}
+// A validated, migrated project (see projectSchema.ts)
+export type LoadedProject = ParsedProject;
 
 export const loadProject = (): LoadedProject | null => {
+  const data = localStorage.getItem(STORAGE_KEY);
+  if (!data) return null;
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    if (!data) return null;
-
-    const projectData = JSON.parse(data);
-    if (!projectData.frames) return null;
-
-    // Migrate frames to ensure they have all new properties
-    return {
-      frames: projectData.frames.map(migrateFrame),
-      background: projectData.background || DEFAULT_BACKGROUND,
-      grid: { ...DEFAULT_GRID, ...projectData.grid },
-      composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
-    };
+    // Autosaves never embed media
+    return { ...parseProjectData(JSON.parse(data)), media: undefined };
   } catch (error) {
-    console.error('Failed to load project:', error);
+    // Keep the unreadable data instead of letting the next autosave
+    // overwrite it — it may still be recoverable by hand
+    console.error('Failed to load project; keeping a backup of the stored data:', error);
+    try {
+      localStorage.setItem(`${CORRUPT_BACKUP_PREFIX}${Date.now()}`, data);
+    } catch {
+      // storage full — nothing more we can do here
+    }
     return null;
   }
 };
@@ -153,7 +97,7 @@ export const exportProject = (
       grid: grid || DEFAULT_GRID,
       composition: composition || DEFAULT_COMPOSITION,
       ...(embeddedMedia && embeddedMedia.length > 0 ? { media: embeddedMedia } : {}),
-      version: VERSION,
+      version: PROJECT_VERSION,
       timestamp: new Date().toISOString(),
     };
     
@@ -180,25 +124,17 @@ export const importProject = (file: File): Promise<LoadedProject> => {
     const reader = new FileReader();
     
     reader.onload = (e) => {
+      let projectData: unknown;
       try {
-        const content = e.target?.result as string;
-        const projectData = JSON.parse(content);
-        
-        if (!projectData.frames || !Array.isArray(projectData.frames)) {
-          reject(new Error('Invalid project file format'));
-          return;
-        }
-        
-        // Migrate frames to ensure they have all new properties
-        resolve({
-          frames: projectData.frames.map(migrateFrame),
-          background: projectData.background || DEFAULT_BACKGROUND,
-          grid: { ...DEFAULT_GRID, ...projectData.grid },
-          composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
-          media: Array.isArray(projectData.media) ? projectData.media : undefined,
-        });
+        projectData = JSON.parse(e.target?.result as string);
       } catch {
         reject(new Error('Failed to parse project file'));
+        return;
+      }
+      try {
+        resolve(parseProjectData(projectData));
+      } catch (error) {
+        reject(error);
       }
     };
     
