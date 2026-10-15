@@ -15,7 +15,7 @@ export const OUTPUT_QUERY_PARAM = 'output';
 export const HEARTBEAT_INTERVAL_MS = 2000;
 export const HEARTBEAT_TIMEOUT_MS = 6000;
 
-export type LiveSnapshot = Pick<LiveState, 'masterOpacity' | 'blackout' | 'showTestCard' | 'playback'>;
+export type LiveSnapshot = Pick<LiveState, 'masterOpacity' | 'blackout' | 'showTestCard' | 'playback' | 'renderer'>;
 
 export interface OutputSnapshot {
   // Frames/background with a mediaId carry no URL: blob URLs belong to the

@@ -1,4 +1,5 @@
 import { createStore, useStore } from 'zustand';
+import type { RendererKind } from '../render/types';
 
 // ---------------------------------------------------------------------------
 // Live output controls — show state, not part of the project document:
@@ -8,6 +9,16 @@ import { createStore, useStore } from 'zustand';
 
 export type PlaybackCommand = 'play' | 'pause';
 
+const RENDERER_KEY = 'video-mapper-renderer';
+
+const storedRenderer = (): RendererKind => {
+  try {
+    return localStorage.getItem(RENDERER_KEY) === 'gpu' ? 'gpu' : 'css';
+  } catch {
+    return 'css';
+  }
+};
+
 export interface LiveState {
   masterOpacity: number;
   blackout: boolean;
@@ -15,6 +26,9 @@ export interface LiveState {
   // Transport as an event: `seq` increases with every command so the same
   // command can be sent twice in a row
   playback: { command: PlaybackCommand | null; seq: number };
+  // Content renderer: DOM/CSS or the WebGL2 compositor (beta) — per machine
+  renderer: RendererKind;
+  setRenderer: (renderer: RendererKind) => void;
   setMasterOpacity: (value: number) => void;
   setBlackout: (value: boolean | ((prev: boolean) => boolean)) => void;
   setShowTestCard: (value: boolean | ((prev: boolean) => boolean)) => void;
@@ -26,6 +40,15 @@ export const liveStore = createStore<LiveState>()((set) => ({
   blackout: false,
   showTestCard: false,
   playback: { command: null, seq: 0 },
+  renderer: storedRenderer(),
+  setRenderer: (renderer) => {
+    try {
+      localStorage.setItem(RENDERER_KEY, renderer);
+    } catch {
+      // not persisted — still applies for this session
+    }
+    set({ renderer });
+  },
   setMasterOpacity: (value) => set({ masterOpacity: Math.max(0, Math.min(1, value)) }),
   setBlackout: (value) => set(s => ({ blackout: typeof value === 'function' ? value(s.blackout) : value })),
   setShowTestCard: (value) => set(s => ({ showTestCard: typeof value === 'function' ? value(s.showTestCard) : value })),

@@ -22,7 +22,7 @@ The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) w
 - [x] 1.6 Video benchmark page (`?benchmark`) — still needs real runs on show hardware: in the automated test browser rAF fell to ~35 fps as soon as 2 videos played, independent of codec and CSS warp (likely an artifact of that browser instance, unconfirmed)
 - [ ] 1.3 Data model: surfaces/slices (stage) + layers with clip slots (show) — needs a product decision
 - [x] 1.4 Project management: multiple projects + versions in IndexedDB (legacy slot migrated), import always creates a new project, zip packages, linked media folders (Chromium, not yet clicked through in a real browser — the folder picker can't be automated), storage limits from the browser quota
-- [ ] 1.5 Renderer abstraction + GPU renderer (WebGPU / WebGL2) at parity
+- [x] 1.5 Renderer abstraction + GPU renderer: WebGL2 compositor at parity behind the renderer switch (editor + output), context-loss recovery, CSS fallback. Chose raw WebGL2 over three.js/WebGPU: ISF effects (GLSL) run natively, works where WebGPU is missing, no 600 KB dependency. Open: WebGPU backend (zero-copy video) if the benchmark shows upload costs matter; mesh warp (3.2) builds on this compositor
 
 ## Next candidates (see the roadmap report, Phase 1+)
 - WebGL compositor behind a renderer abstraction — unlocks true mesh warp (beyond 4 corners), GPU soft-edge blending, and output to multiple displays. The current CSS renderer covers projective quads only.

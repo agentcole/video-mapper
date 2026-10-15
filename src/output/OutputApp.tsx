@@ -7,6 +7,7 @@ import { resolveMediaUrls } from '../lib/mediaStorage';
 import { FrameContent } from '../components/FrameContent';
 import { BackgroundLayer, GridOverlay } from '../components/StageLayers';
 import { TestCard } from '../components/TestCard';
+import { GpuStage } from '../render/GpuStage';
 import { OUTPUT_CHANNEL, HEARTBEAT_INTERVAL_MS, type OutputMessage } from './protocol';
 
 // ---------------------------------------------------------------------------
@@ -117,6 +118,9 @@ export const OutputApp: React.FC = () => {
   const blackout = useLiveStore(s => s.blackout);
   const showTestCard = useLiveStore(s => s.showTestCard);
   const playback = useLiveStore(s => s.playback);
+  const renderer = useLiveStore(s => s.renderer);
+  const [gpuFailed, setGpuFailed] = useState(false);
+  const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
 
   const mediaIds = [...frames.map(f => f.mediaId), background.mediaId]
@@ -204,24 +208,44 @@ export const OutputApp: React.FC = () => {
           transformOrigin: '0 0',
         }}
       >
-        <div className="absolute inset-0" style={{ opacity: masterOpacity }}>
-          <BackgroundLayer
-            background={background}
-            url={urlOf(background)}
-            outputGain={outputGain}
-            playback={playback}
+        {useGpu ? (
+          <GpuStage
+            scene={{
+              frames: frames.filter(f => f.visible !== false).map(f => ({ ...f, url: urlOf(f) })),
+              background: { ...background, url: urlOf(background) },
+              composition,
+              masterOpacity,
+              outputGain,
+              playback,
+              showPlaceholders: false,
+            }}
+            pixelsPerUnit={scale * window.devicePixelRatio}
+            onUnavailable={(reason) => {
+              // Never leave the projector black: fall back to the CSS renderer
+              console.error(`${reason} — output falls back to the CSS renderer`);
+              setGpuFailed(true);
+            }}
           />
-          {frames.filter(f => f.visible !== false).map(frame => (
-            <FrameContent
-              key={frame.id}
-              frame={frame}
-              url={urlOf(frame)}
-              playback={playback}
+        ) : (
+          <div className="absolute inset-0" style={{ opacity: masterOpacity }}>
+            <BackgroundLayer
+              background={background}
+              url={urlOf(background)}
               outputGain={outputGain}
-              showPlaceholder={false}
+              playback={playback}
             />
-          ))}
-        </div>
+            {frames.filter(f => f.visible !== false).map(frame => (
+              <FrameContent
+                key={frame.id}
+                frame={frame}
+                url={urlOf(frame)}
+                playback={playback}
+                outputGain={outputGain}
+                showPlaceholder={false}
+              />
+            ))}
+          </div>
+        )}
 
         {grid.show && grid.showInPresentation && <GridOverlay grid={grid} />}
 
