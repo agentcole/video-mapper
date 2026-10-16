@@ -280,7 +280,7 @@ export const OutputApp: React.FC = () => {
       </div>
 
       {!isFullscreen && showHint && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/80 text-white/90 text-sm rounded-lg px-4 py-2 pointer-events-none">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/85 backdrop-blur-md text-white/90 text-xs rounded-lg shadow-2xl px-3 py-2 pointer-events-none">
           Click or press F for fullscreen · B blackout
         </div>
       )}

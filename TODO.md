@@ -29,6 +29,9 @@ The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) w
 - [x] 2.2 Master clock + beat snap (docs/design/master-clock.md): tempo in the project (format 5.2), phase as live state shared with output windows on one time base; tap (least-squares fit, first tap = downbeat), BPM entry, ÷2 ×2, hold-to-nudge, resync, 2/4–8/4, beat display. Beat snap Off/Beat/Bar/2/4 Bars for the composition and per clip; clip, column and Go triggers wait (armed cells + countdown, their clips preload), 50 ms grace after a boundary, Alt fires now, piano never waits, waiting triggers follow tempo/phase changes. Measured beat → first frame (preloaded, test browser): 10–15 ms GPU, 10–31 ms CSS; outputs get the trigger ~9 ms after the beat. Also fixed: the launcher's context menu opened off-screen (backdrop filter made the launcher its containing block). Open: timers in a hidden editor window are throttled (matters once MIDI/OSC trigger without the editor in front — move the scheduler to a worker then); Ableton Link / MIDI clock need the companion (4.4) or Web MIDI (2.6)
 - [ ] 2.3 Transitions + A/B crossfader (per-clip transition; the hold-last-frame handover in both renderers is the hook)
 
+## UI
+- [x] One look for the whole editor, set by the clip launcher (docs/design/ui-style.md): shared theme tokens, dark button/input/slider primitives, one dialog shell (media library, projects), segmented controls, notices; cyan only for on/selected, amber for show timing, emerald for playing, red for blackout/errors; shortcuts list collapsed and platform-aware
+
 ## Next candidates (see the roadmap report, Phase 1+)
 - WebGL compositor behind a renderer abstraction — unlocks true mesh warp (beyond 4 corners), GPU soft-edge blending, and output to multiple displays. The current CSS renderer covers projective quads only.
 - Bezier / curved mask edges.

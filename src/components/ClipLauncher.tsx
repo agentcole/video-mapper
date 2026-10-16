@@ -18,6 +18,7 @@ import { TempoBar } from './TempoBar';
 import { useLastClipStart } from '../render/startStats';
 import { generateThumbnail, getMedia, getMediaFile, getMediaObjectUrl, storeMedia } from '../lib/mediaStorage';
 import { isFolderMediaId } from '../lib/mediaFolders';
+import { menuSurface, panelSurface, panelTitle, sectionLabel } from './ui/theme';
 
 // ---------------------------------------------------------------------------
 // Clip launcher: layers × columns. Press a clip to play it on its layer, a
@@ -310,10 +311,10 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
   return (
     <div
       ref={ref}
-      className="fixed z-[3000] min-w-[220px] bg-gray-900/95 backdrop-blur border border-white/10 rounded-md shadow-2xl py-1 text-white"
+      className={`fixed z-[3000] min-w-[220px] ${menuSurface} py-1`}
       style={{ left: Math.min(menu.x, window.innerWidth - 240), top: menu.y }}
     >
-      <p className="px-3 py-1 text-[10px] uppercase text-gray-400 truncate">{clipLabel(menu.clip)}</p>
+      <p className={`px-3 py-1 truncate ${sectionLabel}`}>{clipLabel(menu.clip)}</p>
       {TRIGGER_STYLES.map(t => (
         <button
           key={t.style}
@@ -329,7 +330,7 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
         </button>
       ))}
       <div className="my-1 border-t border-white/10" />
-      <p className="px-3 pt-1 text-[10px] uppercase text-gray-400">Beat snap</p>
+      <p className={`px-3 pt-1 ${sectionLabel}`}>Beat snap</p>
       <div className="flex flex-wrap gap-1 px-3 py-1.5">
         {[null, ...BEAT_SNAPS.map(s => s.snap)].map(snap => {
           const selected = (menu.clip.beatSnap ?? null) === snap;
@@ -498,13 +499,13 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
   return (
     <div
       ref={rootRef}
-      className="fixed left-4 right-4 bottom-4 z-[1100] bg-black/85 backdrop-blur-md text-white rounded-lg shadow-2xl flex flex-col"
+      className={`fixed left-4 right-4 bottom-4 z-[1100] ${panelSurface} flex flex-col`}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => e.preventDefault()} // a miss must not navigate to the file
     >
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2 shrink-0 text-xs">
-        <h2 className="font-bold text-sm flex items-center gap-2 mr-2">
+        <h2 className={`${panelTitle} mr-2`}>
           <Zap className="w-4 h-4" />
           Clip Launcher
         </h2>

@@ -8,6 +8,7 @@ import { currentClock } from '../state/deckActions';
 import {
   resyncBar, scaleTempo, setBeatSnap, setBeatsPerBar, setBpm, startNudge, tapTempo,
 } from '../state/clockActions';
+import { option } from './ui/theme';
 
 // ---------------------------------------------------------------------------
 // Master clock controls in the launcher toolbar: tap, BPM, ÷2 ×2, nudge,
@@ -183,7 +184,7 @@ export const TempoBar: React.FC = () => {
         title="Beats per bar"
       >
         {[2, 3, 4, 5, 6, 7, 8].map(n => (
-          <option key={n} value={n} className="bg-gray-900">{n}/4</option>
+          <option key={n} value={n} className={option}>{n}/4</option>
         ))}
       </select>
       <label className={`flex items-center gap-1 ${waiting ? 'text-amber-300' : 'text-gray-400'}`} title="Beat snap: triggers wait for the next beat / bar (Alt + trigger fires now)">
@@ -197,7 +198,7 @@ export const TempoBar: React.FC = () => {
           className={`rounded px-0.5 py-0.5 focus:outline-none ${tempo.beatSnap === 'off' ? 'bg-white/10 text-white' : 'bg-amber-500 text-black font-semibold'}`}
         >
           {BEAT_SNAPS.map(({ snap, label }) => (
-            <option key={snap} value={snap} className="bg-gray-900 text-white font-normal">{label}</option>
+            <option key={snap} value={snap} className={`${option} font-normal`}>{label}</option>
           ))}
         </select>
       </label>
