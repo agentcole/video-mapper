@@ -265,6 +265,7 @@ interface FrameContentProps {
   startSeq?: number; // this frame's layer trigger counter
   gain?: number; // crossfader gain on the layer's opacity
   bpm?: number; // master tempo, for transitions measured in beats
+  hints?: boolean; // editor: say what this renderer can't show (generators)
 }
 
 const NO_PRELOAD: PreloadMedia[] = [];
@@ -282,6 +283,7 @@ export const FrameContent = React.memo(function FrameContent({
   startSeq,
   gain = 1,
   bpm = 120,
+  hints = false,
 }: FrameContentProps) {
   // What this frame plays now
   const current: MediaDesc | null = url && !frame.testPattern
@@ -479,6 +481,10 @@ export const FrameContent = React.memo(function FrameContent({
               height={frame.height}
               label={frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`}
             />
+          </div>
+        ) : frame.generator && hints ? (
+          <div className="w-full h-full flex items-center justify-center bg-neutral-900/80 text-center text-xs text-gray-400 p-2">
+            Generator — shows with the GPU renderer
           </div>
         ) : !current && showPlaceholder ? (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300">

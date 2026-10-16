@@ -1145,6 +1145,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
           startSeq={startSeq}
           gain={gain}
           bpm={bpm}
+          hints={!isPresentationMode}
         />
       )}
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}

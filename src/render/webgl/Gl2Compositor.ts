@@ -1,7 +1,10 @@
-import type { MediaFrame, Point } from '../../types';
+import type { EffectInstance, MediaFrame, Point } from '../../types';
 import type { RenderScene, SceneRenderer } from '../types';
 import { frameRenderParams, MAX_POLYGON_VERTICES } from '../frameMath';
 import { fadeProgress, transitionMs } from '../../state/transitions';
+import { beatAt, clockNow } from '../../state/clock';
+import { effectKey, getEffectDef, reportCompileError, requestUnknownEffect } from '../../effects/library';
+import { EffectRunner, type ResolvedEffect } from './EffectRunner';
 import { drawTestCard } from '../testCardCanvas';
 import { MediaPool, type MediaItem, type MediaTexture } from './MediaPool';
 import {
@@ -15,6 +18,8 @@ import {
 // ---------------------------------------------------------------------------
 
 const BACKGROUND_KEY = '__background__';
+// Effects and generators render at most this big (longest side, px)
+const EFFECT_MAX_SIZE = 2048;
 const PLACEHOLDER_FILL: [number, number, number, number] = [243 / 255, 244 / 255, 246 / 255, 1];
 // Grow drawn quads so antialiased edges aren't cut by rasterization
 const EDGE_PAD_PX = 2;
@@ -32,6 +37,7 @@ interface Target {
 interface FrameSource {
   texture: MediaTexture;
   fit: 0 | 1;
+  yUp?: boolean; // rendered here (effects, generators): bottom row first
 }
 
 // What a frame shows: its media, and the frame as it was then (the clip's look)
@@ -83,6 +89,11 @@ export class Gl2Compositor implements SceneRenderer {
   // then dissolves into it over the frame's transition
   private shown = new Map<string, Shown>();
   private fades = new Map<string, Fade>();
+  private effects!: EffectRunner;
+  // Content resolved this render (effect stacks, generators), by clip
+  private sources = new Map<string, FrameSource | null>();
+  private frameIndex = 0;
+  private lastEffectTime = 0;
 
   /** null when WebGL2 isn't available. */
   static create(canvas: HTMLCanvasElement): Gl2Compositor | null {
@@ -131,6 +142,7 @@ export class Gl2Compositor implements SceneRenderer {
     this.targets = [];
     this.testCards.clear();
     this.createTargets();
+    this.effects = new EffectRunner(gl, reportCompileError);
   }
 
   private createProgram(vertexSource: string, fragmentSource: string): Program {
@@ -212,14 +224,37 @@ export class Gl2Compositor implements SceneRenderer {
 
   render(scene: RenderScene): void {
     if (this.lost || this.gl.isContextLost()) return;
-    this.pool.update(this.mediaItems(scene), scene.outputGain, scene.playback);
-    // Skip identical frames: same scene object, no new video frames, no dissolve running
+    const items = this.mediaItems(scene);
+    this.pool.update(items.filter(i => !i.generator), scene.outputGain, scene.playback);
+    // Skip identical frames: same scene object, no new video frames, no
+    // dissolve running and nothing animated by effects or generators
     const newFrames = this.pool.consumeNewFrames();
-    if (scene === this.lastScene && !newFrames && this.fades.size === 0) return;
+    const animated = this.isAnimated(scene);
+    if (scene === this.lastScene && !newFrames && this.fades.size === 0 && !animated) return;
     this.lastScene = scene;
     this.lastCompositionWidth = scene.composition.width;
 
     const gl = this.gl;
+    const nowClock = clockNow();
+    const time = (nowClock - scene.timeOrigin) / 1000;
+    this.effects.beginFrame({
+      time,
+      delta: this.lastEffectTime ? Math.max(0, time - this.lastEffectTime) : 0,
+      frame: this.frameIndex++,
+      bpm: scene.bpm,
+      beat: beatAt({ bpm: scene.bpm, origin: scene.clockOrigin }, nowClock),
+    });
+    this.lastEffectTime = time;
+    this.sources.clear();
+
+    // Frames, bottom to top (same order as the DOM stacking). Their content
+    // is resolved first: effects render into targets of their own.
+    const now = performance.now();
+    const draws = scene.frames
+      .map((frame, index) => ({ frame, index }))
+      .sort((a, b) => a.frame.zIndex - b.frame.zIndex || a.index - b.index)
+      .map(({ frame }) => ({ frame, draw: this.frameDraw(scene, frame, now) }));
+
     gl.viewport(0, 0, this.width, this.height);
     gl.disable(gl.DEPTH_TEST);
     let current = 0;
@@ -229,15 +264,7 @@ export class Gl2Compositor implements SceneRenderer {
     gl.disable(gl.BLEND);
     this.drawBackground(scene);
 
-    // Frames, bottom to top (same order as the DOM stacking)
-    const frames = scene.frames
-      .map((frame, index) => ({ frame, index }))
-      .sort((a, b) => a.frame.zIndex - b.frame.zIndex || a.index - b.index)
-      .map(({ frame }) => frame);
-
-    const now = performance.now();
-    for (const frame of frames) {
-      const draw = this.frameDraw(scene, frame, now);
+    for (const { frame, draw } of draws) {
       // Placeholders only for frames that never got media (a cleared
       // launcher layer is simply off)
       if (!draw.source && !draw.from && (!scene.showPlaceholders || frame.layerHasClips)) continue;
@@ -258,16 +285,28 @@ export class Gl2Compositor implements SceneRenderer {
       }
     }
 
+    // Composition effects on the whole picture
+    let picture = this.targets[current].texture;
+    const composition = this.resolveEffects(scene.effects);
+    if (composition.length > 0) {
+      const size = { width: this.width, height: this.height };
+      const result = this.effects.run('composition', { texture: picture, ...size, yUp: true }, composition, size);
+      if (result) picture = result.texture;
+    }
+
     // Present with the master fader
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, this.width, this.height);
     gl.disable(gl.BLEND);
-    this.copy(this.targets[current].texture, scene.masterOpacity);
+    this.copy(picture, scene.masterOpacity);
+    this.effects.endFrame();
   }
 
   dispose(): void {
     this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
     this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.pool.dispose();
+    this.effects.dispose();
     const gl = this.gl;
     for (const card of this.testCards.values()) gl.deleteTexture(card.texture);
     for (const target of this.targets) {
@@ -281,7 +320,14 @@ export class Gl2Compositor implements SceneRenderer {
 
   // The media a frame plays: its layer's clip (shared by the layer's surfaces)
   private frameItem(scene: RenderScene, frame: MediaFrame): MediaItem | null {
-    if (frame.testPattern || !frame.url) return null;
+    if (frame.testPattern) return null;
+    if (frame.generator) {
+      return {
+        key: `gen:${frame.clipId ?? frame.id}`, url: `isf:${frame.generator.effectId}`, type: 'image', loop: true,
+        muted: true, playbackRate: 1, active: true, startSeq: 0, layerId: frame.layerId, generator: frame.generator,
+      };
+    }
+    if (!frame.url) return null;
     return {
       key: frame.clipId ? `clip:${frame.clipId}` : frame.id,
       url: frame.url,
@@ -332,19 +378,21 @@ export class Gl2Compositor implements SceneRenderer {
   }
 
   private frameDraw(scene: RenderScene, frame: MediaFrame, now: number): FrameDraw {
-    const source = this.frameSource(scene, frame, now);
+    const { source, owner } = this.frameSource(scene, frame, now);
+    const shown = this.withEffects(source, owner);
     const fade = this.fades.get(frame.id);
-    if (!fade) return { source, from: null };
+    if (!fade) return { source: shown, from: null };
     const mix = fadeProgress(fade.start, fade.ms, now);
-    const fromTexture = this.pool.texture(fade.from.item.key);
-    if (mix >= 1 || !fromTexture) {
+    const fromSource = this.withEffects(this.contentOf(scene, fade.from.item), fade.from.frame);
+    if (mix >= 1 || !fromSource) {
       this.fades.delete(frame.id);
-      return { source, from: null };
+      return { source: shown, from: null };
     }
-    return { source, from: { source: { texture: fromTexture, fit: 1 }, frame: fade.from.frame, mix } };
+    return { source: shown, from: { source: fromSource, frame: fade.from.frame, mix } };
   }
 
-  private frameSource(scene: RenderScene, frame: MediaFrame, now: number): FrameSource | null {
+  /** The frame's content, and the frame whose effects apply to it (the held clip's while it holds). */
+  private frameSource(scene: RenderScene, frame: MediaFrame, now: number): { source: FrameSource | null; owner: MediaFrame } {
     if (frame.testPattern) {
       this.shown.delete(frame.id);
       this.fades.delete(frame.id);
@@ -352,7 +400,7 @@ export class Gl2Compositor implements SceneRenderer {
       // Draw at the density it is shown at (output px per unit × zoom), so
       // it stays as crisp as the SVG test card of the CSS renderer
       const density = (this.width / (this.lastCompositionWidth || this.width)) * Math.max(1, frame.contentScale ?? 1);
-      return { texture: this.testCard(frame.width, frame.height, label, density), fit: 0 };
+      return { source: { texture: this.testCard(frame.width, frame.height, label, density), fit: 0 }, owner: frame };
     }
     const ms = transitionMs(frame.transition, scene.bpm);
     const held = this.shown.get(frame.id);
@@ -361,13 +409,13 @@ export class Gl2Compositor implements SceneRenderer {
       // Cleared layer: fades out over its transition, or goes off at once
       if (held && ms > 0) this.fades.set(frame.id, { from: held, start: now, ms });
       this.shown.delete(frame.id);
-      return null;
+      return { source: null, owner: frame };
     }
     if (held && held.item.key !== item.key) {
-      if (!this.pool.isReady(item.key)) {
+      if (!this.isReady(item)) {
         // Hold the last picture until the new clip has a frame
-        const texture = this.pool.texture(held.item.key);
-        if (texture) return { texture, fit: 1 };
+        const source = this.contentOf(scene, held.item);
+        if (source) return { source, owner: held.frame };
       } else if (ms > 0) {
         // The new clip is there: dissolve from what was on screen
         this.fades.set(frame.id, { from: held, start: now, ms });
@@ -375,9 +423,81 @@ export class Gl2Compositor implements SceneRenderer {
         this.fades.delete(frame.id);
       }
     }
-    const texture = this.pool.texture(item.key);
-    if (texture) this.shown.set(frame.id, { item, frame });
-    return texture ? { texture, fit: 1 } : null;
+    const source = this.contentOf(scene, item);
+    if (source) this.shown.set(frame.id, { item, frame });
+    return { source, owner: frame };
+  }
+
+  private isReady(item: MediaItem): boolean {
+    return item.generator ? true : this.pool.isReady(item.key);
+  }
+
+  /** What a media item shows now: a video/image texture, or a generator's picture. */
+  private contentOf(scene: RenderScene, item: MediaItem): FrameSource | null {
+    if (!item.generator) {
+      const texture = this.pool.texture(item.key);
+      return texture ? { texture, fit: 1 } : null;
+    }
+    const cacheKey = `gen|${item.key}`;
+    if (this.sources.has(cacheKey)) return this.sources.get(cacheKey)!;
+    let source: FrameSource | null = null;
+    const def = getEffectDef(item.generator.effectId);
+    if (!def) {
+      requestUnknownEffect();
+    } else if (def.shader && def.kind === 'generator') {
+      // Generators fill the composition; surfaces show their part like media
+      const scale = Math.min(1, EFFECT_MAX_SIZE / Math.max(scene.composition.width, scene.composition.height));
+      const size = {
+        width: Math.max(1, Math.round(scene.composition.width * scale)),
+        height: Math.max(1, Math.round(scene.composition.height * scale)),
+      };
+      const generator: ResolvedEffect = {
+        instance: { id: 'generator', enabled: true, params: item.generator.params },
+        shader: def.shader,
+        key: effectKey(def),
+      };
+      const result = this.effects.run(item.key, null, [generator], size);
+      if (result) source = { texture: result, fit: 1, yUp: true };
+    }
+    this.sources.set(cacheKey, source);
+    return source;
+  }
+
+  /** A frame's content through its clip's and layer's effect stacks. */
+  private withEffects(source: FrameSource | null, frame: MediaFrame): FrameSource | null {
+    if (!source || frame.testPattern) return source;
+    const stack = this.resolveEffects([...(frame.clipEffects ?? []), ...(frame.layerEffects ?? [])]);
+    if (stack.length === 0) return source;
+    const cacheKey = `fx|${frame.clipId ?? frame.id}`;
+    if (this.sources.has(cacheKey)) return this.sources.get(cacheKey)!;
+    const { width, height } = source.texture;
+    const scale = Math.min(1, EFFECT_MAX_SIZE / Math.max(width, height));
+    const size = { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+    const result = this.effects.run(cacheKey, { ...source.texture, yUp: !!source.yUp }, stack, size);
+    const processed: FrameSource = result ? { texture: result, fit: source.fit, yUp: result.yUp } : source;
+    this.sources.set(cacheKey, processed);
+    return processed;
+  }
+
+  private resolveEffects(instances: EffectInstance[] | undefined): ResolvedEffect[] {
+    const resolved: ResolvedEffect[] = [];
+    for (const instance of instances ?? []) {
+      if (!instance.enabled) continue;
+      const def = getEffectDef(instance.effectId);
+      if (!def) {
+        requestUnknownEffect();
+        continue;
+      }
+      if (def.shader && def.kind === 'effect') resolved.push({ instance, shader: def.shader, key: effectKey(def) });
+    }
+    return resolved;
+  }
+
+  // Animated content needs a redraw every frame
+  private isAnimated(scene: RenderScene): boolean {
+    const active = (list?: EffectInstance[]) => !!list?.some(e => e.enabled);
+    return active(scene.effects) ||
+      scene.frames.some(f => f.generator || active(f.clipEffects) || active(f.layerEffects));
   }
 
   private testCard(width: number, height: number, label: string, density: number): MediaTexture {
@@ -451,6 +571,7 @@ export class Gl2Compositor implements SceneRenderer {
     gl.uniform2f(u('offset'), params.offset.x, params.offset.y);
     gl.uniform1i(u('fit'), source?.fit ?? 1);
     gl.uniform1f(u('mediaAspect'), source ? source.texture.width / source.texture.height : 1);
+    gl.uniform1i(u('yUp'), source?.yUp ? 1 : 0);
     gl.uniform1f(u('blur'), frame.blur);
     gl.uniform1f(u('brightness'), frame.brightness / 100);
     gl.uniform1f(u('contrast'), frame.contrast / 100);

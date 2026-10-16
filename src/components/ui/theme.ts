@@ -37,7 +37,7 @@ export const iconButton = 'p-1 rounded hover:bg-white/10 transition-colors disab
 /** A row of choices where one is selected (tabs, renderer, media source). */
 export const segmented = 'flex rounded bg-white/10 p-0.5 gap-0.5 text-xs';
 export const segment = (selected: boolean) =>
-  `flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded transition-colors ${
+  `flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded whitespace-nowrap transition-colors ${
     selected ? 'bg-cyan-500 text-black font-semibold' : 'text-gray-300 hover:bg-white/10 hover:text-white'
   }`;
 

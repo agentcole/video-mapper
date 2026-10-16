@@ -5,6 +5,8 @@ import { allClips, mapClips, type Clip } from '../state/showModel';
 import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO } from './defaults';
 import { parseProjectData, PROJECT_VERSION, type ParsedProject, type PackageMediaEntry } from './projectSchema';
 import { getMediaFile, importMediaBlob, importMediaRecords } from './mediaStorage';
+import { getEffectDef } from '../effects/library';
+import type { EffectInstance } from '../types';
 
 // ---------------------------------------------------------------------------
 // Project files: serialization (for the repository and exports), JSON export,
@@ -21,6 +23,28 @@ const stripClipUrl = (clip: Clip): Clip =>
   clip.source.mediaId ? { ...clip, source: { ...clip.source, url: '' } } : clip;
 const stripBackgroundUrl = (bg: BackgroundSettings): BackgroundSettings => (bg.mediaId ? { ...bg, url: '' } : bg);
 
+// Every effect / generator a project uses
+const effectIdsOf = (doc: ProjectDocument): string[] => {
+  const ids = new Set<string>();
+  const add = (list?: EffectInstance[]) => list?.forEach(e => ids.add(e.effectId));
+  add(doc.effects);
+  for (const layer of doc.layers) {
+    add(layer.effects);
+    for (const clip of layer.slots) {
+      add(clip?.effects);
+      if (clip?.generator) ids.add(clip.generator.effectId);
+    }
+  }
+  return [...ids];
+};
+
+/** Imported (non-bundled) shaders the project uses, so the file works in another browser. */
+const shaderSourcesOf = (doc: ProjectDocument) =>
+  effectIdsOf(doc).flatMap(id => {
+    const def = getEffectDef(id);
+    return def && !def.builtin ? [{ id, name: def.name, source: def.source }] : [];
+  });
+
 export const serializeProject = (doc: ProjectDocument, name?: string) => ({
   ...(name ? { name } : {}),
   version: PROJECT_VERSION,
@@ -28,10 +52,12 @@ export const serializeProject = (doc: ProjectDocument, name?: string) => ({
   composition: doc.composition,
   grid: doc.grid,
   tempo: doc.tempo,
+  effects: doc.effects,
   background: stripBackgroundUrl(doc.background),
   surfaces: doc.surfaces,
   columns: doc.columns,
   layers: mapClips(doc, stripClipUrl).layers,
+  shaders: shaderSourcesOf(doc),
 });
 
 export type SerializedProject = ReturnType<typeof serializeProject>;

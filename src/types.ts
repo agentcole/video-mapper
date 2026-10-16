@@ -52,6 +52,23 @@ export interface Transition {
 // Crossfader side of a layer (unset: the crossfader doesn't touch it)
 export type CrossfadeSide = 'A' | 'B'
 
+// An ISF shader in an effect stack (clip, layer or composition) or as a
+// clip's generator. `effectId` names a shader in the effect library;
+// parameters left out use the shader's defaults.
+export type EffectParamValue = number | boolean | number[]
+
+export interface EffectInstance {
+  id: string
+  effectId: string
+  enabled: boolean
+  params: Record<string, EffectParamValue>
+}
+
+export interface GeneratorSettings {
+  effectId: string
+  params: Record<string, EffectParamValue>
+}
+
 // Per-edge feathering (px in frame-local space) for projection blending
 export interface SoftEdge {
   left: number
@@ -113,6 +130,9 @@ export interface MediaFrame {
   layerHasClips?: boolean // the layer has clips, even if none plays (derived, read-only)
   transition?: Transition // how the playing clip came in / the layer fades out (derived, read-only)
   crossfade?: CrossfadeSide // the layer's crossfader side (derived, read-only)
+  clipEffects?: EffectInstance[] // the playing clip's effect stack (derived, read-only)
+  layerEffects?: EffectInstance[] // the layer's effect stack (derived, read-only)
+  generator?: GeneratorSettings // the playing clip is a generator (derived, read-only)
   type: MediaType
   url: string
   filename?: string

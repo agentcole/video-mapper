@@ -26,17 +26,17 @@ const stripUrl = <T extends { mediaId?: string; url?: string }>(item: T): T =>
   item.mediaId ? { ...item, url: '' } : item;
 
 export const createSnapshot = (): OutputSnapshot => {
-  const { surfaces, layers, columns, background, grid, composition, tempo } = projectStore.getState();
+  const { surfaces, layers, columns, background, grid, composition, tempo, effects } = projectStore.getState();
   const {
     masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
-    clockOrigin, scheduled, crossfader,
+    clockOrigin, scheduled, crossfader, timeOrigin,
   } = liveStore.getState();
   const show = mapClips({ surfaces, layers, columns }, clip => ({ ...clip, source: stripUrl(clip.source) }));
   return {
-    doc: { ...show, background: stripUrl(background), grid, composition, tempo },
+    doc: { ...show, background: stripUrl(background), grid, composition, tempo, effects },
     live: {
       masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
-      clockOrigin, scheduled, crossfader,
+      clockOrigin, scheduled, crossfader, timeOrigin,
     },
   };
 };

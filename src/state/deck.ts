@@ -116,7 +116,7 @@ export const updateClip = (show: ShowDocument, clipId: string, patch: Partial<Om
 export const updateLayer = (
   show: ShowDocument,
   layerId: string,
-  patch: Partial<Pick<Layer, 'name' | 'opacity' | 'blendMode' | 'transition' | 'crossfade'>>,
+  patch: Partial<Pick<Layer, 'name' | 'opacity' | 'blendMode' | 'transition' | 'crossfade' | 'effects'>>,
 ): ShowDocument => {
   const before = show.layers.find(l => l.id === layerId);
   const next = withLayer(show, layerId, layer =>

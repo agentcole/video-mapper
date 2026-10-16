@@ -7,6 +7,7 @@ import { DEFAULT_BACKGROUND, DEFAULT_COMPOSITION, DEFAULT_GRID, DEFAULT_TEMPO } 
 import { clearAllMedia, getMedia, importMediaBlob } from './mediaStorage';
 import { buildProjectPackage, importProjectFile, serializeProject } from './storage';
 import { PROJECT_VERSION } from './projectSchema';
+import { importIsf } from '../effects/library';
 
 const frame = (id: string, mediaId?: string): MediaFrame => ({
   id, type: 'video', url: mediaId ? 'blob:session-url' : 'https://example.com/clip.mp4', mediaId,
@@ -21,10 +22,23 @@ const frame = (id: string, mediaId?: string): MediaFrame => ({
 
 const doc = (frames: MediaFrame[]): ProjectDocument => ({
   ...showFromFrames(emptyShow(), frames),
-  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION, tempo: DEFAULT_TEMPO,
+  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION, tempo: DEFAULT_TEMPO, effects: [],
 });
 
 describe('serializeProject', () => {
+  it('carries the imported shaders a project uses, not the bundled ones', async () => {
+    const source = '/*{ "INPUTS": [ { "NAME": "inputImage", "TYPE": "image" } ] }*/ void main() { gl_FragColor = IMG_THIS_PIXEL(inputImage); }';
+    const mine = await importIsf('mine.fs', source);
+    const d = doc([frame('a', 'media-1')]);
+    const withEffects = {
+      ...d,
+      effects: [{ id: 'x', effectId: 'builtin:invert', enabled: true, params: {} }],
+      layers: d.layers.map(l => ({ ...l, effects: [{ id: 'y', effectId: mine.id, enabled: true, params: {} }] })),
+    };
+    expect(serializeProject(withEffects).shaders).toEqual([{ id: mine.id, name: 'Mine', source }]);
+    expect(serializeProject(d).shaders).toEqual([]);
+  });
+
   it('drops session blob URLs but keeps remote URLs and the name', () => {
     const data = serializeProject(doc([frame('a', 'media-1'), frame('b')]), 'Club night');
     expect(data.name).toBe('Club night');

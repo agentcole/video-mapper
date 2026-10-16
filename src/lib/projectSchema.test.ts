@@ -191,6 +191,27 @@ describe('format 5', () => {
     expect(odd.warnings).toEqual([]);
   });
 
+  it('reads effect stacks, generators and carried shaders, dropping broken entries', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const ok = { id: 'e1', effectId: 'builtin:invert', enabled: true, params: { amount: 0.5, tint: [1, 0, 0, 1], on: true } };
+    const layer = {
+      ...layers[0],
+      effects: [ok, { id: 'broken' }, 'nope'],
+      slots: layers[0].slots.map(c => (c ? { ...c, effects: [{ ...ok, id: 'e2', params: { amount: 'loud' } }], generator: { effectId: 'builtin:plasma' } } : c)),
+    };
+    const project = parseProjectData({
+      version: PROJECT_VERSION, surfaces, columns, layers: [layer],
+      effects: [{ ...ok, id: 'e3', enabled: false }],
+      shaders: [{ id: 'user:1', name: 'Mine', source: '/*{}*/' }, { id: 2 }],
+    });
+    expect(project.layers[0].effects).toEqual([ok]);
+    expect(project.layers[0].slots[0]?.effects).toEqual([{ ...ok, id: 'e2', params: {} }]);
+    expect(project.layers[0].slots[0]?.generator).toEqual({ effectId: 'builtin:plasma', params: {} });
+    expect(project.effects).toEqual([{ ...ok, id: 'e3', enabled: false }]);
+    expect(project.shaders).toEqual([{ id: 'user:1', name: 'Mine', source: '/*{}*/' }]);
+    expect(parseProjectData({ surfaces, layers, columns }).effects).toEqual([]);
+  });
+
   it('skips broken clips and surfaces individually and repairs references', () => {
     const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
     const project = parseProjectData({

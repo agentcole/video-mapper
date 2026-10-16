@@ -12,6 +12,7 @@ import {
   duplicateProject, listProjects, addVersion, getVersion, setCurrentProjectId, type ProjectRecord,
 } from '../lib/projectRepository';
 import { resolveMediaUrls } from '../lib/mediaStorage';
+import { getEffectDef, importIsf } from '../effects/library';
 import { describeStorageError } from '../lib/idb';
 
 // ---------------------------------------------------------------------------
@@ -34,12 +35,26 @@ const documentOf = (d: ProjectDocument): ProjectDocument => ({
   grid: d.grid,
   composition: d.composition,
   tempo: d.tempo,
+  effects: d.effects,
 });
 
 const currentDocument = (): ProjectDocument => documentOf(projectStore.getState());
 
 /** Turn stored media references (every clip + background) into playable URLs for this window. */
+/** Imported shaders carried by a project go into this browser's effect library. */
+const registerShaders = async (project: LoadedProject) => {
+  for (const shader of project.shaders) {
+    if (getEffectDef(shader.id)) continue;
+    try {
+      await importIsf(shader.name, shader.source);
+    } catch (error) {
+      console.warn(`Could not add the shader "${shader.name}":`, error);
+    }
+  }
+};
+
 const resolveDocument = async (project: LoadedProject): Promise<ProjectDocument> => {
+  await registerShaders(project);
   const doc = documentOf(project);
   const mediaIds = [
     ...doc.layers.flatMap(l => l.slots.map(c => c?.source.mediaId)),
@@ -70,6 +85,7 @@ const EMPTY_DOCUMENT: ProjectDocument = {
   grid: DEFAULT_GRID,
   composition: DEFAULT_COMPOSITION,
   tempo: DEFAULT_TEMPO,
+  effects: [],
 };
 
 // One initial load per page (StrictMode runs effects twice in development)
@@ -130,7 +146,7 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     if (
       state.surfaces === prev.surfaces && state.layers === prev.layers && state.columns === prev.columns &&
       state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition &&
-      state.tempo === prev.tempo
+      state.tempo === prev.tempo && state.effects === prev.effects
     ) {
       return;
     }

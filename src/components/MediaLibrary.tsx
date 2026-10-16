@@ -18,7 +18,9 @@ import {
   HardDrive,
   FolderOpen,
   AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
+import { effectsOfKind, useEffectLibrary } from '../effects/library';
 import { Button } from './ui/button';
 import { Dialog } from './ui/dialog';
 import { iconButton, segment, segmented } from './ui/theme';
@@ -30,6 +32,7 @@ interface MediaLibraryProps {
   onClose: () => void;
   onSelectMedia: (media: StoredMedia) => void;
   getMediaUsage?: (mediaId: string) => string[]; // layer names using a media
+  onSelectGenerator?: (effectId: string) => void; // offer ISF generators (launcher slots)
 }
 
 export const MediaLibrary: React.FC<MediaLibraryProps> = ({
@@ -37,6 +40,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   onClose,
   onSelectMedia,
   getMediaUsage,
+  onSelectGenerator,
 }) => {
   const [mediaList, setMediaList] = useState<StoredMedia[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,7 +50,9 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   const [mediaCount, setMediaCount] = useState(0);
   const [filter, setFilter] = useState<'all' | 'video' | 'image'>('all');
   // Library = copies in browser storage; folders = files played from disk
-  const [source, setSource] = useState<'library' | 'folders'>('library');
+  const [source, setSource] = useState<'library' | 'folders' | 'generators'>('library');
+  const generators = effectsOfKind(useEffectLibrary(s => s.defs), 'generator');
+  const showSource = source === 'generators' && !onSelectGenerator ? 'library' : source;
   const canLinkFolders = supportsLinkedFolders();
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -184,21 +190,32 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-white/10">
-        {canLinkFolders && (
+        {(canLinkFolders || onSelectGenerator) && (
           <div className={segmented}>
-            <button onClick={() => setSource('library')} className={segment(source === 'library')}>
+            <button onClick={() => setSource('library')} className={segment(showSource === 'library')}>
               Library
             </button>
-            <button
-              onClick={() => setSource('folders')}
-              className={segment(source === 'folders')}
-              title="Play files straight from a folder on disk"
-            >
-              Folders
-            </button>
+            {canLinkFolders && (
+              <button
+                onClick={() => setSource('folders')}
+                className={segment(showSource === 'folders')}
+                title="Play files straight from a folder on disk"
+              >
+                Folders
+              </button>
+            )}
+            {onSelectGenerator && (
+              <button
+                onClick={() => setSource('generators')}
+                className={segment(showSource === 'generators')}
+                title="Shader generators (GPU renderer)"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> Generators
+              </button>
+            )}
           </div>
         )}
-        <div className={segmented}>
+        <div className={segmented} style={{ display: showSource === 'generators' ? 'none' : undefined }}>
           <button onClick={() => setFilter('all')} className={segment(filter === 'all')}>All</button>
           <button onClick={() => setFilter('video')} className={segment(filter === 'video')}>
             <Video className="w-3.5 h-3.5" /> Videos
@@ -207,7 +224,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
             <ImageIcon className="w-3.5 h-3.5" /> Images
           </button>
         </div>
-        <div className="flex gap-2 ml-auto" style={{ display: source === 'folders' ? 'none' : undefined }}>
+        <div className="flex gap-2 ml-auto" style={{ display: showSource !== 'library' ? 'none' : undefined }}>
           <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
             <Upload /> Upload
           </Button>
@@ -248,7 +265,24 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
       >
-        {source === 'folders' ? (
+        {showSource === 'generators' && onSelectGenerator ? (
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+            {generators.map(g => (
+              <button
+                key={g.id}
+                onClick={() => onSelectGenerator(g.id)}
+                className="aspect-video rounded bg-neutral-800 ring-1 ring-white/10 hover:ring-2 hover:ring-cyan-400 p-2 flex flex-col items-start justify-between text-left transition-shadow"
+                title={g.shader?.description || g.name}
+              >
+                <Sparkles className="w-5 h-5 text-cyan-300/70" />
+                <span className="w-full min-w-0">
+                  <span className="block text-[11px] text-white truncate font-semibold">{g.name}</span>
+                  <span className="block text-[10px] text-gray-400 truncate">{g.categories.join(' · ')}{g.builtin ? '' : ' · imported'}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : showSource === 'folders' ? (
           <FolderBrowser filter={filter} onSelect={handleSelect} />
         ) : loading ? (
           <div className="flex items-center justify-center h-full py-12">
