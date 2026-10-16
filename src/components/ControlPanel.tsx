@@ -25,6 +25,7 @@ import {
   MonitorOff,
   LayoutTemplate,
   Monitor,
+  Zap,
 } from 'lucide-react';
 import type { ShapeType, GridSettings, CompositionSettings } from '../types';
 import { OutputWindowControls } from './OutputWindowControls';
@@ -56,6 +57,8 @@ interface ControlPanelProps {
   onToggleBlackout: () => void;
   showTestCard: boolean;
   onToggleTestCard: () => void;
+  isLauncherOpen: boolean;
+  onToggleLauncher: () => void;
 }
 
 const GRID_SIZES = [8, 16, 24, 32, 48, 64, 96, 128];
@@ -96,6 +99,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onToggleBlackout,
   showTestCard,
   onToggleTestCard,
+  isLauncherOpen,
+  onToggleLauncher,
 }) => {
   const [url, setUrl] = useState('');
   const [mediaType, setMediaType] = useState<'video' | 'image'>('video');
@@ -124,7 +129,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   };
 
   return (
-    <div className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] max-h-[calc(100vh-2rem)] overflow-y-auto transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}>
+    <div
+      className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] overflow-y-auto transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}
+      style={{ maxHeight: 'calc(100vh - 2rem - var(--launcher-height, 0px))' }}
+    >
       <div 
         className="flex items-center justify-between cursor-pointer"
         onClick={() => setIsMinimized(!isMinimized)}
@@ -195,6 +203,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           >
             <FolderOpen className="w-4 h-4 mr-1" />
             Media Library
+          </Button>
+          <Button
+            variant={isLauncherOpen ? 'default' : 'outline'}
+            size="sm"
+            onClick={onToggleLauncher}
+            className="w-full"
+            title="Layers × columns of clips (L)"
+          >
+            <Zap className="w-4 h-4 mr-1" />
+            Clip Launcher
           </Button>
           {!showUrlInput ? (
             <Button
@@ -532,6 +550,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             • <strong>P</strong> - Present mode<br />
             • <strong>F</strong> - Fullscreen<br />
             • <strong>B</strong> - Blackout<br />
+            • <strong>1–9</strong> - Play column · <strong>Shift+1–9</strong> - Cue<br />
+            • <strong>Space</strong> - Go (fire cue) · <strong>L</strong> - Clip launcher<br />
             • <strong>G</strong> / <strong>Shift+G</strong> - Grid / snap<br />
             • <strong>Del</strong> - Delete selection<br />
             • <strong>Arrows</strong> - Nudge (Shift = faster)<br />

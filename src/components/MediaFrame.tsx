@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { Slider } from './ui/slider';
 import { FrameContent } from './FrameContent';
+import type { PreloadMedia } from '../render/types';
 import {
   applyHomography,
   invertHomography,
@@ -55,6 +56,8 @@ interface MediaFrameComponentProps {
   outputGain: number; // master fader × blackout, applied to audio volume
   // false when the GPU renderer draws the content — only the editor UI remains
   renderContent?: boolean;
+  preload?: PreloadMedia[]; // launcher: clips of this frame's layer to keep ready
+  startSeq?: number; // launcher: this frame's layer trigger counter
 }
 
 // Number of subdivisions of the warped editing grid (Resolume-style)
@@ -92,6 +95,8 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   viewScale,
   outputGain,
   renderContent = true,
+  preload,
+  startSeq,
 }: MediaFrameComponentProps) {
   const frameId = frame.id;
   const onUpdate = useCallback(
@@ -313,7 +318,8 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
     e.stopPropagation();
     const start = bodyPointerDownRef.current;
     const moved = !start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4;
-    if (!moved && !frame.url && !frame.testPattern) onOpenMediaLibrary();
+    // (A launcher layer that is merely cleared is not empty)
+    if (!moved && !frame.url && !frame.testPattern && !frame.layerHasClips) onOpenMediaLibrary();
   };
 
   // -------------------------------------------------------------------------
@@ -1129,7 +1135,9 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
           frame={frame}
           playback={playback}
           outputGain={outputGain}
-          showPlaceholder={!isPresentationMode}
+          showPlaceholder={!isPresentationMode && !frame.layerHasClips}
+          preload={preload}
+          startSeq={startSeq}
         />
       )}
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}

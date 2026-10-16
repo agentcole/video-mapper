@@ -150,6 +150,16 @@ describe('format 5', () => {
     expect(again.warnings).toEqual([]);
   });
 
+  it('keeps clip trigger styles and tolerates unknown ones', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const withStyle = (triggerStyle: unknown) => [{ ...layers[0], slots: layers[0].slots.map(c => (c ? { ...c, triggerStyle } : c)) }];
+    const piano = parseProjectData({ version: PROJECT_VERSION, surfaces, columns, layers: withStyle('piano') });
+    expect(piano.layers[0].slots[0]?.triggerStyle).toBe('piano');
+    const future = parseProjectData({ version: PROJECT_VERSION, surfaces, columns, layers: withStyle('hold-and-loop') });
+    expect(future.layers[0].slots[0]).not.toBeNull();
+    expect(future.layers[0].slots[0]?.triggerStyle).toBeUndefined();
+  });
+
   it('skips broken clips and surfaces individually and repairs references', () => {
     const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
     const project = parseProjectData({

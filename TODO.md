@@ -24,6 +24,11 @@ The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) w
 - [x] 1.4 Project management: multiple projects + versions in IndexedDB (legacy slot migrated), import always creates a new project, zip packages, linked media folders (Chromium, not yet clicked through in a real browser — the folder picker can't be automated), storage limits from the browser quota
 - [x] 1.5 Renderer abstraction + GPU renderer: WebGL2 compositor at parity behind the renderer switch (editor + output), context-loss recovery, CSS fallback. Chose raw WebGL2 over three.js/WebGPU: ISF effects (GLSL) run natively, works where WebGPU is missing, no 600 KB dependency. Open: WebGPU backend (zero-copy video) if the benchmark shows upload costs matter; mesh warp (3.2) builds on this compositor
 
+## Phase 2 progress
+- [x] 2.1 Clip launcher (docs/design/clip-launcher.md): layers × columns grid, column trigger (empty cells clear), cue + Go with auto-advance, keyboard 1–9 / Shift+1–9 / Space / L, trigger styles normal/toggle/piano (format 5.1), slot editing (media picker, file drop, drag move/copy, rename, remove), per-layer opacity + clear, + layer / + column. Preload of cued and hovered clips in both renderers and in output windows, hold-last-frame on triggers, start-latency readout. Triggers stay out of undo. Measured in Chrome (automated test browser): preloaded starts 11–18 ms GPU / 12–60 ms CSS, cold starts 75–240 ms — cold is above the 100 ms goal of R7 when several clips load at once, which is what cueing is for
+- [ ] 2.2 Master clock, tap BPM, beat snap (quantized triggers)
+- [ ] 2.3 Transitions + A/B crossfader (per-clip transition; the hold-last-frame handover in both renderers is the hook)
+
 ## Next candidates (see the roadmap report, Phase 1+)
 - WebGL compositor behind a renderer abstraction — unlocks true mesh warp (beyond 4 corners), GPU soft-edge blending, and output to multiple displays. The current CSS renderer covers projective quads only.
 - Bezier / curved mask edges.

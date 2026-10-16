@@ -1,11 +1,14 @@
 import type { StoreApi } from 'zustand';
 import type { ProjectState } from './projectStore';
 import { projectStore } from './projectStore';
+import { onlyActiveClipsChanged } from './deck';
+import { findClip, type Layer } from './showModel';
 
 // ---------------------------------------------------------------------------
 // Undo / redo over the project store. Changes are snapshotted with a debounce
 // so a whole gesture (drag, slider scrub) becomes a single entry. The grid is
-// a view setting and deliberately not part of the history.
+// a view setting and deliberately not part of the history. Neither are clip
+// triggers: undo never changes what is playing.
 // ---------------------------------------------------------------------------
 
 type Snapshot = Pick<ProjectState, 'surfaces' | 'layers' | 'columns' | 'background' | 'composition'>;
@@ -68,6 +71,15 @@ export const createHistory = (
       return;
     }
     if (last === null) return;
+    // A trigger (only active clips changed) is a performance action, not an edit
+    if (
+      !applying &&
+      state.surfaces === prev.surfaces && state.columns === prev.columns &&
+      state.background === prev.background && state.composition === prev.composition &&
+      onlyActiveClipsChanged(state.layers, prev.layers)
+    ) {
+      return;
+    }
     if (applying) {
       last = snapshotOf(state);
       return;
@@ -80,10 +92,21 @@ export const createHistory = (
     }, debounceMs);
   });
 
+  // Restored layers keep playing what plays now (if that clip still exists)
+  const keepPlaying = (layers: Layer[]): Layer[] => {
+    const playing = new Map(store.getState().layers.map(l => [l.id, l.activeClipId]));
+    return layers.map(layer => {
+      const active = playing.get(layer.id);
+      if (active === undefined || active === layer.activeClipId) return layer;
+      if (active !== null && !findClip(layer, active)) return layer;
+      return { ...layer, activeClipId: active };
+    });
+  };
+
   const applySnapshot = (snapshot: Snapshot) => {
     applying = true;
     try {
-      store.getState().replaceDocument(snapshot);
+      store.getState().replaceDocument({ ...snapshot, layers: keepPlaying(snapshot.layers) });
     } finally {
       applying = false;
     }

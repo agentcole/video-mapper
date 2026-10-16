@@ -19,8 +19,10 @@ const counterIds = (): IdFactory => {
   return kind => `${kind}-${++n}`;
 };
 
-const strip = ({ layerId, ...rest }: MediaFrame) => {
+const strip = ({ layerId, clipId, layerHasClips, ...rest }: MediaFrame) => {
   void layerId;
+  void clipId;
+  void layerHasClips;
   return rest;
 };
 
@@ -89,6 +91,19 @@ describe('frames ⇄ show', () => {
     const frames = framesFromShow(shared);
     const next = showFromFrames(shared, frames.map(f => (f.id === 'b' ? { ...f, opacity: 0.3 } : f)), ids);
     expect(framesFromShow(next).map(f => f.opacity)).toEqual([0.3, 0.3]);
+  });
+
+  it('names the playing clip in the frame and keeps clip-only settings', () => {
+    const ids = counterIds();
+    const show = showFromFrames(emptyShow(), [frame('a')], ids);
+    const [layer] = show.layers;
+    const styled = { ...show, layers: [{ ...layer, slots: layer.slots.map(c => (c ? { ...c, name: 'Intro', triggerStyle: 'piano' as const } : c)) }] };
+    const [derived] = framesFromShow(styled);
+    expect(derived.clipId).toBe(layer.activeClipId);
+    // An unrelated geometry edit leaves the clip object alone
+    const next = showFromFrames(styled, [{ ...derived, x: 42 }], ids);
+    expect(next.layers).toBe(styled.layers);
+    expect(allClips(next)[0].triggerStyle).toBe('piano');
   });
 
   it('gives frames without media an empty clip so their settings persist', () => {

@@ -52,6 +52,9 @@ export class Gl2Compositor implements SceneRenderer {
   private height = 1;
   private lastScene: RenderScene | null = null;
   private lastCompositionWidth = 0;
+  // Per frame, the media last drawn: after a trigger it stays on screen
+  // (and playing) until the new clip has a frame to show — no black gap
+  private shown = new Map<string, MediaItem>();
 
   /** null when WebGL2 isn't available. */
   static create(canvas: HTMLCanvasElement): Gl2Compositor | null {
@@ -205,8 +208,10 @@ export class Gl2Compositor implements SceneRenderer {
       .map(({ frame }) => frame);
 
     for (const frame of frames) {
-      const source = this.frameSource(frame);
-      if (!source && !scene.showPlaceholders) continue;
+      const source = this.frameSource(scene, frame);
+      // Placeholders only for frames that never got media (a cleared
+      // launcher layer is simply off)
+      if (!source && (!scene.showPlaceholders || frame.layerHasClips)) continue;
       const blendMode = BLEND_MODE_CODES[frame.blendMode] ?? 0;
       if (blendMode === 0) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets[current].framebuffer);
@@ -245,28 +250,74 @@ export class Gl2Compositor implements SceneRenderer {
 
   // ---- Drawing -------------------------------------------------------------------
 
-  private mediaItems(scene: RenderScene): MediaItem[] {
-    const items: MediaItem[] = [];
-    const bg = scene.background;
-    if (bg.type !== 'color' && bg.url) {
-      items.push({ key: BACKGROUND_KEY, url: bg.url, type: bg.type, loop: bg.loop ?? true, muted: bg.muted ?? true, playbackRate: 1 });
-    }
-    for (const frame of scene.frames) {
-      if (frame.testPattern || !frame.url) continue;
-      items.push({ key: frame.id, url: frame.url, type: frame.type, loop: frame.loop, muted: frame.muted, playbackRate: frame.playbackRate });
-    }
-    return items;
+  // The media a frame plays: its layer's clip (shared by the layer's surfaces)
+  private frameItem(scene: RenderScene, frame: MediaFrame): MediaItem | null {
+    if (frame.testPattern || !frame.url) return null;
+    return {
+      key: frame.clipId ? `clip:${frame.clipId}` : frame.id,
+      url: frame.url,
+      type: frame.type,
+      loop: frame.loop,
+      muted: frame.muted,
+      playbackRate: frame.playbackRate,
+      active: true,
+      startSeq: frame.layerId ? scene.layerTriggers[frame.layerId] ?? 0 : 0,
+      layerId: frame.layerId,
+    };
   }
 
-  private frameSource(frame: MediaFrame): { texture: MediaTexture; fit: 0 | 1 } | null {
+  private mediaItems(scene: RenderScene): MediaItem[] {
+    const items = new Map<string, MediaItem>();
+    const bg = scene.background;
+    if (bg.type !== 'color' && bg.url) {
+      items.set(BACKGROUND_KEY, {
+        key: BACKGROUND_KEY, url: bg.url, type: bg.type, loop: bg.loop ?? true, muted: bg.muted ?? true,
+        playbackRate: 1, active: true, startSeq: 0,
+      });
+    }
+    const frameIds = new Set<string>();
+    for (const frame of scene.frames) {
+      frameIds.add(frame.id);
+      const item = this.frameItem(scene, frame);
+      if (item) items.set(item.key, item);
+    }
+    // Media still on screen while a triggered clip loads keeps playing
+    for (const [frameId, held] of this.shown) {
+      if (!frameIds.has(frameId)) this.shown.delete(frameId);
+      else if (!items.has(held.key)) items.set(held.key, { ...held, active: true });
+    }
+    for (const p of scene.preload) {
+      const key = `clip:${p.clipId}`;
+      if (items.has(key)) continue;
+      items.set(key, {
+        key, url: p.url, type: p.type, loop: p.loop, muted: p.muted, playbackRate: p.playbackRate,
+        active: false, startSeq: scene.layerTriggers[p.layerId] ?? 0, layerId: p.layerId,
+      });
+    }
+    return [...items.values()];
+  }
+
+  private frameSource(scene: RenderScene, frame: MediaFrame): { texture: MediaTexture; fit: 0 | 1 } | null {
     if (frame.testPattern) {
+      this.shown.delete(frame.id);
       const label = frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`;
       // Draw at the density it is shown at (output px per unit × zoom), so
       // it stays as crisp as the SVG test card of the CSS renderer
       const density = (this.width / (this.lastCompositionWidth || this.width)) * Math.max(1, frame.contentScale ?? 1);
       return { texture: this.testCard(frame.width, frame.height, label, density), fit: 0 };
     }
-    const texture = frame.url ? this.pool.texture(frame.id) : null;
+    const item = this.frameItem(scene, frame);
+    if (!item) {
+      this.shown.delete(frame.id); // cleared layer: off at once
+      return null;
+    }
+    const held = this.shown.get(frame.id);
+    if (held && held.key !== item.key && !this.pool.isReady(item.key)) {
+      const texture = this.pool.texture(held.key);
+      if (texture) return { texture, fit: 1 };
+    }
+    const texture = this.pool.texture(item.key);
+    if (texture) this.shown.set(frame.id, item);
     return texture ? { texture, fit: 1 } : null;
   }
 

@@ -1,4 +1,4 @@
-import type { BackgroundSettings, CompositionSettings, MediaFrame } from '../types';
+import type { BackgroundSettings, CompositionSettings, MediaFrame, MediaType } from '../types';
 import type { LiveState } from '../state/liveStore';
 
 // ---------------------------------------------------------------------------
@@ -17,6 +17,21 @@ export interface RenderScene {
   outputGain: number; // audio volume (master × blackout, 0 when muted)
   playback: LiveState['playback'];
   showPlaceholders: boolean; // editor: tint empty frames so they can be found
+  // Clip launcher: clips to keep loaded (paused) for an instant start, and
+  // per-layer trigger counters — a change restarts that layer's clip
+  preload: PreloadMedia[];
+  layerTriggers: LiveState['layerTriggers'];
+}
+
+/** A clip that isn't playing yet but should start without delay when triggered. */
+export interface PreloadMedia {
+  clipId: string;
+  layerId: string;
+  url: string; // playable in this window
+  type: MediaType;
+  loop: boolean;
+  muted: boolean;
+  playbackRate: number;
 }
 
 export interface SceneRenderer {

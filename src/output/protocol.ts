@@ -1,4 +1,4 @@
-import type { RenderDocument } from '../state/projectStore';
+import type { ProjectDocument } from '../state/projectStore';
 import type { LiveState } from '../state/liveStore';
 
 // ---------------------------------------------------------------------------
@@ -15,12 +15,16 @@ export const OUTPUT_QUERY_PARAM = 'output';
 export const HEARTBEAT_INTERVAL_MS = 2000;
 export const HEARTBEAT_TIMEOUT_MS = 6000;
 
-export type LiveSnapshot = Pick<LiveState, 'masterOpacity' | 'blackout' | 'showTestCard' | 'playback' | 'renderer'>;
+export type LiveSnapshot = Pick<
+  LiveState,
+  'masterOpacity' | 'blackout' | 'showTestCard' | 'playback' | 'renderer' | 'cuedColumn' | 'preloadClipId' | 'layerTriggers'
+>;
 
 export interface OutputSnapshot {
-  // Frames/background with a mediaId carry no URL: blob URLs belong to the
+  // The whole show (every clip, so outputs can preload what comes next).
+  // Clips/background with a mediaId carry no URL: blob URLs belong to the
   // window that created them, so each output resolves media from IndexedDB
-  doc: RenderDocument;
+  doc: ProjectDocument;
   live: LiveSnapshot;
 }
 
