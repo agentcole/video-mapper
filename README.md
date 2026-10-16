@@ -58,6 +58,10 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 - **Editing**: click an empty slot to pick media, drop files onto a slot (several files fill the slots to the right), drag a clip by its label to move it (Alt = copy), right-click to rename, replace or remove; per-layer opacity fader and clear button; **+ Layer** adds a full-composition layer, **+ Column** a column
 - Triggers are performance actions: undo/redo never changes what is playing, while slot edits are undoable. What plays is saved with the project, so an installation starts where it left off. Output windows mirror triggers and preload the same clips.
 
+### 🌗 Transitions & Crossfader
+- **Dissolves** when a layer changes clips or is cleared: set per layer (right-click the layer header, or its `⇢` chip) and per clip as an override (*Transition in* in the clip menu) — Cut, 0.25–4 s or 1–8 beats of the master clock. The dissolve starts once the new clip has a frame, each clip keeps its own look while fading, and on the GPU renderer the blend mode applies once to the mixed result.
+- **A/B crossfader** in the launcher toolbar: put layers on side A or B (the `A/B` chip on the layer header). Both sides are full in the middle, so with B stacked over A the fader dissolves in both directions. Double-click centres it; output windows follow.
+
 ### 🥁 Master Clock & Beat Snap
 - **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
 - **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
@@ -320,6 +324,7 @@ src/
 - [x] Undo/redo functionality
 - [x] Clip launcher with column triggers, cue/Go and preloading
 - [x] Master clock: tap tempo, resync, nudge, beat snap
+- [x] Transitions (dissolve, seconds or beats) and A/B crossfader
 - [x] Fixed composition resolution with letterboxed editing
 - [x] Unified corner pin for all shapes + warped editing grid
 - [x] Layers panel with numeric transform properties

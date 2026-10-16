@@ -4,6 +4,7 @@ import type { MediaFrame, MediaType, Point } from '../types';
 import type { LiveState } from '../state/liveStore';
 import type { PreloadMedia } from '../render/types';
 import { reportFirstFrame } from '../render/startStats';
+import { transitionMs } from '../state/transitions';
 import { TestCard } from './TestCard';
 import { applyHomography, getFrameHomography, getShapeVertices, homographyToCSS } from '../lib/geometry';
 
@@ -20,6 +21,36 @@ const verticesToClipPath = (vertices: Point[] | undefined): string => {
 // preload: loaded and parked on its first frame, invisible, until triggered.
 type MediaRole = 'shown' | 'pending' | 'preload';
 
+// A clip's own look: it keeps it while it fades out under the next clip
+interface Look {
+  filter: string;
+  flipHorizontal: boolean;
+  flipVertical: boolean;
+  scale: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+const NEUTRAL_LOOK: Look = { filter: '', flipHorizontal: false, flipVertical: false, scale: 1, offsetX: 0, offsetY: 0 };
+
+const lookOf = (frame: MediaFrame): Look => ({
+  filter: [
+    frame.blur > 0 ? `blur(${frame.blur}px)` : '',
+    frame.brightness !== 100 ? `brightness(${frame.brightness}%)` : '',
+    frame.contrast !== 100 ? `contrast(${frame.contrast}%)` : '',
+    frame.grayscale > 0 ? `grayscale(${frame.grayscale}%)` : '',
+    frame.saturate !== 100 ? `saturate(${frame.saturate}%)` : '',
+    frame.hueRotate !== 0 ? `hue-rotate(${frame.hueRotate}deg)` : '',
+    frame.invert > 0 ? `invert(${frame.invert}%)` : '',
+    frame.sepia > 0 ? `sepia(${frame.sepia}%)` : '',
+  ].filter(Boolean).join(' '),
+  flipHorizontal: frame.flipHorizontal,
+  flipVertical: frame.flipVertical,
+  scale: frame.contentScale ?? 1,
+  offsetX: frame.contentOffsetX ?? 0,
+  offsetY: frame.contentOffsetY ?? 0,
+});
+
 interface MediaDesc {
   key: string; // clip + url: the same element survives preload → pending → shown
   url: string;
@@ -27,6 +58,14 @@ interface MediaDesc {
   loop: boolean;
   muted: boolean;
   playbackRate: number;
+  look: Look;
+}
+
+// A running dissolve: the new clip fades in over the held one, or the held
+// one fades out (layer cleared)
+interface Fade {
+  out: boolean;
+  ms: number;
 }
 
 const playMuted = (video: HTMLVideoElement, muted: boolean) => {
@@ -50,10 +89,11 @@ interface MediaElementProps {
   outputGain: number;
   style: React.CSSProperties;
   onReady?: () => void; // pending media has a frame to show
+  fade?: Fade; // fade this element in, or out
 }
 
 const MediaElement: React.FC<MediaElementProps> = ({
-  media, role, startSeq, layerId, playback, outputGain, style, onReady,
+  media, role, startSeq, layerId, playback, outputGain, style, onReady, fade,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -158,6 +198,18 @@ const MediaElement: React.FC<MediaElementProps> = ({
     }
   }, [role, onReady]);
 
+  // Dissolves run on the compositor (Web Animations), independent of when
+  // React gets to render; the final opacity is in the style
+  useEffect(() => {
+    const element = videoRef.current ?? imageRef.current;
+    if (!fade || !element) return;
+    const animation = element.animate(
+      [{ opacity: fade.out ? 1 : 0 }, { opacity: fade.out ? 0 : 1 }],
+      { duration: fade.ms, easing: 'linear' },
+    );
+    return () => animation.cancel();
+  }, [fade]);
+
   // Play all / pause all: only commands sent after mounting, only playing media
   const lastPlaybackSeqRef = useRef(playback.seq);
   useEffect(() => {
@@ -178,7 +230,7 @@ const MediaElement: React.FC<MediaElementProps> = ({
     height: '100%',
     objectFit: 'cover',
     ...style,
-    ...(role === 'shown' ? {} : { opacity: 0, pointerEvents: 'none' }),
+    ...(role === 'shown' && !fade?.out ? {} : { opacity: 0, pointerEvents: 'none' }),
   };
 
   return media.type === 'video' ? (
@@ -211,6 +263,8 @@ interface FrameContentProps {
   showPlaceholder: boolean; // editor only: "add media" on empty frames
   preload?: PreloadMedia[]; // clips of this frame's layer to keep ready
   startSeq?: number; // this frame's layer trigger counter
+  gain?: number; // crossfader gain on the layer's opacity
+  bpm?: number; // master tempo, for transitions measured in beats
 }
 
 const NO_PRELOAD: PreloadMedia[] = [];
@@ -226,6 +280,8 @@ export const FrameContent = React.memo(function FrameContent({
   showPlaceholder,
   preload = NO_PRELOAD,
   startSeq,
+  gain = 1,
+  bpm = 120,
 }: FrameContentProps) {
   // What this frame plays now
   const current: MediaDesc | null = url && !frame.testPattern
@@ -236,32 +292,69 @@ export const FrameContent = React.memo(function FrameContent({
         loop: frame.loop,
         muted: frame.muted,
         playbackRate: frame.playbackRate,
+        look: lookOf(frame),
       }
     : null;
+  const fadeMs = transitionMs(frame.transition, bpm);
 
   // After a trigger the previous media stays on screen until the new one has
-  // a frame (no black gap); clearing a layer takes effect at once
+  // a frame (no black gap), then the new one dissolves in over it (or cuts).
+  // A cleared layer fades out, or goes off at once.
   const [previous, setPrevious] = useState<MediaDesc | null>(current);
   const [held, setHeld] = useState<MediaDesc | null>(null);
+  const [fade, setFade] = useState<Fade | null>(null);
   if (current?.key !== previous?.key) {
     setPrevious(current);
-    const keep = current && previous ? held ?? previous : null;
-    setHeld(keep && keep.key !== current?.key ? keep : null);
-  }
-  const handover = React.useCallback(() => setHeld(null), []);
-
-  const mediaElements: { media: MediaDesc; role: MediaRole; startSeq?: number; onReady?: () => void }[] = [];
-  if (!frame.testPattern) {
-    if (held) mediaElements.push({ media: held, role: 'shown' });
+    // On screen now: a clip that is fading in, else the held one, else the previous one
+    const onScreen = fade && !fade.out ? previous : held ?? previous;
     if (current) {
-      mediaElements.push({ media: current, role: held ? 'pending' : 'shown', startSeq, onReady: held ? handover : undefined });
+      setHeld(onScreen && onScreen.key !== current.key ? onScreen : null);
+      setFade(null);
+    } else if (onScreen && fadeMs > 0) {
+      setHeld(onScreen);
+      setFade({ out: true, ms: fadeMs });
+    } else {
+      setHeld(null);
+      setFade(null);
+    }
+  }
+  const handover = React.useCallback(() => {
+    if (fadeMs > 0) setFade({ out: false, ms: fadeMs });
+    else setHeld(null);
+  }, [fadeMs]);
+  // The faded-out clip goes when the dissolve is done
+  useEffect(() => {
+    if (!fade) return;
+    const timer = setTimeout(() => {
+      setHeld(null);
+      setFade(null);
+    }, fade.ms);
+    return () => clearTimeout(timer);
+  }, [fade]);
+
+  const mediaElements: {
+    media: MediaDesc; role: MediaRole; startSeq?: number; onReady?: () => void; fade?: Fade;
+  }[] = [];
+  if (!frame.testPattern) {
+    if (held) mediaElements.push({ media: held, role: 'shown', fade: fade?.out ? fade : undefined });
+    if (current) {
+      const waiting = held !== null && fade === null;
+      mediaElements.push({
+        media: current,
+        role: waiting ? 'pending' : 'shown',
+        startSeq,
+        onReady: waiting ? handover : undefined,
+        fade: fade && !fade.out ? fade : undefined,
+      });
     }
     // Clips this layer may start next, parked on their first frame
     for (const p of preload) {
       const key = `${p.clipId}|${p.url}`;
       if (key === current?.key || key === held?.key) continue;
       mediaElements.push({
-        media: { key, url: p.url, type: p.type, loop: p.loop, muted: p.muted, playbackRate: p.playbackRate },
+        media: {
+          key, url: p.url, type: p.type, loop: p.loop, muted: p.muted, playbackRate: p.playbackRate, look: NEUTRAL_LOOK,
+        },
         role: 'preload',
       });
     }
@@ -291,38 +384,22 @@ export const FrameContent = React.memo(function FrameContent({
 
   const clipPathStyle = getClipPath();
 
-  // Build CSS filter string
-  const filterStyle = [
-    frame.blur > 0 ? `blur(${frame.blur}px)` : '',
-    frame.brightness !== 100 ? `brightness(${frame.brightness}%)` : '',
-    frame.contrast !== 100 ? `contrast(${frame.contrast}%)` : '',
-    frame.grayscale > 0 ? `grayscale(${frame.grayscale}%)` : '',
-    frame.saturate !== 100 ? `saturate(${frame.saturate}%)` : '',
-    frame.hueRotate !== 0 ? `hue-rotate(${frame.hueRotate}deg)` : '',
-    frame.invert > 0 ? `invert(${frame.invert}%)` : '',
-    frame.sepia > 0 ? `sepia(${frame.sepia}%)` : '',
-  ].filter(Boolean).join(' ');
-
-  const contentScale = frame.contentScale ?? 1;
-  const contentOffsetX = frame.contentOffsetX ?? 0;
-  const contentOffsetY = frame.contentOffsetY ?? 0;
-
   // Content transform. With a homography the transform-origin is (0,0), so
   // flips/zoom are expressed relative to the frame box and composed AFTER the
   // homography (transform lists apply right-to-left).
-  const buildContentTransform = (): string => {
+  const buildContentTransform = (look: Look): string => {
     const parts: string[] = [];
     if (H) {
       parts.push(homographyToCSS(H));
-      if (frame.flipHorizontal) parts.push(`translate(${w}px, 0px) scaleX(-1)`);
-      if (frame.flipVertical) parts.push(`translate(0px, ${h}px) scaleY(-1)`);
-      if (contentScale !== 1) parts.push(`translate(${w / 2}px, ${h / 2}px) scale(${contentScale}) translate(${-w / 2}px, ${-h / 2}px)`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
+      if (look.flipHorizontal) parts.push(`translate(${w}px, 0px) scaleX(-1)`);
+      if (look.flipVertical) parts.push(`translate(0px, ${h}px) scaleY(-1)`);
+      if (look.scale !== 1) parts.push(`translate(${w / 2}px, ${h / 2}px) scale(${look.scale}) translate(${-w / 2}px, ${-h / 2}px)`);
+      if (look.offsetX !== 0 || look.offsetY !== 0) parts.push(`translate(${look.offsetX}%, ${look.offsetY}%)`);
     } else {
-      if (frame.flipHorizontal) parts.push('scaleX(-1)');
-      if (frame.flipVertical) parts.push('scaleY(-1)');
-      if (contentScale !== 1) parts.push(`scale(${contentScale})`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
+      if (look.flipHorizontal) parts.push('scaleX(-1)');
+      if (look.flipVertical) parts.push('scaleY(-1)');
+      if (look.scale !== 1) parts.push(`scale(${look.scale})`);
+      if (look.offsetX !== 0 || look.offsetY !== 0) parts.push(`translate(${look.offsetX}%, ${look.offsetY}%)`);
     }
     return parts.join(' ');
   };
@@ -338,7 +415,8 @@ export const FrameContent = React.memo(function FrameContent({
       ].join(', ')
     : undefined;
 
-  const contentStyle: React.CSSProperties = {
+  // Geometry of the content (from the surface), plus each clip's look
+  const geometryStyle: React.CSSProperties = {
     ...(H
       ? {
           position: 'absolute',
@@ -350,8 +428,6 @@ export const FrameContent = React.memo(function FrameContent({
           transformOrigin: '0 0',
         }
       : {}),
-    filter: filterStyle || undefined,
-    transform: buildContentTransform() || undefined,
     ...(softEdgeMask
       ? {
           maskImage: softEdgeMask,
@@ -361,6 +437,12 @@ export const FrameContent = React.memo(function FrameContent({
         }
       : {}),
   };
+  const styleFor = (look: Look): React.CSSProperties => ({
+    ...geometryStyle,
+    filter: look.filter || undefined,
+    transform: buildContentTransform(look) || undefined,
+  });
+  const contentStyle = styleFor(current?.look ?? lookOf(frame));
 
   return (
     <div
@@ -372,7 +454,7 @@ export const FrameContent = React.memo(function FrameContent({
         height: h,
         transform: `rotate(${frame.rotation}deg)`,
         zIndex: frame.zIndex,
-        opacity: frame.opacity,
+        opacity: frame.opacity * gain,
         // This element is the frame's stacking context, so the blend mode has
         // to sit here to mix with the frames and background below it
         mixBlendMode: frame.blendMode,
@@ -418,8 +500,9 @@ export const FrameContent = React.memo(function FrameContent({
             layerId={frame.layerId}
             playback={playback}
             outputGain={outputGain}
-            style={contentStyle}
+            style={styleFor(m.media.look)}
             onReady={m.onReady}
+            fade={m.fade}
           />
         ))}
       </div>

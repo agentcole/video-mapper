@@ -77,26 +77,33 @@ uniform int u_vertexCount;
 uniform vec2 u_vertices[${MAX_POLYGON_VERTICES}];
 uniform vec4 u_softEdge;       // left, right, top, bottom px
 
-// Content
-uniform vec2 u_flip;
-uniform float u_zoom;
-uniform vec2 u_offset;
-uniform int u_fit;             // 0 stretch (test card), 1 cover
-uniform float u_mediaAspect;
+// A clip's content transform and look (CSS filters, applied in CSS order)
+struct Look {
+  vec2 flip;
+  float zoom;
+  vec2 offset;
+  int fit;                     // 0 stretch (test card), 1 cover
+  float mediaAspect;
+  float blur;                  // px (box space)
+  float brightness;
+  float contrast;
+  float grayscale;
+  float saturate;
+  float hueRotate;             // radians
+  float invert;
+  float sepia;
+};
+
+// Content: the clip on screen, and during a dissolve the clip it replaces
+uniform Look u_look;
 uniform bool u_hasMedia;
 uniform sampler2D u_media;
+uniform Look u_fromLook;
+uniform bool u_hasFrom;
+uniform sampler2D u_fromMedia;
+uniform float u_mix;           // dissolve position: 0 = from only, 1 = media only
 uniform vec4 u_fill;           // editor placeholder colour (alpha 0 = none)
 uniform float u_opacity;
-
-// CSS filters, applied in CSS order
-uniform float u_blur;          // px (box space)
-uniform float u_brightness;
-uniform float u_contrast;
-uniform float u_grayscale;
-uniform float u_saturate;
-uniform float u_hueRotate;     // radians
-uniform float u_invert;
-uniform float u_sepia;
 
 // Blending against everything below
 uniform int u_blendMode;       // 0 normal (fixed-function), see blend()
@@ -133,34 +140,34 @@ float coverage(float sd) {
 
 vec3 colorMatrix(vec3 c, mat3 m) { return m * c; }
 
-vec3 applyFilters(vec3 c) {
-  c *= u_brightness;
-  c = (c - 0.5) * u_contrast + 0.5;
-  if (u_grayscale > 0.0) {
-    float g = 1.0 - u_grayscale;
+vec3 applyFilters(vec3 c, Look look) {
+  c *= look.brightness;
+  c = (c - 0.5) * look.contrast + 0.5;
+  if (look.grayscale > 0.0) {
+    float g = 1.0 - look.grayscale;
     c = colorMatrix(c, transpose(mat3(
       0.2126 + 0.7874 * g, 0.7152 - 0.7152 * g, 0.0722 - 0.0722 * g,
       0.2126 - 0.2126 * g, 0.7152 + 0.2848 * g, 0.0722 - 0.0722 * g,
       0.2126 - 0.2126 * g, 0.7152 - 0.7152 * g, 0.0722 + 0.9278 * g)));
   }
-  if (u_saturate != 1.0) {
-    float s = u_saturate;
+  if (look.saturate != 1.0) {
+    float s = look.saturate;
     c = colorMatrix(c, transpose(mat3(
       0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s,
       0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s,
       0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s)));
   }
-  if (u_hueRotate != 0.0) {
-    float co = cos(u_hueRotate);
-    float si = sin(u_hueRotate);
+  if (look.hueRotate != 0.0) {
+    float co = cos(look.hueRotate);
+    float si = sin(look.hueRotate);
     c = colorMatrix(c, transpose(mat3(
       0.213 + co * 0.787 - si * 0.213, 0.715 - co * 0.715 - si * 0.715, 0.072 - co * 0.072 + si * 0.928,
       0.213 - co * 0.213 + si * 0.143, 0.715 + co * 0.285 + si * 0.140, 0.072 - co * 0.072 - si * 0.283,
       0.213 - co * 0.213 - si * 0.787, 0.715 - co * 0.715 + si * 0.715, 0.072 + co * 0.928 + si * 0.072)));
   }
-  if (u_invert > 0.0) c = mix(c, 1.0 - c, u_invert);
-  if (u_sepia > 0.0) {
-    float g = 1.0 - u_sepia;
+  if (look.invert > 0.0) c = mix(c, 1.0 - c, look.invert);
+  if (look.sepia > 0.0) {
+    float g = 1.0 - look.sepia;
     c = colorMatrix(c, transpose(mat3(
       0.393 + 0.607 * g, 0.769 - 0.769 * g, 0.189 - 0.189 * g,
       0.349 - 0.349 * g, 0.686 + 0.314 * g, 0.168 - 0.168 * g,
@@ -215,17 +222,33 @@ vec3 blend(vec3 b, vec3 s) {
   }
 }
 
-vec4 sampleMedia(vec2 uv) {
-  if (u_blur <= 0.0) return texture(u_media, uv);
+vec4 sampleMedia(sampler2D media, vec2 uv, Look look) {
+  if (look.blur <= 0.0) return texture(media, uv);
   // 12-tap Poisson disc; radius ≈ 2σ in box px, converted to uv
   const vec2 taps[12] = vec2[12](
     vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696, 0.457), vec2(-0.203, 0.621),
     vec2(0.962, -0.195), vec2(0.473, -0.480), vec2(0.519, 0.767), vec2(0.185, -0.893),
     vec2(0.507, 0.064), vec2(0.896, 0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598));
-  vec2 radius = (2.0 * u_blur) / (u_size * u_zoom);
-  vec4 sum = texture(u_media, uv);
-  for (int i = 0; i < 12; i++) sum += texture(u_media, uv + taps[i] * radius);
+  vec2 radius = (2.0 * look.blur) / (u_size * look.zoom);
+  vec4 sum = texture(media, uv);
+  for (int i = 0; i < 12; i++) sum += texture(media, uv + taps[i] * radius);
   return sum / 13.0;
+}
+
+// A clip's colour at a box position, premultiplied
+vec4 content(vec2 box, sampler2D media, Look look) {
+  // Box → content element (undo flip, zoom about the centre, pan)
+  vec2 p = (box - u_size * 0.5) * look.flip;
+  p = p / look.zoom - look.offset;
+  vec2 uv = p / u_size + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0); // zoomed out
+  if (look.fit == 1) {
+    float boxAspect = u_size.x / u_size.y;
+    if (look.mediaAspect > boxAspect) uv.x = 0.5 + (uv.x - 0.5) * (boxAspect / look.mediaAspect);
+    else uv.y = 0.5 + (uv.y - 0.5) * (look.mediaAspect / boxAspect);
+  }
+  vec4 c = sampleMedia(media, uv, look);
+  return vec4(applyFilters(c.rgb, look) * c.a, c.a);
 }
 
 void main() {
@@ -253,25 +276,11 @@ void main() {
   if (u_softEdge.z > 0.0) alpha *= clamp(box.y / u_softEdge.z, 0.0, 1.0);
   if (u_softEdge.w > 0.0) alpha *= clamp((u_size.y - box.y) / u_softEdge.w, 0.0, 1.0);
 
-  // Box → content element (undo flip, zoom about the centre, pan)
-  vec2 p = (box - u_size * 0.5) * u_flip;
-  p = p / u_zoom - u_offset;
-  vec2 uv = p / u_size + 0.5;
-
-  vec4 src;
-  if (!u_hasMedia) {
-    src = u_fill;
-  } else if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-    src = vec4(0.0); // zoomed out: the element doesn't cover this pixel
-  } else {
-    if (u_fit == 1) {
-      float boxAspect = u_size.x / u_size.y;
-      if (u_mediaAspect > boxAspect) uv.x = 0.5 + (uv.x - 0.5) * (boxAspect / u_mediaAspect);
-      else uv.y = 0.5 + (uv.y - 0.5) * (u_mediaAspect / boxAspect);
-    }
-    src = sampleMedia(uv);
-    src.rgb = applyFilters(src.rgb);
-  }
+  // The layer's content (premultiplied): its clip, dissolving from the
+  // previous one — mixed before blending, so blend modes apply once
+  vec4 pm = u_hasMedia ? content(box, u_media, u_look) : vec4(u_fill.rgb * u_fill.a, u_fill.a);
+  if (u_hasFrom) pm = mix(content(box, u_fromMedia, u_fromLook), pm, u_mix);
+  vec4 src = vec4(pm.a > 0.0 ? pm.rgb / pm.a : vec3(0.0), pm.a);
 
   float a = src.a * alpha * u_opacity;
   if (a <= 0.0) discard;

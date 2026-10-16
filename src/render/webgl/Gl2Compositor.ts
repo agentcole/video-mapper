@@ -1,6 +1,7 @@
 import type { MediaFrame, Point } from '../../types';
 import type { RenderScene, SceneRenderer } from '../types';
 import { frameRenderParams, MAX_POLYGON_VERTICES } from '../frameMath';
+import { fadeProgress, transitionMs } from '../../state/transitions';
 import { drawTestCard } from '../testCardCanvas';
 import { MediaPool, type MediaItem, type MediaTexture } from './MediaPool';
 import {
@@ -28,6 +29,31 @@ interface Target {
   framebuffer: WebGLFramebuffer;
 }
 
+interface FrameSource {
+  texture: MediaTexture;
+  fit: 0 | 1;
+}
+
+// What a frame shows: its media, and the frame as it was then (the clip's look)
+interface Shown {
+  item: MediaItem;
+  frame: MediaFrame;
+}
+
+// A dissolve on a frame: from the clip that was shown to the current one
+// (or to nothing when the layer was cleared)
+interface Fade {
+  from: Shown;
+  start: number; // performance.now()
+  ms: number;
+}
+
+// What drawFrame mixes: the current source and, during a dissolve, the old one
+interface FrameDraw {
+  source: FrameSource | null;
+  from: { source: FrameSource; frame: MediaFrame; mix: number } | null;
+}
+
 const hexToRgba = (hex: string): [number, number, number, number] => {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
   if (!m) return [0, 0, 0, 1];
@@ -53,8 +79,10 @@ export class Gl2Compositor implements SceneRenderer {
   private lastScene: RenderScene | null = null;
   private lastCompositionWidth = 0;
   // Per frame, the media last drawn: after a trigger it stays on screen
-  // (and playing) until the new clip has a frame to show — no black gap
-  private shown = new Map<string, MediaItem>();
+  // (and playing) until the new clip has a frame to show — no black gap —
+  // then dissolves into it over the frame's transition
+  private shown = new Map<string, Shown>();
+  private fades = new Map<string, Fade>();
 
   /** null when WebGL2 isn't available. */
   static create(canvas: HTMLCanvasElement): Gl2Compositor | null {
@@ -185,9 +213,9 @@ export class Gl2Compositor implements SceneRenderer {
   render(scene: RenderScene): void {
     if (this.lost || this.gl.isContextLost()) return;
     this.pool.update(this.mediaItems(scene), scene.outputGain, scene.playback);
-    // Skip identical frames: same scene object and no new video frames
+    // Skip identical frames: same scene object, no new video frames, no dissolve running
     const newFrames = this.pool.consumeNewFrames();
-    if (scene === this.lastScene && !newFrames) return;
+    if (scene === this.lastScene && !newFrames && this.fades.size === 0) return;
     this.lastScene = scene;
     this.lastCompositionWidth = scene.composition.width;
 
@@ -207,24 +235,25 @@ export class Gl2Compositor implements SceneRenderer {
       .sort((a, b) => a.frame.zIndex - b.frame.zIndex || a.index - b.index)
       .map(({ frame }) => frame);
 
+    const now = performance.now();
     for (const frame of frames) {
-      const source = this.frameSource(scene, frame);
+      const draw = this.frameDraw(scene, frame, now);
       // Placeholders only for frames that never got media (a cleared
       // launcher layer is simply off)
-      if (!source && (!scene.showPlaceholders || frame.layerHasClips)) continue;
+      if (!draw.source && !draw.from && (!scene.showPlaceholders || frame.layerHasClips)) continue;
       const blendMode = BLEND_MODE_CODES[frame.blendMode] ?? 0;
       if (blendMode === 0) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets[current].framebuffer);
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-        this.drawFrame(scene, frame, source, 0, null);
+        this.drawFrame(scene, frame, draw, 0, null);
       } else {
         // Copy what's below, then draw the frame reading it as the backdrop
         const next = 1 - current;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.targets[next].framebuffer);
         gl.disable(gl.BLEND);
         this.copy(this.targets[current].texture, 1);
-        this.drawFrame(scene, frame, source, blendMode, this.targets[current].texture);
+        this.drawFrame(scene, frame, draw, blendMode, this.targets[current].texture);
         current = next;
       }
     }
@@ -281,10 +310,15 @@ export class Gl2Compositor implements SceneRenderer {
       const item = this.frameItem(scene, frame);
       if (item) items.set(item.key, item);
     }
-    // Media still on screen while a triggered clip loads keeps playing
+    // Media still on screen while a triggered clip loads, or dissolving
+    // away, keeps playing
     for (const [frameId, held] of this.shown) {
       if (!frameIds.has(frameId)) this.shown.delete(frameId);
-      else if (!items.has(held.key)) items.set(held.key, { ...held, active: true });
+      else if (!items.has(held.item.key)) items.set(held.item.key, { ...held.item, active: true });
+    }
+    for (const [frameId, fade] of this.fades) {
+      if (!frameIds.has(frameId)) this.fades.delete(frameId);
+      else if (!items.has(fade.from.item.key)) items.set(fade.from.item.key, { ...fade.from.item, active: true });
     }
     for (const p of scene.preload) {
       const key = `clip:${p.clipId}`;
@@ -297,27 +331,52 @@ export class Gl2Compositor implements SceneRenderer {
     return [...items.values()];
   }
 
-  private frameSource(scene: RenderScene, frame: MediaFrame): { texture: MediaTexture; fit: 0 | 1 } | null {
+  private frameDraw(scene: RenderScene, frame: MediaFrame, now: number): FrameDraw {
+    const source = this.frameSource(scene, frame, now);
+    const fade = this.fades.get(frame.id);
+    if (!fade) return { source, from: null };
+    const mix = fadeProgress(fade.start, fade.ms, now);
+    const fromTexture = this.pool.texture(fade.from.item.key);
+    if (mix >= 1 || !fromTexture) {
+      this.fades.delete(frame.id);
+      return { source, from: null };
+    }
+    return { source, from: { source: { texture: fromTexture, fit: 1 }, frame: fade.from.frame, mix } };
+  }
+
+  private frameSource(scene: RenderScene, frame: MediaFrame, now: number): FrameSource | null {
     if (frame.testPattern) {
       this.shown.delete(frame.id);
+      this.fades.delete(frame.id);
       const label = frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`;
       // Draw at the density it is shown at (output px per unit × zoom), so
       // it stays as crisp as the SVG test card of the CSS renderer
       const density = (this.width / (this.lastCompositionWidth || this.width)) * Math.max(1, frame.contentScale ?? 1);
       return { texture: this.testCard(frame.width, frame.height, label, density), fit: 0 };
     }
+    const ms = transitionMs(frame.transition, scene.bpm);
+    const held = this.shown.get(frame.id);
     const item = this.frameItem(scene, frame);
     if (!item) {
-      this.shown.delete(frame.id); // cleared layer: off at once
+      // Cleared layer: fades out over its transition, or goes off at once
+      if (held && ms > 0) this.fades.set(frame.id, { from: held, start: now, ms });
+      this.shown.delete(frame.id);
       return null;
     }
-    const held = this.shown.get(frame.id);
-    if (held && held.key !== item.key && !this.pool.isReady(item.key)) {
-      const texture = this.pool.texture(held.key);
-      if (texture) return { texture, fit: 1 };
+    if (held && held.item.key !== item.key) {
+      if (!this.pool.isReady(item.key)) {
+        // Hold the last picture until the new clip has a frame
+        const texture = this.pool.texture(held.item.key);
+        if (texture) return { texture, fit: 1 };
+      } else if (ms > 0) {
+        // The new clip is there: dissolve from what was on screen
+        this.fades.set(frame.id, { from: held, start: now, ms });
+      } else {
+        this.fades.delete(frame.id);
+      }
     }
     const texture = this.pool.texture(item.key);
-    if (texture) this.shown.set(frame.id, item);
+    if (texture) this.shown.set(frame.id, { item, frame });
     return texture ? { texture, fit: 1 } : null;
   }
 
@@ -382,10 +441,30 @@ export class Gl2Compositor implements SceneRenderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
+  // A clip's content transform and look (struct Look in the shader)
+  private setLook(name: string, frame: MediaFrame, source: FrameSource | null) {
+    const gl = this.gl;
+    const u = (field: string) => this.uniform(this.frameProgram, `${name}.${field}`);
+    const params = frameRenderParams(frame);
+    gl.uniform2f(u('flip'), params.flip.x, params.flip.y);
+    gl.uniform1f(u('zoom'), params.zoom);
+    gl.uniform2f(u('offset'), params.offset.x, params.offset.y);
+    gl.uniform1i(u('fit'), source?.fit ?? 1);
+    gl.uniform1f(u('mediaAspect'), source ? source.texture.width / source.texture.height : 1);
+    gl.uniform1f(u('blur'), frame.blur);
+    gl.uniform1f(u('brightness'), frame.brightness / 100);
+    gl.uniform1f(u('contrast'), frame.contrast / 100);
+    gl.uniform1f(u('grayscale'), Math.min(1, frame.grayscale / 100));
+    gl.uniform1f(u('saturate'), frame.saturate / 100);
+    gl.uniform1f(u('hueRotate'), (frame.hueRotate * Math.PI) / 180);
+    gl.uniform1f(u('invert'), Math.min(1, frame.invert / 100));
+    gl.uniform1f(u('sepia'), Math.min(1, frame.sepia / 100));
+  }
+
   private drawFrame(
     scene: RenderScene,
     frame: MediaFrame,
-    source: { texture: MediaTexture; fit: 0 | 1 } | null,
+    { source, from }: FrameDraw,
     blendMode: number,
     backdrop: WebGLTexture | null,
   ) {
@@ -428,28 +507,23 @@ export class Gl2Compositor implements SceneRenderer {
     }
     gl.uniform4fv(u('u_softEdge'), params.softEdge);
 
-    gl.uniform2f(u('u_flip'), params.flip.x, params.flip.y);
-    gl.uniform1f(u('u_zoom'), params.zoom);
-    gl.uniform2f(u('u_offset'), params.offset.x, params.offset.y);
-    gl.uniform1i(u('u_fit'), source?.fit ?? 1);
+    this.setLook('u_look', frame, source);
     gl.uniform1i(u('u_hasMedia'), source ? 1 : 0);
-    gl.uniform4fv(u('u_fill'), source || !scene.showPlaceholders ? [0, 0, 0, 0] : PLACEHOLDER_FILL);
+    // A layer fading out to nothing mixes towards transparent, not the placeholder
+    gl.uniform4fv(u('u_fill'), source || from || !scene.showPlaceholders ? [0, 0, 0, 0] : PLACEHOLDER_FILL);
     gl.uniform1f(u('u_opacity'), frame.opacity);
     // Unused samplers are unbound — a render target left on a texture unit
     // would form a feedback loop and the draw would be dropped
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, source?.texture.texture ?? null);
-    if (source) gl.uniform1f(u('u_mediaAspect'), source.texture.width / source.texture.height);
     gl.uniform1i(u('u_media'), 0);
 
-    gl.uniform1f(u('u_blur'), frame.blur);
-    gl.uniform1f(u('u_brightness'), frame.brightness / 100);
-    gl.uniform1f(u('u_contrast'), frame.contrast / 100);
-    gl.uniform1f(u('u_grayscale'), Math.min(1, frame.grayscale / 100));
-    gl.uniform1f(u('u_saturate'), frame.saturate / 100);
-    gl.uniform1f(u('u_hueRotate'), (frame.hueRotate * Math.PI) / 180);
-    gl.uniform1f(u('u_invert'), Math.min(1, frame.invert / 100));
-    gl.uniform1f(u('u_sepia'), Math.min(1, frame.sepia / 100));
+    gl.uniform1i(u('u_hasFrom'), from ? 1 : 0);
+    gl.uniform1f(u('u_mix'), from?.mix ?? 1);
+    if (from) this.setLook('u_fromLook', from.frame, from.source);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, from?.source.texture.texture ?? null);
+    gl.uniform1i(u('u_fromMedia'), 2);
 
     gl.uniform1i(u('u_blendMode'), blendMode);
     gl.activeTexture(gl.TEXTURE1);

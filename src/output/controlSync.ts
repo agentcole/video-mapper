@@ -29,14 +29,14 @@ export const createSnapshot = (): OutputSnapshot => {
   const { surfaces, layers, columns, background, grid, composition, tempo } = projectStore.getState();
   const {
     masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
-    clockOrigin, scheduled,
+    clockOrigin, scheduled, crossfader,
   } = liveStore.getState();
   const show = mapClips({ surfaces, layers, columns }, clip => ({ ...clip, source: stripUrl(clip.source) }));
   return {
     doc: { ...show, background: stripUrl(background), grid, composition, tempo },
     live: {
       masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
-      clockOrigin, scheduled,
+      clockOrigin, scheduled, crossfader,
     },
   };
 };

@@ -3,16 +3,17 @@ import { createPortal } from 'react-dom';
 import {
   ChevronDown, ChevronUp, Crosshair, Image as ImageIcon, Plus, Play, Timer, X, Video, Zap,
 } from 'lucide-react';
-import type { BeatSnap, MediaType } from '../types';
+import type { BeatSnap, CrossfadeSide, MediaType, Transition } from '../types';
 import { useProjectStore } from '../state/projectStore';
-import { useLiveStore, type ScheduledTrigger } from '../state/liveStore';
+import { liveStore, useLiveStore, type ScheduledTrigger } from '../state/liveStore';
 import { layersTopFirst, type SlotRef } from '../state/deck';
 import {
   addDeckColumn, addDeckLayer, assignMedia, clearAllLayers, clearLayer, cueColumn, go, moveClipTo,
-  preloadClip, pressClip, removeClipAt, renameClip, renameDeckColumn, setClipBeatSnap, setTriggerStyle,
-  triggerColumn, updateDeckLayer,
+  preloadClip, pressClip, removeClipAt, renameClip, renameDeckColumn, setClipBeatSnap, setClipTransition,
+  setLayerCrossfade, setLayerTransition, setTriggerStyle, triggerColumn, updateDeckLayer,
 } from '../state/deckActions';
 import { BEAT_SNAPS } from '../state/clock';
+import { sameTransition, TRANSITION_PRESETS, transitionLabel } from '../state/transitions';
 import type { Clip, Layer, TriggerStyle } from '../state/showModel';
 import { TempoBar } from './TempoBar';
 import { useLastClipStart } from '../render/startStats';
@@ -280,17 +281,17 @@ const TRIGGER_STYLES: { style: TriggerStyle; label: string; hint: string }[] = [
   { style: 'piano', label: 'Piano', hint: 'plays while held' },
 ];
 
-const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slot: SlotRef) => void }> = ({
-  menu, onClose, onReplace,
+// A menu at the pointer, on the body (the launcher's backdrop filter would
+// otherwise be its containing block); opens upwards as far as needed
+const MenuShell: React.FC<{ x: number; y: number; onClose: () => void; children: React.ReactNode }> = ({
+  x, y, onClose, children,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const compositionSnap = useProjectStore(s => s.tempo.beatSnap);
-  // Open upwards as far as needed to stay on screen (the launcher sits at the bottom)
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - el.getBoundingClientRect().height - 8))}px`;
-  }, [menu.y]);
+    el.style.top = `${Math.max(8, Math.min(y, window.innerHeight - el.getBoundingClientRect().height - 8))}px`;
+  }, [y]);
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
@@ -305,15 +306,43 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
       window.removeEventListener('keydown', onKey);
     };
   }, [onClose]);
+  return createPortal(
+    <div
+      ref={ref}
+      className={`fixed z-[3000] w-[260px] ${menuSurface} py-1`}
+      style={{ left: Math.min(x, window.innerWidth - 270), top: y }}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+};
+
+// One choice in a row of chips; amber for show timing, cyan for the rest
+const Chip: React.FC<{
+  selected: boolean; onClick: () => void; timing?: boolean; title?: string; children: React.ReactNode;
+}> = ({ selected, onClick, timing, title, children }) => (
+  <button
+    className={`px-1.5 py-0.5 rounded text-[11px] ${
+      selected ? `${timing ? 'bg-amber-500' : 'bg-cyan-500'} text-black font-semibold` : 'bg-white/10 hover:bg-white/20'
+    }`}
+    onClick={onClick}
+    title={title}
+  >
+    {children}
+  </button>
+);
+
+const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slot: SlotRef) => void }> = ({
+  menu, onClose, onReplace,
+}) => {
+  const compositionSnap = useProjectStore(s => s.tempo.beatSnap);
+  const layerTransition = useProjectStore(s => s.layers.find(l => l.id === menu.slot.layerId)?.transition);
 
   const style = menu.clip.triggerStyle ?? 'normal';
   const item = 'w-full text-left px-3 py-1.5 hover:bg-white/10 text-xs';
   return (
-    <div
-      ref={ref}
-      className={`fixed z-[3000] min-w-[220px] ${menuSurface} py-1`}
-      style={{ left: Math.min(menu.x, window.innerWidth - 240), top: menu.y }}
-    >
+    <MenuShell x={menu.x} y={menu.y} onClose={onClose}>
       <p className={`px-3 py-1 truncate ${sectionLabel}`}>{clipLabel(menu.clip)}</p>
       {TRIGGER_STYLES.map(t => (
         <button
@@ -332,22 +361,45 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
       <div className="my-1 border-t border-white/10" />
       <p className={`px-3 pt-1 ${sectionLabel}`}>Beat snap</p>
       <div className="flex flex-wrap gap-1 px-3 py-1.5">
-        {[null, ...BEAT_SNAPS.map(s => s.snap)].map(snap => {
-          const selected = (menu.clip.beatSnap ?? null) === snap;
-          return (
-            <button
-              key={snap ?? 'composition'}
-              className={`px-1.5 py-0.5 rounded text-[11px] ${selected ? 'bg-amber-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
-              onClick={() => {
-                setClipBeatSnap(menu.clip.id, snap);
-                onClose();
-              }}
-              title={snap === null ? 'Follow the composition\'s beat snap' : undefined}
-            >
-              {snap === null ? `Comp. (${snapLabel(compositionSnap)})` : snapLabel(snap)}
-            </button>
-          );
-        })}
+        {[null, ...BEAT_SNAPS.map(s => s.snap)].map(snap => (
+          <Chip
+            key={snap ?? 'composition'}
+            timing
+            selected={(menu.clip.beatSnap ?? null) === snap}
+            onClick={() => {
+              setClipBeatSnap(menu.clip.id, snap);
+              onClose();
+            }}
+            title={snap === null ? 'Follow the composition\'s beat snap' : undefined}
+          >
+            {snap === null ? `Comp. (${snapLabel(compositionSnap)})` : snapLabel(snap)}
+          </Chip>
+        ))}
+      </div>
+      <p className={`px-3 pt-1 ${sectionLabel}`}>Transition in</p>
+      <div className="flex flex-wrap gap-1 px-3 py-1.5">
+        <Chip
+          selected={!menu.clip.transition}
+          onClick={() => {
+            setClipTransition(menu.clip.id, null);
+            onClose();
+          }}
+          title="Follow the layer's transition"
+        >
+          Layer ({transitionLabel(layerTransition)})
+        </Chip>
+        {TRANSITION_PRESETS.map(t => (
+          <Chip
+            key={transitionLabel(t)}
+            selected={!!menu.clip.transition && sameTransition(menu.clip.transition, t)}
+            onClick={() => {
+              setClipTransition(menu.clip.id, t);
+              onClose();
+            }}
+          >
+            {transitionLabel(t)}
+          </Chip>
+        ))}
       </div>
       <div className="my-1 border-t border-white/10" />
       <button
@@ -378,7 +430,60 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
       >
         Remove clip
       </button>
-    </div>
+    </MenuShell>
+  );
+};
+
+// ---- Layer menu: transition and crossfader side --------------------------------------
+
+interface LayerMenuState {
+  x: number;
+  y: number;
+  layerId: string;
+}
+
+const CROSSFADE_SIDES: { side: CrossfadeSide | null; label: string }[] = [
+  { side: null, label: 'Off' },
+  { side: 'A', label: 'A' },
+  { side: 'B', label: 'B' },
+];
+
+const LayerMenu: React.FC<{ menu: LayerMenuState; onClose: () => void }> = ({ menu, onClose }) => {
+  const layer = useProjectStore(s => s.layers.find(l => l.id === menu.layerId));
+  if (!layer) return null;
+  const pick = (transition: Transition) => {
+    setLayerTransition(layer.id, transition);
+    onClose();
+  };
+  return (
+    <MenuShell x={menu.x} y={menu.y} onClose={onClose}>
+      <p className={`px-3 py-1 truncate ${sectionLabel}`}>{layer.name}</p>
+      <p className={`px-3 pt-1 ${sectionLabel}`}>Transition</p>
+      <p className="px-3 text-[10px] text-gray-500">Dissolve when a clip starts or the layer is cleared</p>
+      <div className="flex flex-wrap gap-1 px-3 py-1.5">
+        {TRANSITION_PRESETS.map(t => (
+          <Chip key={transitionLabel(t)} selected={sameTransition(layer.transition, t)} onClick={() => pick(t)}>
+            {transitionLabel(t)}
+          </Chip>
+        ))}
+      </div>
+      <div className="my-1 border-t border-white/10" />
+      <p className={`px-3 pt-1 ${sectionLabel}`}>Crossfader side</p>
+      <div className="flex gap-1 px-3 py-1.5">
+        {CROSSFADE_SIDES.map(({ side, label }) => (
+          <Chip
+            key={label}
+            selected={(layer.crossfade ?? null) === side}
+            onClick={() => {
+              setLayerCrossfade(layer.id, side);
+              onClose();
+            }}
+          >
+            {label}
+          </Chip>
+        ))}
+      </div>
+    </MenuShell>
   );
 };
 
@@ -431,15 +536,26 @@ interface ClipLauncherProps {
   onClose: () => void;
 }
 
-const LayerHeader: React.FC<{ layer: Layer; onSelect: (layerId: string) => void }> = ({ layer, onSelect }) => (
-  <div className="shrink-0 flex flex-col justify-center gap-1 pr-2" style={{ width: HEADER_W, height: CELL_H }}>
+const nextSide = (side: CrossfadeSide | undefined): CrossfadeSide | null =>
+  side === undefined ? 'A' : side === 'A' ? 'B' : null;
+
+const LayerHeader: React.FC<{
+  layer: Layer;
+  onSelect: (layerId: string) => void;
+  onMenu: (e: React.MouseEvent, layerId: string) => void;
+}> = ({ layer, onSelect, onMenu }) => (
+  <div
+    className="shrink-0 flex flex-col justify-center gap-1 pr-2"
+    style={{ width: HEADER_W, height: CELL_H }}
+    onContextMenu={(e) => onMenu(e, layer.id)}
+  >
     <div className="flex items-center gap-1">
       <EditableName
         value={layer.name}
         onCommit={(name) => name.trim() && updateDeckLayer(layer.id, { name: name.trim() })}
         onClick={() => onSelect(layer.id)}
         className="flex-1 truncate text-xs cursor-pointer hover:text-cyan-300"
-        title={`${layer.name} — click to select its surfaces, double-click to rename`}
+        title={`${layer.name} — click to select its surfaces, double-click to rename, right-click for transition and crossfader`}
       />
       <button
         onClick={() => clearLayer(layer.id)}
@@ -459,8 +575,49 @@ const LayerHeader: React.FC<{ layer: Layer; onSelect: (layerId: string) => void 
       className="w-full h-1 accent-cyan-400"
       title={`Layer opacity ${Math.round(layer.opacity * 100)}%`}
     />
+    <div className="flex items-center gap-1 text-[10px]">
+      <button
+        onClick={(e) => onMenu(e, layer.id)}
+        className={`flex-1 min-w-0 truncate text-left px-1 rounded hover:bg-white/15 ${layer.transition ? 'text-cyan-300' : 'text-gray-500'}`}
+        title="Transition: how this layer changes clips and fades out"
+      >
+        ⇢ {transitionLabel(layer.transition)}
+      </button>
+      <button
+        onClick={() => setLayerCrossfade(layer.id, nextSide(layer.crossfade))}
+        className={`w-5 rounded font-semibold ${layer.crossfade ? 'bg-cyan-500 text-black' : 'bg-white/10 text-gray-500 hover:bg-white/20'}`}
+        title={`Crossfader side: ${layer.crossfade ?? 'off'} (click: off → A → B)`}
+      >
+        {layer.crossfade ?? '–'}
+      </button>
+    </div>
   </div>
 );
+
+// A/B crossfader: layers on side A or B (both full in the middle)
+const Crossfader: React.FC = () => {
+  const value = useLiveStore(s => s.crossfader);
+  const inUse = useProjectStore(s => s.layers.some(l => l.crossfade));
+  return (
+    <div
+      className={`flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 ${inUse ? '' : 'opacity-50'}`}
+      title="Crossfader for layers on side A / B — both are full in the middle; double-click centres it"
+    >
+      <span className={`font-semibold ${value < 0.5 ? 'text-cyan-300' : ''}`}>A</span>
+      <input
+        type="range"
+        min={0}
+        max={1000}
+        value={Math.round(value * 1000)}
+        onChange={(e) => liveStore.getState().setCrossfader(Number(e.target.value) / 1000)}
+        onDoubleClick={() => liveStore.getState().setCrossfader(0.5)}
+        className="w-24 h-1 accent-cyan-400"
+        aria-label="Crossfader"
+      />
+      <span className={`font-semibold ${value > 0.5 ? 'text-cyan-300' : ''}`}>B</span>
+    </div>
+  );
+};
 
 export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelectLayer, onLayerAdded, onClose }) => {
   const surfaces = useProjectStore(s => s.surfaces);
@@ -471,6 +628,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
   const lastStart = useLastClipStart();
   const [collapsed, setCollapsed] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [layerMenu, setLayerMenu] = useState<LayerMenuState | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Tell the editor how much room the launcher takes
@@ -491,6 +649,11 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
     setMenu({ x: e.clientX, y: e.clientY, slot, clip });
   }, []);
   const closeMenu = React.useCallback(() => setMenu(null), []);
+  const openLayerMenu = React.useCallback((e: React.MouseEvent, layerId: string) => {
+    e.preventDefault();
+    setLayerMenu({ x: e.clientX, y: e.clientY, layerId });
+  }, []);
+  const closeLayerMenu = React.useCallback(() => setLayerMenu(null), []);
 
   const nextCue = cuedColumn !== null ? columns[cuedColumn] : null;
   const armedColumn = scheduled.find(t => t.kind === 'column');
@@ -510,6 +673,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
           Clip Launcher
         </h2>
         <TempoBar />
+        <Crossfader />
         <button
           onClick={(e) => go({ now: e.altKey })}
           disabled={cuedColumn === null}
@@ -596,7 +760,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
           <div className="flex flex-col gap-1.5">
             {ordered.map(layer => (
               <div key={layer.id} className="flex gap-1.5 items-center">
-                <LayerHeader layer={layer} onSelect={onSelectLayer} />
+                <LayerHeader layer={layer} onSelect={onSelectLayer} onMenu={openLayerMenu} />
                 {columns.map((column, index) => {
                   const clip = layer.slots[index] ?? null;
                   return (
@@ -620,8 +784,8 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
         </div>
       )}
 
-      {/* On the body: the launcher's backdrop filter would make it the menu's containing block */}
-      {menu && createPortal(<ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} />, document.body)}
+      {menu && <ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} />}
+      {layerMenu && <LayerMenu menu={layerMenu} onClose={closeLayerMenu} />}
     </div>
   );
 };

@@ -106,6 +106,23 @@ describe('frames ⇄ show', () => {
     expect(allClips(next)[0].triggerStyle).toBe('piano');
   });
 
+  it('derives the transition (clip over layer) and crossfader side, and never writes them back', () => {
+    const show = showFromFrames(emptyShow(), [frame('a')], counterIds());
+    const [layer] = show.layers;
+    const clip = layer.slots[0]!;
+    const withLayer = { ...show, layers: [{ ...layer, transition: { duration: 1 }, crossfade: 'B' as const }] };
+    expect(framesFromShow(withLayer)[0]).toMatchObject({ transition: { duration: 1 }, crossfade: 'B' });
+    const withClip = {
+      ...withLayer,
+      layers: [{ ...withLayer.layers[0], slots: [{ ...clip, transition: { duration: 0 } }, ...layer.slots.slice(1)] }],
+    };
+    const [derived] = framesFromShow(withClip);
+    expect(derived.transition).toEqual({ duration: 0 }); // the clip's own cut wins
+    const edited = showFromFrames(withClip, [{ ...derived, blur: 2, transition: { duration: 9 } }]);
+    expect(edited.layers[0].transition).toEqual({ duration: 1 });
+    expect(edited.layers[0].slots[0]).toMatchObject({ blur: 2, transition: { duration: 0 } });
+  });
+
   it('gives frames without media an empty clip so their settings persist', () => {
     const show = showFromFrames(emptyShow(), [frame('a', { url: '', mediaId: undefined, filename: undefined, blur: 4 })], counterIds());
     expect(framesFromShow(show)[0].blur).toBe(4);

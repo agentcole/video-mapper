@@ -1,5 +1,6 @@
 import type {
-  BeatSnap, BlendMode, MediaFrame, MediaType, PerspectiveCorners, Point, ShapeType, SoftEdge,
+  BeatSnap, BlendMode, CrossfadeSide, MediaFrame, MediaType, PerspectiveCorners, Point, ShapeType, SoftEdge,
+  Transition,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,7 @@ export interface Clip {
   name?: string;
   triggerStyle?: TriggerStyle; // default 'normal'
   beatSnap?: BeatSnap; // default: the composition's beat snap
+  transition?: Transition; // default: the layer's transition
   source: ClipSource;
   loop: boolean;
   playbackRate: number;
@@ -53,6 +55,8 @@ export interface Layer {
   blendMode: BlendMode;
   slots: (Clip | null)[]; // indexed by column
   activeClipId: string | null;
+  transition?: Transition; // clip changes and clearing dissolve; unset = cut
+  crossfade?: CrossfadeSide; // crossfader side; unset = not on the crossfader
 }
 
 export interface Column {
@@ -136,7 +140,7 @@ const surfaceFromFrame = (frame: MediaFrame, layerId: string): Surface => ({
 });
 
 // Identity and launcher settings of a clip — frames don't carry them
-type LaunchField = 'id' | 'name' | 'triggerStyle' | 'beatSnap';
+type LaunchField = 'id' | 'name' | 'triggerStyle' | 'beatSnap' | 'transition';
 
 const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, LaunchField> => ({
   source: { type: frame.type, url: frame.url, mediaId: frame.mediaId, filename: frame.filename },
@@ -189,6 +193,8 @@ const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null
     layerId: surface.layerId,
     clipId: clip?.id,
     layerHasClips: layer ? layer.slots.some(c => c !== null) : false,
+    transition: clip?.transition ?? layer?.transition,
+    crossfade: layer?.crossfade,
     visible: surface.visible,
     testPattern: surface.testPattern,
     zIndex: surface.zIndex,
