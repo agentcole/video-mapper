@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { MediaFrame } from '../types';
 import type { ProjectDocument } from '../state/projectStore';
 import { allClips, emptyShow, showFromFrames } from '../state/showModel';
-import { DEFAULT_BACKGROUND, DEFAULT_COMPOSITION, DEFAULT_GRID } from './defaults';
+import { DEFAULT_BACKGROUND, DEFAULT_COMPOSITION, DEFAULT_GRID, DEFAULT_TEMPO } from './defaults';
 import { clearAllMedia, getMedia, importMediaBlob } from './mediaStorage';
 import { buildProjectPackage, importProjectFile, serializeProject } from './storage';
 import { PROJECT_VERSION } from './projectSchema';
@@ -21,7 +21,7 @@ const frame = (id: string, mediaId?: string): MediaFrame => ({
 
 const doc = (frames: MediaFrame[]): ProjectDocument => ({
   ...showFromFrames(emptyShow(), frames),
-  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION,
+  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION, tempo: DEFAULT_TEMPO,
 });
 
 describe('serializeProject', () => {

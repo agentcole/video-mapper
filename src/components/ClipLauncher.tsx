@@ -1,17 +1,20 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  ChevronDown, ChevronUp, Crosshair, Image as ImageIcon, Plus, Play, X, Video, Zap,
+  ChevronDown, ChevronUp, Crosshair, Image as ImageIcon, Plus, Play, Timer, X, Video, Zap,
 } from 'lucide-react';
-import type { MediaType } from '../types';
+import type { BeatSnap, MediaType } from '../types';
 import { useProjectStore } from '../state/projectStore';
-import { useLiveStore } from '../state/liveStore';
+import { useLiveStore, type ScheduledTrigger } from '../state/liveStore';
 import { layersTopFirst, type SlotRef } from '../state/deck';
 import {
   addDeckColumn, addDeckLayer, assignMedia, clearAllLayers, clearLayer, cueColumn, go, moveClipTo,
-  preloadClip, pressClip, removeClipAt, renameClip, renameDeckColumn, setTriggerStyle, triggerColumn,
-  updateDeckLayer,
+  preloadClip, pressClip, removeClipAt, renameClip, renameDeckColumn, setClipBeatSnap, setTriggerStyle,
+  triggerColumn, updateDeckLayer,
 } from '../state/deckActions';
+import { BEAT_SNAPS } from '../state/clock';
 import type { Clip, Layer, TriggerStyle } from '../state/showModel';
+import { TempoBar } from './TempoBar';
 import { useLastClipStart } from '../render/startStats';
 import { generateThumbnail, getMedia, getMediaFile, getMediaObjectUrl, storeMedia } from '../lib/mediaStorage';
 import { isFolderMediaId } from '../lib/mediaFolders';
@@ -19,7 +22,8 @@ import { isFolderMediaId } from '../lib/mediaFolders';
 // ---------------------------------------------------------------------------
 // Clip launcher: layers × columns. Press a clip to play it on its layer, a
 // column header to play the whole column; cue a column and fire it with Go.
-// Clips under the pointer and in the cued column are preloaded.
+// Clips under the pointer and in the cued column are preloaded. With beat
+// snap, triggers wait (armed, blinking) for the beat; Alt fires right away.
 // ---------------------------------------------------------------------------
 
 const SLOT_MIME = 'application/x-video-mapper-slot';
@@ -95,6 +99,29 @@ const importFiles = async (files: File[], slot: SlotRef, columnCount: number) =>
 
 const clipLabel = (clip: Clip) => clip.name || clip.source.filename || (clip.source.url ? 'Clip' : 'Empty clip');
 
+const snapLabel = (snap: BeatSnap) => BEAT_SNAPS.find(s => s.snap === snap)?.label ?? snap;
+
+// A trigger waiting for its beat: this clip starts, or (toggle) stops
+type Armed = 'start' | 'stop' | null;
+
+const armedOf = (
+  scheduled: ScheduledTrigger[], cuedColumn: number | null, layer: Layer, column: number, clip: Clip | null,
+): Armed => {
+  if (!clip) return null;
+  // A clip trigger on the layer decides (it fires after a column at the same time)
+  const own = scheduled.find(t => t.kind === 'clip' && t.layerId === layer.id);
+  if (own?.kind === 'clip') {
+    if (own.clipId === clip.id) return 'start';
+    return own.clipId === null && layer.activeClipId === clip.id ? 'stop' : null;
+  }
+  // A column (or Go): its clips start, layers with an empty cell there stop
+  const waiting = scheduled.find(t => t.kind !== 'clip');
+  const target = waiting?.kind === 'column' ? waiting.column : waiting?.kind === 'go' ? cuedColumn : null;
+  if (target === null) return null;
+  if (target === column) return 'start';
+  return !layer.slots[target] && layer.activeClipId === clip.id ? 'stop' : null;
+};
+
 // ---- Cells ---------------------------------------------------------------------------
 
 interface CellProps {
@@ -103,13 +130,14 @@ interface CellProps {
   clip: Clip | null;
   isActive: boolean;
   isCued: boolean;
+  armed: Armed;
   columnCount: number;
   onPickMedia: (slot: SlotRef) => void;
   onMenu: (e: React.MouseEvent, slot: SlotRef, clip: Clip) => void;
 }
 
 const ClipCell = React.memo(function ClipCell({
-  layerId, column, clip, isActive, isCued, columnCount, onPickMedia, onMenu,
+  layerId, column, clip, isActive, isCued, armed, columnCount, onPickMedia, onMenu,
 }: CellProps) {
   const thumbnail = useThumbnail(clip?.source.mediaId);
   const [isDropTarget, setIsDropTarget] = useState(false);
@@ -118,7 +146,7 @@ const ClipCell = React.memo(function ClipCell({
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0 || !clip) return;
     e.preventDefault();
-    const release = pressClip(layerId, clip.id);
+    const release = pressClip(layerId, clip.id, { now: e.altKey });
     if (!release) return;
     const up = () => {
       release();
@@ -169,7 +197,7 @@ const ClipCell = React.memo(function ClipCell({
             onPointerEnter={() => preloadClip(clip.id)}
             onPointerLeave={() => preloadClip(null)}
             onContextMenu={(e) => onMenu(e, slot, clip)}
-            title={`${clipLabel(clip)} — press to play${clip.triggerStyle && clip.triggerStyle !== 'normal' ? ` (${clip.triggerStyle})` : ''}`}
+            title={`${clipLabel(clip)} — press to play${clip.triggerStyle && clip.triggerStyle !== 'normal' ? ` (${clip.triggerStyle})` : ''}${clip.beatSnap ? `, beat snap ${snapLabel(clip.beatSnap)}` : ''} · Alt: now`}
           >
             {!thumbnail && (
               <span className="absolute inset-0 flex items-center justify-center text-white/40">
@@ -181,10 +209,30 @@ const ClipCell = React.memo(function ClipCell({
                 <Play className="w-2.5 h-2.5 text-black fill-black" />
               </span>
             )}
-            {clip.triggerStyle && clip.triggerStyle !== 'normal' && (
+            {((clip.triggerStyle && clip.triggerStyle !== 'normal') || clip.beatSnap) && (
               <span className="absolute top-1 right-1 bg-black/70 rounded-sm px-1 text-[9px] uppercase text-amber-300">
-                {clip.triggerStyle}
+                {[
+                  clip.triggerStyle && clip.triggerStyle !== 'normal' ? clip.triggerStyle : null,
+                  clip.beatSnap ? `♩${snapLabel(clip.beatSnap)}` : null,
+                ].filter(Boolean).join(' · ')}
               </span>
+            )}
+            {armed && (
+              <>
+                <span
+                  className={`absolute inset-0 rounded pointer-events-none ring-[3px] ring-inset animate-pulse ${
+                    armed === 'start' ? 'ring-white' : 'ring-red-500'
+                  }`}
+                />
+                <span
+                  className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold pointer-events-none ${
+                    armed === 'start' ? 'bg-black/80 text-white' : 'bg-red-600 text-white'
+                  }`}
+                >
+                  <Timer className="w-3 h-3" />
+                  {armed === 'start' ? 'Next' : 'Stop'}
+                </span>
+              </>
             )}
           </button>
           {/* Label: drag handle (Alt = copy), right-click for options */}
@@ -235,6 +283,13 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
   menu, onClose, onReplace,
 }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const compositionSnap = useProjectStore(s => s.tempo.beatSnap);
+  // Open upwards as far as needed to stay on screen (the launcher sits at the bottom)
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - el.getBoundingClientRect().height - 8))}px`;
+  }, [menu.y]);
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
@@ -255,8 +310,8 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
   return (
     <div
       ref={ref}
-      className="fixed z-[3000] min-w-[200px] bg-gray-900/95 backdrop-blur border border-white/10 rounded-md shadow-2xl py-1 text-white"
-      style={{ left: Math.min(menu.x, window.innerWidth - 220), top: Math.max(8, menu.y - 230) }}
+      className="fixed z-[3000] min-w-[220px] bg-gray-900/95 backdrop-blur border border-white/10 rounded-md shadow-2xl py-1 text-white"
+      style={{ left: Math.min(menu.x, window.innerWidth - 240), top: menu.y }}
     >
       <p className="px-3 py-1 text-[10px] uppercase text-gray-400 truncate">{clipLabel(menu.clip)}</p>
       {TRIGGER_STYLES.map(t => (
@@ -273,6 +328,26 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
           <span className="text-gray-500 ml-auto">{t.hint}</span>
         </button>
       ))}
+      <div className="my-1 border-t border-white/10" />
+      <p className="px-3 pt-1 text-[10px] uppercase text-gray-400">Beat snap</p>
+      <div className="flex flex-wrap gap-1 px-3 py-1.5">
+        {[null, ...BEAT_SNAPS.map(s => s.snap)].map(snap => {
+          const selected = (menu.clip.beatSnap ?? null) === snap;
+          return (
+            <button
+              key={snap ?? 'composition'}
+              className={`px-1.5 py-0.5 rounded text-[11px] ${selected ? 'bg-amber-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
+              onClick={() => {
+                setClipBeatSnap(menu.clip.id, snap);
+                onClose();
+              }}
+              title={snap === null ? 'Follow the composition\'s beat snap' : undefined}
+            >
+              {snap === null ? `Comp. (${snapLabel(compositionSnap)})` : snapLabel(snap)}
+            </button>
+          );
+        })}
+      </div>
       <div className="my-1 border-t border-white/10" />
       <button
         className={item}
@@ -391,6 +466,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
   const layers = useProjectStore(s => s.layers);
   const columns = useProjectStore(s => s.columns);
   const cuedColumn = useLiveStore(s => s.cuedColumn);
+  const scheduled = useLiveStore(s => s.scheduled);
   const lastStart = useLastClipStart();
   const [collapsed, setCollapsed] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -416,6 +492,8 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
   const closeMenu = React.useCallback(() => setMenu(null), []);
 
   const nextCue = cuedColumn !== null ? columns[cuedColumn] : null;
+  const armedColumn = scheduled.find(t => t.kind === 'column');
+  const goArmed = scheduled.some(t => t.kind === 'go');
 
   return (
     <div
@@ -425,16 +503,17 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
       onDrop={(e) => e.preventDefault()} // a miss must not navigate to the file
     >
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 shrink-0 text-xs">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 shrink-0 text-xs">
         <h2 className="font-bold text-sm flex items-center gap-2 mr-2">
           <Zap className="w-4 h-4" />
           Clip Launcher
         </h2>
+        <TempoBar />
         <button
-          onClick={go}
+          onClick={(e) => go({ now: e.altKey })}
           disabled={cuedColumn === null}
-          className="flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-black font-semibold disabled:bg-white/10 disabled:text-white/40"
-          title="Fire the cued column, then cue the next one (Space)"
+          className={`flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-black font-semibold disabled:bg-white/10 disabled:text-white/40 ${goArmed ? 'animate-pulse' : ''}`}
+          title="Fire the cued column, then cue the next one (Space; Alt: now, without beat snap)"
         >
           <Play className="w-3 h-3 fill-current" />
           Go{nextCue ? ` · ${nextCue.name || cuedColumn! + 1}` : ''}
@@ -452,7 +531,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
         <button onClick={addDeckColumn} className="flex items-center gap-1 px-2 py-1 rounded bg-white/10 hover:bg-white/20">
           <Plus className="w-3 h-3" /> Column
         </button>
-        <span className="text-gray-500 hidden md:inline">1–9 column · Shift+1–9 cue · Space Go · L hide</span>
+        <span className="text-gray-500 hidden 2xl:inline">1–9 column · Shift+1–9 cue · Space Go · T tap · L hide</span>
         <span className="ml-auto text-gray-400 tabular-nums" title="Time from the last trigger to its first frame in this window">
           {lastStart ? `Last start ${Math.round(lastStart.ms)} ms${lastStart.preloaded ? ' (preloaded)' : ''}` : ''}
         </span>
@@ -477,19 +556,21 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
               <div
                 key={column.id}
                 className={`shrink-0 flex items-center rounded text-xs ${
-                  cuedColumn === index ? 'bg-amber-500/25 ring-1 ring-amber-400' : 'bg-white/5'
+                  armedColumn?.kind === 'column' && armedColumn.column === index
+                    ? 'bg-white/30 ring-1 ring-white animate-pulse'
+                    : cuedColumn === index ? 'bg-amber-500/25 ring-1 ring-amber-400' : 'bg-white/5'
                 }`}
                 style={{ width: CELL_W }}
               >
                 <button
-                  onClick={() => triggerColumn(index)}
+                  onClick={(e) => triggerColumn(index, { now: e.altKey })}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     const name = prompt('Column name', column.name || String(index + 1));
                     if (name !== null) renameDeckColumn(index, name);
                   }}
                   className="flex-1 min-w-0 text-left px-1.5 py-1 rounded hover:bg-white/15 truncate"
-                  title={`Play column ${column.name || index + 1}${index < 9 ? ` (key ${index + 1})` : ''} · right-click to rename`}
+                  title={`Play column ${column.name || index + 1}${index < 9 ? ` (key ${index + 1})` : ''} · Alt: now · right-click to rename`}
                 >
                   {column.name || String(index + 1)}
                 </button>
@@ -525,6 +606,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
                       clip={clip}
                       isActive={clip !== null && clip.id === layer.activeClipId}
                       isCued={cuedColumn === index}
+                      armed={armedOf(scheduled, cuedColumn, layer, index, clip)}
                       columnCount={columns.length}
                       onPickMedia={onPickMedia}
                       onMenu={openMenu}
@@ -537,7 +619,8 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
         </div>
       )}
 
-      {menu && <ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} />}
+      {/* On the body: the launcher's backdrop filter would make it the menu's containing block */}
+      {menu && createPortal(<ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} />, document.body)}
     </div>
   );
 };

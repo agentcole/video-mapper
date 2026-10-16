@@ -8,7 +8,7 @@ import { findClip, type Layer } from './showModel';
 // Undo / redo over the project store. Changes are snapshotted with a debounce
 // so a whole gesture (drag, slider scrub) becomes a single entry. The grid is
 // a view setting and deliberately not part of the history. Neither are clip
-// triggers: undo never changes what is playing.
+// triggers and the tempo: undo never changes what is playing or its beat.
 // ---------------------------------------------------------------------------
 
 type Snapshot = Pick<ProjectState, 'surfaces' | 'layers' | 'columns' | 'background' | 'composition'>;

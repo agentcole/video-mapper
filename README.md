@@ -58,6 +58,11 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 - **Editing**: click an empty slot to pick media, drop files onto a slot (several files fill the slots to the right), drag a clip by its label to move it (Alt = copy), right-click to rename, replace or remove; per-layer opacity fader and clear button; **+ Layer** adds a full-composition layer, **+ Column** a column
 - Triggers are performance actions: undo/redo never changes what is playing, while slot edits are undoable. What plays is saved with the project, so an installation starts where it left off. Output windows mirror triggers and preload the same clips.
 
+### 🥁 Master Clock & Beat Snap
+- **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
+- **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
+- Waiting triggers follow tempo and phase changes. The tempo is saved with the project (not undoable); output windows share the clock. Measured from the beat to the first frame (preloaded clips, test browser): 10–15 ms GPU, 10–31 ms CSS.
+
 ### 💾 Project Management
 - **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
 - **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
@@ -174,6 +179,7 @@ npm run preview
 - **Cmd/Ctrl+A**: Select all frames
 - **ESC**: Exit presentation mode, cancel draw mode, or deselect
 - **1–9**: Play a launcher column · **Shift+1–9**: cue (preload) a column · **Space**: Go (fire the cue) · **L**: show/hide the clip launcher
+- **T**: Tap tempo · **Shift+T**: resync (now is a bar start) · **Alt** + clip / column / Go: fire now, without beat snap
 
 ### Composition & Output (Resolume-style)
 
@@ -275,13 +281,14 @@ src/
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
 │   ├── ClipLauncher.tsx     # Layers × columns clip launcher (bottom dock)
+│   ├── TempoBar.tsx         # Master clock: tap, BPM, nudge, resync, beat snap
 │   ├── ProjectsPanel.tsx    # Projects + versions dialog
 │   ├── MediaLibrary.tsx     # Media library (IndexedDB) + linked folders
 │   ├── OutputWindowControls.tsx
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
-├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), undo, project session
+├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), master clock, undo, project session
 ├── output/                  # Output window app + editor ⇄ output sync
 ├── render/
 │   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)
@@ -312,6 +319,7 @@ src/
 - [x] Copy/paste frames
 - [x] Undo/redo functionality
 - [x] Clip launcher with column triggers, cue/Go and preloading
+- [x] Master clock: tap tempo, resync, nudge, beat snap
 - [x] Fixed composition resolution with letterboxed editing
 - [x] Unified corner pin for all shapes + warped editing grid
 - [x] Layers panel with numeric transform properties

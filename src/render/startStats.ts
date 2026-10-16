@@ -26,10 +26,13 @@ export function useLastClipStart(): ClipStart | null {
   return useStore(startStatsStore, s => s.last);
 }
 
-/** The launcher (re)started these layers' clips now. */
-export const markTriggered = (layerIds: string[]): void => {
+/**
+ * The launcher (re)started these layers' clips — now, or at `at`
+ * (performance.now() time) when the start was due on a beat.
+ */
+export const markTriggered = (layerIds: string[], at = performance.now()): void => {
   if (layerIds.length === 0) return;
-  batch = { at: performance.now(), layers: new Set(layerIds), worst: null };
+  batch = { at: Math.min(at, performance.now()), layers: new Set(layerIds), worst: null };
 };
 
 /** A renderer shows the first frames of a layer's new clip. */

@@ -1,6 +1,6 @@
 import { createStore, useStore, type StoreApi } from 'zustand';
-import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings } from '../types';
-import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from '../lib/defaults';
+import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings } from '../types';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO } from '../lib/defaults';
 import { emptyShow, framesFromShow, showFromFrames, type ShowDocument } from './showModel';
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,7 @@ export interface ProjectDocument extends ShowDocument {
   background: BackgroundSettings;
   grid: GridSettings;
   composition: CompositionSettings;
+  tempo: TempoSettings; // master clock (BPM, bar length, beat snap)
 }
 
 // A document given either as the model or (output windows, tests) as frames
@@ -37,6 +38,7 @@ export interface ProjectState extends ProjectDocument {
   setBackground: (updater: Updater<BackgroundSettings>) => void;
   setGrid: (updater: Updater<GridSettings>) => void;
   setComposition: (updater: Updater<CompositionSettings>) => void;
+  setTempo: (updater: Updater<TempoSettings>) => void;
   // Swap in a whole document (load / import / undo) in one update
   replaceDocument: (doc: DocumentInput) => void;
 }
@@ -60,6 +62,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       background: initial.background ?? DEFAULT_BACKGROUND,
       grid: initial.grid ?? DEFAULT_GRID,
       composition: initial.composition ?? DEFAULT_COMPOSITION,
+      tempo: initial.tempo ?? DEFAULT_TEMPO,
       ...show,
       frames: framesFromShow(show),
       setFrames: (updater) => set(s => {
@@ -82,12 +85,14 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       setBackground: (updater) => set(s => ({ background: apply(updater, s.background) })),
       setGrid: (updater) => set(s => ({ grid: apply(updater, s.grid) })),
       setComposition: (updater) => set(s => ({ composition: apply(updater, s.composition) })),
+      setTempo: (updater) => set(s => ({ tempo: apply(updater, s.tempo) })),
       replaceDocument: (doc) => set(s => {
         const nextShow = resolveShow(showOf(s), doc);
         return {
           ...(doc.background ? { background: doc.background } : {}),
           ...(doc.grid ? { grid: doc.grid } : {}),
           ...(doc.composition ? { composition: doc.composition } : {}),
+          ...(doc.tempo ? { tempo: doc.tempo } : {}),
           ...nextShow,
           frames: framesFromShow(nextShow, s.frames),
         };

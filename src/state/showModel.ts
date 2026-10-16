@@ -1,5 +1,5 @@
 import type {
-  BlendMode, MediaFrame, MediaType, PerspectiveCorners, Point, ShapeType, SoftEdge,
+  BeatSnap, BlendMode, MediaFrame, MediaType, PerspectiveCorners, Point, ShapeType, SoftEdge,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ export interface Clip {
   id: string;
   name?: string;
   triggerStyle?: TriggerStyle; // default 'normal'
+  beatSnap?: BeatSnap; // default: the composition's beat snap
   source: ClipSource;
   loop: boolean;
   playbackRate: number;
@@ -134,7 +135,10 @@ const surfaceFromFrame = (frame: MediaFrame, layerId: string): Surface => ({
   softEdge: frame.softEdge,
 });
 
-const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, 'id' | 'name' | 'triggerStyle'> => ({
+// Identity and launcher settings of a clip — frames don't carry them
+type LaunchField = 'id' | 'name' | 'triggerStyle' | 'beatSnap';
+
+const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, LaunchField> => ({
   source: { type: frame.type, url: frame.url, mediaId: frame.mediaId, filename: frame.filename },
   loop: frame.loop,
   playbackRate: frame.playbackRate,
@@ -154,7 +158,7 @@ const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, 'id' | 'name' | 'tri
   sepia: frame.sepia,
 });
 
-const EMPTY_CLIP_FIELDS: Omit<Clip, 'id' | 'name' | 'triggerStyle'> = {
+const EMPTY_CLIP_FIELDS: Omit<Clip, LaunchField> = {
   source: { type: 'image', url: '' },
   loop: true,
   playbackRate: 1,

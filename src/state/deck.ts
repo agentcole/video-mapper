@@ -1,6 +1,7 @@
 import type { CompositionSettings } from '../types';
 import { DEFAULT_PERSPECTIVE_CORNERS, DEFAULT_SOFT_EDGE } from '../lib/defaults';
 import { defaultIds, findClip, type Clip, type IdFactory, type Layer, type ShowDocument, type Surface } from './showModel';
+import type { ScheduledTrigger } from './liveStore';
 
 // ---------------------------------------------------------------------------
 // Clip launcher ("deck") operations: layers × columns of clips. Pure
@@ -198,20 +199,39 @@ export interface PreloadEntry {
   clip: Clip;
 }
 
+export interface PreloadTargets {
+  columns: readonly number[]; // e.g. the cued column, columns waiting for their beat
+  clipIds: readonly string[]; // e.g. the clip under the pointer, clips waiting for their beat
+}
+
 /**
- * Clips to keep loaded (but paused) so triggering them is instant: the cued
- * column's clips and an extra one (e.g. the clip under the pointer). Clips
+ * Clips to keep loaded (but paused) so triggering them is instant. Clips
  * that are already playing need no preload.
  */
-export const preloadClips = (show: ShowDocument, cuedColumn: number | null, extraClipId: string | null = null): PreloadEntry[] => {
+export const preloadClips = (show: ShowDocument, targets: PreloadTargets): PreloadEntry[] => {
   const entries: PreloadEntry[] = [];
   for (const layer of show.layers) {
     for (const [column, clip] of layer.slots.entries()) {
       if (!clip || clip.id === layer.activeClipId) continue;
-      if (column === cuedColumn || clip.id === extraClipId) entries.push({ layerId: layer.id, clip });
+      if (targets.columns.includes(column) || targets.clipIds.includes(clip.id)) entries.push({ layerId: layer.id, clip });
     }
   }
   return entries;
+};
+
+/** What the launcher may start next: the cued column, a hovered clip and triggers waiting for their beat. */
+export const preloadTargets = (
+  cuedColumn: number | null,
+  hoveredClipId: string | null,
+  scheduled: readonly ScheduledTrigger[],
+): PreloadTargets => {
+  const columns = cuedColumn !== null ? [cuedColumn] : [];
+  const clipIds = hoveredClipId ? [hoveredClipId] : [];
+  for (const trigger of scheduled) {
+    if (trigger.kind === 'column') columns.push(trigger.column);
+    else if (trigger.kind === 'clip' && trigger.clipId) clipIds.push(trigger.clipId);
+  }
+  return { columns, clipIds };
 };
 
 /** Live-only change: the layers differ in what they play, nothing else. */

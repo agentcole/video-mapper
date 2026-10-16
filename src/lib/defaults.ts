@@ -1,4 +1,6 @@
-import type { BackgroundSettings, GridSettings, CompositionSettings, PerspectiveCorners, SoftEdge } from '../types';
+import type {
+  BackgroundSettings, GridSettings, CompositionSettings, PerspectiveCorners, SoftEdge, TempoSettings,
+} from '../types';
 
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
   type: 'color',
@@ -15,6 +17,12 @@ export const DEFAULT_GRID: GridSettings = {
 export const DEFAULT_COMPOSITION: CompositionSettings = {
   width: 1920,
   height: 1080,
+};
+
+export const DEFAULT_TEMPO: TempoSettings = {
+  bpm: 120,
+  beatsPerBar: 4,
+  beatSnap: 'off',
 };
 
 export const DEFAULT_PERSPECTIVE_CORNERS: PerspectiveCorners = {

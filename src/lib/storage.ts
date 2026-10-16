@@ -2,7 +2,7 @@ import { Zip, ZipDeflate, ZipPassThrough, unzip, strToU8, strFromU8, type Unzipp
 import type { BackgroundSettings } from '../types';
 import type { ProjectDocument } from '../state/projectStore';
 import { allClips, mapClips, type Clip } from '../state/showModel';
-import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from './defaults';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO } from './defaults';
 import { parseProjectData, PROJECT_VERSION, type ParsedProject, type PackageMediaEntry } from './projectSchema';
 import { getMediaFile, importMediaBlob, importMediaRecords } from './mediaStorage';
 
@@ -11,7 +11,7 @@ import { getMediaFile, importMediaBlob, importMediaRecords } from './mediaStorag
 // project packages (zip: project.json + media files) and import of both.
 // ---------------------------------------------------------------------------
 
-export { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION };
+export { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO };
 
 // A validated, migrated project (see projectSchema.ts)
 export type LoadedProject = ParsedProject;
@@ -27,6 +27,7 @@ export const serializeProject = (doc: ProjectDocument, name?: string) => ({
   timestamp: new Date().toISOString(),
   composition: doc.composition,
   grid: doc.grid,
+  tempo: doc.tempo,
   background: stripBackgroundUrl(doc.background),
   surfaces: doc.surfaces,
   columns: doc.columns,

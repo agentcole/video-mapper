@@ -27,6 +27,7 @@ import { ClipLauncher } from './ClipLauncher';
 import type { SlotRef } from '../state/deck';
 import type { ClipSource } from '../state/showModel';
 import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions';
+import { resyncBar, tapTempo } from '../state/clockActions';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -499,23 +500,34 @@ export const Canvas: React.FC = () => {
 
       if (isTyping || isMediaLibraryOpen) return;
 
-      // Clip launcher: 1–9 play a column, Shift+1–9 cue it, Space fires the cue
-      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      // Clip launcher: 1–9 play a column, Shift+1–9 cue it, Space fires the
+      // cue; with Alt they fire now instead of on the beat (beat snap)
+      if (!e.metaKey && !e.ctrlKey) {
         const digit = /^Digit([1-9])$/.exec(e.code);
         if (digit) {
           e.preventDefault();
           const column = Number(digit[1]) - 1;
           if (e.shiftKey) cueColumn(liveStore.getState().cuedColumn === column ? null : column);
-          else triggerColumn(column);
+          else if (!e.repeat) triggerColumn(column, { now: e.altKey });
           return;
         }
         if (e.code === 'Space') {
           e.preventDefault();
-          if (!e.repeat) go();
+          if (!e.repeat) go({ now: e.altKey });
           return;
         }
+      }
+      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
         if (e.key === 'l' || e.key === 'L') {
           toggleLauncher();
+          return;
+        }
+        // Master clock: T taps the tempo, Shift+T makes now the start of a bar
+        if (e.code === 'KeyT') {
+          e.preventDefault();
+          if (!e.repeat) {
+            if (e.shiftKey) resyncBar(); else tapTempo();
+          }
           return;
         }
       }

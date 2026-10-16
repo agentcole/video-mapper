@@ -30,6 +30,18 @@ export interface CompositionSettings {
   height: number
 }
 
+// When a launcher trigger starts: right away, or on the next beat / bar /
+// 2 bars / 4 bars of the master clock (Resolume's Beat Snap)
+export type BeatSnap = 'off' | 'beat' | 'bar' | '2bars' | '4bars'
+
+// Master clock settings, saved with the project. The clock's phase (where
+// the bar starts) is live state.
+export interface TempoSettings {
+  bpm: number
+  beatsPerBar: number
+  beatSnap: BeatSnap // composition default; clips can override it
+}
+
 // Per-edge feathering (px in frame-local space) for projection blending
 export interface SoftEdge {
   left: number
