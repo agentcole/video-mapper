@@ -10,9 +10,10 @@ A high-performance web-based video mapping application built with React, TypeScr
 - **Multiple Media Types**: Support for both videos and images
 - **Persistent Media Library**:
   - Media files are stored in browser IndexedDB (persists across sessions)
-  - 50MB per file limit, 500MB total storage
+  - Up to 2 GB per file; the total is limited by the browser's storage quota
   - Thumbnail previews for all media
   - Filter by video/image type
+- **Linked media folders** (Chromium): play files straight from a folder on disk — nothing is copied, no size limit; one click reconnects the folder after a browser restart
 - **Flexible Input Methods**:
   - Draw frames directly on canvas (rectangle, circle, or polygon shapes)
   - Add media via URL input
@@ -45,16 +46,59 @@ A high-performance web-based video mapping application built with React, TypeScr
   - Delete individual frames
   - Settings panel with all adjustments
 
+### 🧱 Data model
+
+Projects (format 5) separate **mapping** from **content**, like Resolume: *surfaces* hold the mapping (geometry, shape, corner pin, soft edge); *layers* hold the mix (opacity, blend mode) and a row of *clip slots* across 8 columns; *clips* hold media, transport and look. A surface shows its layer's active clip. Older projects are converted on open. Details: [docs/design/data-model.md](docs/design/data-model.md).
+
+### ⚡ Clip Launcher
+- **Layers × columns** of clips docked under the stage (**L** shows/hides it): press a clip to play it on its layer, press a column header (or **1–9**) to play the whole column — layers with an empty cell there are cleared, like Resolume
+- **Cue and Go**: cue a column (**Shift+1–9** or its crosshair) to preload it, fire it with **Go** (**Space**); the next column is cued automatically, so Space steps through a show
+- **Instant starts**: cued clips and the clip under the pointer are loaded and parked on their first frame, so a trigger only has to press play (measured 11–18 ms on the GPU renderer, 12–60 ms on CSS; a cold start takes ~75–240 ms). The previous clip stays on screen until the new one has a frame — no black flash. The toolbar shows how long the last start took.
+- **Trigger styles** per clip (right-click): *Normal* (again = restart), *Toggle* (again = clear the layer), *Piano* (plays while held, then the previous clip returns)
+- **Editing**: click an empty slot to pick media, drop files onto a slot (several files fill the slots to the right), drag a clip by its label to move it (Alt = copy), right-click to rename, replace or remove; per-layer opacity fader and clear button; **+ Layer** adds a full-composition layer, **+ Column** a column
+- Triggers are performance actions: undo/redo never changes what is playing, while slot edits are undoable. What plays is saved with the project, so an installation starts where it left off. Output windows mirror triggers and preload the same clips.
+
+### 🌗 Transitions & Crossfader
+- **Dissolves** when a layer changes clips or is cleared: set per layer (right-click the layer header, or its `⇢` chip) and per clip as an override (*Transition in* in the clip menu) — Cut, 0.25–4 s or 1–8 beats of the master clock. The dissolve starts once the new clip has a frame, each clip keeps its own look while fading, and on the GPU renderer the blend mode applies once to the mixed result.
+- **A/B crossfader** in the launcher toolbar: put layers on side A or B (the `A/B` chip on the layer header). Both sides are full in the middle, so with B stacked over A the fader dissolves in both directions. Double-click centres it; output windows follow.
+
+### ✨ Effects & Generators (ISF, GPU renderer)
+- **Effect stacks** on clips, layers and the whole composition — *Effects…* in the clip menu, *Layer effects…* / the `fx` chip on a layer, *FX* in the launcher toolbar. Bypass, reorder, reset; parameters from the shader's inputs.
+- **Generators** as clips: pick one under *Generators* in the media picker of a launcher slot (plasma, noise, gradients, stripes, rings, sweep, checkerboard, colour bars, alignment grid …).
+- **44 bundled ISF shaders** (MIT): colour, keying, distortion, kaleidoscope, blur, glow, edge detect, halftone, feedback trails, beat-synced strobe / zoom / shake driven by the master clock, and audio-driven Spectrum / Waveform generators. **Import your own ISF files** (`.fs`) from the effect picker; projects carry the imported shaders they use. `?isf-check` compiles every shader in your browser.
+- Effects need the GPU renderer; the effect panel offers to switch. Details: [docs/design/effects.md](docs/design/effects.md).
+
+### 🔊 Audio, Modulation & Macros (GPU renderer)
+- **Audio input** — microphone, line in or a loopback device (BlackHole, VB-Cable): the **Audio** chip in the launcher opens *Audio & Macros* with the input, level / bass / mid / high / kick meters, a spectrum, auto gain (default) or manual gain, and smoothing. The analysis runs in an AudioWorklet and reaches every output window.
+- **Tempo from audio:** the detected BPM shows next to the chip; **Sync** takes it and puts the beat on the kick, **Follow** keeps the master clock on it while it is steady.
+- **Modulation:** the **∿** button next to any effect or generator parameter — and *Opacity modulation* in the layer menu — moves it with an **LFO** (7 shapes, synced to beats or in seconds), an **audio band** or a **macro**; a marker on the slider shows the live value. **8 macro faders** (renamable) drive as many parameters as you like and are saved with the project. Details: [docs/design/modulation.md](docs/design/modulation.md).
+
+### 🎛️ MIDI Controllers & Key Mappings
+- **MIDI learn** (**M**): every mappable control gets a frame — click it, then move a knob, press a pad or a key. Clips, columns, cue, Go, layer opacity and clear, crossfader, master, blackout, tempo (tap, resync, nudge, ÷2 ×2, beat snap) and the 8 macros; effect parameters through the macros. Relative encoders, pitch-bend faders and *Pickup* fader takeover are supported; LEDs show playing / cued / waiting clips.
+- **Controller templates** with LED colours, detected by port name: Akai APC mini mk2 and APC40 mkII, Novation Launchpad Mini MK3 and Launchpad X, DJ TechTools Midi Fighter Twister, Korg nanoKONTROL2 (built from the manufacturers' documentation, not yet tried on hardware).
+- **MIDI clock in** sets the master tempo and, after Start, the bar. Beat-snapped triggers keep the beat while the editor window is hidden. Details: [docs/design/midi.md](docs/design/midi.md).
+
+### 🖥️ Screens & Slices (multiple projectors)
+- **Screens** (Output section): give each projector or display its own output with its own resolution. A screen's **slices** take a rectangle of the composition (*Input*) and place it on the screen through four corners (*Output*, a corner pin) — e.g. a wide composition split across two projectors, each keystoned on its own. *Split…* does columns × rows with overlap in one step.
+- The stage switches between the composition with the slices' inputs and a screen as its output window shows it; drag rectangles and corners (snapping to edges and other slices, Alt: free), arrow keys for 1 px steps, numbers in the panel.
+- Each screen opens in its own output window (`?output=<screen id>`), on a display remembered per machine; the test card shows the screen's name and resolution. Without screens, outputs show the whole composition as before. Details: [docs/design/screens.md](docs/design/screens.md).
+
+### 🥁 Master Clock & Beat Snap
+- **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
+- **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
+- Waiting triggers follow tempo and phase changes. The tempo is saved with the project (not undoable); output windows share the clock. Measured from the beat to the first frame (preloaded clips, test browser): 10–15 ms GPU, 10–31 ms CSS.
+
 ### 💾 Project Management
-- **Auto-save**: Automatic saving to localStorage (one project slot); a failed save (e.g. storage full) shows a notice with an export shortcut
-- **Manual Save**: Save current project state
-- **Export**: Download project as JSON file (optionally with embedded media)
-- **Import**: Load previously exported projects; older formats are migrated on load
+- **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
+- **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
+- **Versions**: kept automatically every 5 minutes while you work, plus on demand (*Version* button or **Cmd/Ctrl+S**); restoring keeps the current state as a version first and can be undone
+- **Export**: the project file (JSON, media referenced by id) or a portable **package** (zip with project.json and every media file)
+- **Import**: project files and packages always open as a *new* project — the open one is never overwritten; broken layers are skipped and reported
 
 ### 📱 Progressive Web App (PWA)
 - **Offline Support**: Works without internet connection
 - **Installable**: Can be installed as a desktop/mobile app
-- **Persistent Storage**: Media persists in IndexedDB (persistent storage is requested on the first upload), projects in localStorage
+- **Persistent Storage**: Media and projects persist in IndexedDB (persistent storage is requested on the first upload)
 - **Fast Loading**: Service Worker caching for instant loads
 - **Show-safe updates**: a new version is offered as a small notice in the editor — never a blocking dialog or an automatic reload, and never on the output
 
@@ -79,6 +123,10 @@ The application will start at `http://localhost:5173` (default Vite port).
 ```bash
 npm run build
 ```
+
+### Performance benchmark
+
+Open `/?benchmark` (or *Performance benchmark* in the control panel) on the show machine. It plays 1–16 corner-pinned video layers through the same render path as the output — with a generated 1080p/4K test clip, your own file, or a clip from the media library — and reports display fps, p95/p99 frame times, stutter, dropped video frames, the highest stable layer count, the GPU and hardware-decode support per codec. Results export as JSON.
 
 ### Tests & Lint
 
@@ -155,14 +203,26 @@ npm run preview
 - **Cmd/Ctrl+D**: Duplicate selection
 - **Cmd/Ctrl+A**: Select all frames
 - **ESC**: Exit presentation mode, cancel draw mode, or deselect
+- **1–9**: Play a launcher column · **Shift+1–9**: cue (preload) a column · **Space**: Go (fire the cue) · **L**: show/hide the clip launcher
+- **T**: Tap tempo · **Shift+T**: resync (now is a bar start) · **Alt** + clip / column / Go: fire now, without beat snap
+- **M**: MIDI / key learn (Esc ends) — learned keys take precedence over these shortcuts
 
 ### Composition & Output (Resolume-style)
 
 - **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
 - The editor letterboxes and scales the composition to your window; Present mode maps it to the output
+- **Output window**: opens the composition (or, with screens, one screen) in its own window for the projector while you keep editing. In Chromium browsers, *Detect displays* lets you pick the target display (Window Management API); elsewhere drag the window over. The output mirrors the editor live, shows no editor UI, hides the cursor, keeps the display awake and starts from the autosaved project (it keeps its last picture if the editor reloads). In the output window: click or **F** for fullscreen, **B** for blackout. While an output is live the editor preview is muted.
 - **Master fader** dims the whole output (and scales audio volume); **Blackout (B)** kills picture and sound instantly
 - **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
 - **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
+
+### Renderer: CSS or GPU (beta)
+
+The *Renderer* switch in the Output section chooses how the composition's content is drawn — in the editor and in output windows (remembered per machine):
+
+- **CSS** — browser layout with `matrix3d` corner pins and `clip-path` shapes (the proven path)
+- **GPU (beta)** — a WebGL2 compositor: every pixel is mapped back through the frame's inverse homography (exact perspective), antialiased shapes, all 16 blend modes per the W3C compositing spec, the CSS filter set, soft edges, master fader; recovers automatically from a lost GPU context and falls back to CSS if WebGL2 isn't available. Editor handles stay DOM on top, so editing works the same.
+- Known differences in GPU mode: soft edges stay at the frame's edges when content is zoomed; blur is a 12-tap approximation; remote media URLs need CORS headers to be drawn (library and folder media always work)
 
 ### Warping (unified corner pin)
 
@@ -240,24 +300,45 @@ The current renderer is DOM/CSS based:
 ```
 src/
 ├── components/
-│   ├── ui/                  # shadcn/ui components
-│   ├── Canvas.tsx           # Stage, gestures, history, persistence
-│   ├── MediaFrame.tsx       # Frame content + editor overlay (handles, outlines, hit area)
+│   ├── ui/                  # Shared look: theme tokens, button, input, slider, dialog (docs/design/ui-style.md)
+│   ├── Canvas.tsx           # Stage, gestures, editor wiring
+│   ├── MediaFrame.tsx       # Frame editor overlay (handles, outlines, hit area)
+│   ├── FrameContent.tsx     # Frame content for the CSS renderer
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
-│   ├── MediaLibrary.tsx     # IndexedDB media library modal
-│   ├── BackgroundSettings.tsx
+│   ├── ScreensPanel.tsx     # Screens and slices (replaces the layers dock in the screen editor)
+│   ├── SliceOverlay.tsx     # Slice inputs / outputs on the stage (drag, snap)
+│   ├── ScreenDom.tsx        # A screen with the CSS renderer (one warped copy per slice)
+│   ├── ClipLauncher.tsx     # Layers × columns clip launcher (bottom dock)
+│   ├── TempoBar.tsx         # Master clock: tap, BPM, nudge, resync, beat snap
+│   ├── EffectsPanel.tsx     # Effect stacks and generator parameters
+│   ├── ProjectsPanel.tsx    # Projects + versions dialog
+│   ├── MediaLibrary.tsx     # Media library (IndexedDB) + linked folders
+│   ├── OutputWindowControls.tsx
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
+├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), master clock, screens, undo, project session
+├── effects/                 # ISF parser/translator, effect library, bundled shaders (isf/*.fs), ?isf-check
+├── output/                  # Output window app + editor ⇄ output sync
+├── render/
+│   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)
+│   ├── preload.ts           # Which clips each window keeps ready for the launcher
+│   ├── startStats.ts        # Trigger → first frame latency readout
+│   ├── GpuStage.tsx         # React host for the compositor
+│   └── webgl/               # WebGL2 compositor, shaders, media pool, ISF effect runner
+├── benchmark/               # Video layer benchmark (?benchmark)
 ├── lib/
 │   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
-│   ├── storage.ts           # Project persistence + migrations (+ tests)
-│   ├── mediaStorage.ts      # IndexedDB media management
+│   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
+│   ├── projectRepository.ts # Projects + versions in IndexedDB (+ tests)
+│   ├── storage.ts           # Serialization, JSON export, zip packages, import (+ tests)
+│   ├── mediaStorage.ts      # IndexedDB media library
+│   ├── mediaFolders.ts      # Linked media folders (File System Access)
 │   └── utils.ts
 ├── types.ts                 # TypeScript type definitions
-├── App.tsx                  # Root component
-├── main.tsx                 # Entry point
+├── App.tsx                  # Editor root
+├── main.tsx                 # Entry point (editor, ?output, ?benchmark)
 └── index.css                # Global styles
 ```
 
@@ -268,6 +349,10 @@ src/
 - [x] Multi-select frames (shift+click, marquee)
 - [x] Copy/paste frames
 - [x] Undo/redo functionality
+- [x] Clip launcher with column triggers, cue/Go and preloading
+- [x] Master clock: tap tempo, resync, nudge, beat snap
+- [x] Transitions (dissolve, seconds or beats) and A/B crossfader
+- [x] ISF effects (clip / layer / composition) and generators, ISF import
 - [x] Fixed composition resolution with letterboxed editing
 - [x] Unified corner pin for all shapes + warped editing grid
 - [x] Layers panel with numeric transform properties
@@ -276,6 +361,7 @@ src/
 - [ ] Timeline for synchronized playback
 - [ ] Audio waveform visualization
 - [ ] Export as video file
+- [x] Screens and slices: several outputs, each with its own part of the composition and corner pin
 - [ ] Advanced polygon warp with mesh deformation (WebGL)
 - [ ] Bezier curve mask edges
 

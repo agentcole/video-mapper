@@ -1,76 +1,89 @@
+import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { MediaFrame } from '../types';
-import { migrateFrame } from './storage';
+import type { ProjectDocument } from '../state/projectStore';
+import { allClips, emptyShow, showFromFrames } from '../state/showModel';
+import { DEFAULT_BACKGROUND, DEFAULT_COMPOSITION, DEFAULT_GRID, DEFAULT_MACROS, DEFAULT_TEMPO } from './defaults';
+import { clearAllMedia, getMedia, importMediaBlob } from './mediaStorage';
+import { buildProjectPackage, importProjectFile, serializeProject } from './storage';
+import { PROJECT_VERSION } from './projectSchema';
+import { importIsf } from '../effects/library';
 
-// Frames as older project files stored them — fields added later are missing
-const legacyFrame = (overrides: Partial<MediaFrame>): MediaFrame => ({
-  id: 'frame-1',
-  type: 'image',
-  url: '',
-  x: 100,
-  y: 50,
-  width: 200,
-  height: 100,
-  rotation: 0,
-  shape: 'rectangle',
-  loop: true,
-  opacity: 1,
-  zIndex: 0,
-  playbackRate: 1,
-  muted: false,
-  blur: 0,
-  brightness: 100,
-  contrast: 100,
-  grayscale: 0,
-  saturate: 100,
-  hueRotate: 0,
-  invert: 0,
-  sepia: 0,
-  blendMode: 'normal',
-  flipHorizontal: false,
-  flipVertical: false,
-  lockAspectRatio: true,
-  ...overrides,
-} as MediaFrame);
+const frame = (id: string, mediaId?: string): MediaFrame => ({
+  id, type: 'video', url: mediaId ? 'blob:session-url' : 'https://example.com/clip.mp4', mediaId,
+  x: 0, y: 0, width: 320, height: 180, rotation: 0, shape: 'rectangle', textureMode: 'clip',
+  loop: true, opacity: 1, zIndex: 0, playbackRate: 1, muted: true,
+  blur: 0, brightness: 100, contrast: 100, grayscale: 0, saturate: 100, hueRotate: 0, invert: 0, sepia: 0,
+  blendMode: 'normal', flipHorizontal: false, flipVertical: false, lockAspectRatio: true,
+  contentScale: 1, contentOffsetX: 0, contentOffsetY: 0, perspectiveMode: false,
+  perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
+  visible: true, testPattern: false, softEdge: { left: 0, right: 0, top: 0, bottom: 0 },
+});
 
-describe('migrateFrame', () => {
-  it('fills in fields added in later versions', () => {
-    const frame = migrateFrame(legacyFrame({}));
-    expect(frame.textureMode).toBe('clip');
-    expect(frame.perspectiveMode).toBe(false);
-    expect(frame.perspectiveCorners.tl).toEqual({ x: 0, y: 0 });
-    expect(frame.visible).toBe(true);
-    expect(frame.testPattern).toBe(false);
-    expect(frame.softEdge).toEqual({ left: 0, right: 0, top: 0, bottom: 0 });
-    expect(frame.contentScale).toBe(1);
+const doc = (frames: MediaFrame[]): ProjectDocument => ({
+  ...showFromFrames(emptyShow(), frames),
+  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION, tempo: DEFAULT_TEMPO, effects: [],
+  macros: DEFAULT_MACROS, screens: [],
+});
+
+describe('serializeProject', () => {
+  it('carries the imported shaders a project uses, not the bundled ones', async () => {
+    const source = '/*{ "INPUTS": [ { "NAME": "inputImage", "TYPE": "image" } ] }*/ void main() { gl_FragColor = IMG_THIS_PIXEL(inputImage); }';
+    const mine = await importIsf('mine.fs', source);
+    const d = doc([frame('a', 'media-1')]);
+    const withEffects = {
+      ...d,
+      effects: [{ id: 'x', effectId: 'builtin:invert', enabled: true, params: {} }],
+      layers: d.layers.map(l => ({ ...l, effects: [{ id: 'y', effectId: mine.id, enabled: true, params: {} }] })),
+    };
+    expect(serializeProject(withEffects).shaders).toEqual([{ id: mine.id, name: 'Mine', source }]);
+    expect(serializeProject(d).shaders).toEqual([]);
   });
 
-  it('turns an old warp-mode quad into a corner-pinned rectangle on its vertices', () => {
-    const frame = migrateFrame(legacyFrame({
-      shape: 'polygon',
-      textureMode: 'warp',
-      // counter-clockwise from bottom-right, as a user might have clicked it
-      vertices: [{ x: 1, y: 1 }, { x: 0.9, y: 0 }, { x: 0.1, y: 0 }, { x: 0, y: 1 }],
-    }));
-    expect(frame.shape).toBe('rectangle');
-    expect(frame.textureMode).toBe('clip');
-    expect(frame.vertices).toBeUndefined();
-    expect(frame.perspectiveMode).toBe(true);
-    expect(frame.perspectiveCorners.tl.x).toBeCloseTo(20);
-    expect(frame.perspectiveCorners.tl.y).toBeCloseTo(0);
-    expect(frame.perspectiveCorners.tr.x).toBeCloseTo(-20);
-    expect(frame.perspectiveCorners.br.x).toBeCloseTo(0);
-    expect(frame.perspectiveCorners.bl.y).toBeCloseTo(0);
+  it('drops session blob URLs but keeps remote URLs and the name', () => {
+    const data = serializeProject(doc([frame('a', 'media-1'), frame('b')]), 'Club night');
+    expect(data.name).toBe('Club night');
+    expect(data.version).toBe(PROJECT_VERSION);
+    expect(data.surfaces).toHaveLength(2);
+    const [stored, remote] = allClips(data);
+    expect(stored.source.url).toBe('');
+    expect(stored.source.mediaId).toBe('media-1');
+    expect(remote.source.url).toBe('https://example.com/clip.mp4');
+  });
+});
+
+describe('project packages', () => {
+  it('round-trips a project with its media through a zip', async () => {
+    const bytes = new Uint8Array(4096).map((_, i) => i % 251);
+    await importMediaBlob({ id: 'media-1', name: 'loop.mp4', type: 'video', mimeType: 'video/mp4', blob: new Blob([bytes], { type: 'video/mp4' }) });
+
+    const { blob, missing } = await buildProjectPackage(doc([frame('a', 'media-1'), frame('b', 'media-gone')]), 'Club night');
+    expect(missing).toEqual(['media-gone']);
+
+    await clearAllMedia();
+    expect(await getMedia('media-1')).toBeNull();
+
+    const { project, name } = await importProjectFile(new File([blob], 'club.videomapper.zip'));
+    expect(name).toBe('Club night');
+    expect(project.frames.map(f => f.mediaId)).toEqual(['media-1', 'media-gone']);
+    const restored = await getMedia('media-1');
+    expect(restored?.name).toBe('loop.mp4');
+    expect(new Uint8Array(await restored!.blob.arrayBuffer())).toEqual(bytes);
   });
 
-  it('falls back to clipping for warp-mode polygons that are not quads', () => {
-    const frame = migrateFrame(legacyFrame({
-      shape: 'polygon',
-      textureMode: 'warp',
-      vertices: [{ x: 0.5, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }],
-    }));
-    expect(frame.shape).toBe('polygon');
-    expect(frame.textureMode).toBe('clip');
-    expect(frame.vertices).toHaveLength(3);
+  it('imports plain JSON project files', async () => {
+    const json = JSON.stringify(serializeProject(doc([frame('a')])));
+    const { project, name } = await importProjectFile(new File([json], 'my show.json'));
+    expect(name).toBe('my show');
+    expect(project.frames).toHaveLength(1);
+  });
+
+  it('rejects zips that are not project packages', async () => {
+    const { blob } = await buildProjectPackage(doc([]), 'x');
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    // Corrupt the manifest file name so project.json can't be found
+    const text = new TextDecoder('latin1').decode(bytes).replaceAll('project.json', 'project.jsox');
+    const broken = Uint8Array.from(text, c => c.charCodeAt(0));
+    await expect(importProjectFile(new File([broken], 'x.zip'))).rejects.toThrow('project.json is missing');
   });
 });
