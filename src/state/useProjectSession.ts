@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { projectStore, type ProjectDocument } from './projectStore';
+import { emptyShow, mapClips } from './showModel';
 import { projectHistory } from './history';
 import { parseProjectData } from '../lib/projectSchema';
 import {
@@ -25,34 +26,45 @@ const NOTICE_MS = 3500;
 
 const { replaceDocument } = projectStore.getState();
 
-const currentDocument = (): ProjectDocument => {
-  const { frames, background, grid, composition } = projectStore.getState();
-  return { frames, background, grid, composition };
-};
+const documentOf = (d: ProjectDocument): ProjectDocument => ({
+  surfaces: d.surfaces,
+  layers: d.layers,
+  columns: d.columns,
+  background: d.background,
+  grid: d.grid,
+  composition: d.composition,
+});
 
-/** Turn stored media references into playable URLs for this window. */
+const currentDocument = (): ProjectDocument => documentOf(projectStore.getState());
+
+/** Turn stored media references (every clip + background) into playable URLs for this window. */
 const resolveDocument = async (project: LoadedProject): Promise<ProjectDocument> => {
-  const { frames, background, grid, composition } = project;
-  const mediaIds = [...frames.map(f => f.mediaId), background.mediaId].filter((id): id is string => Boolean(id));
-  if (mediaIds.length === 0) return { frames, background, grid, composition };
+  const doc = documentOf(project);
+  const mediaIds = [
+    ...doc.layers.flatMap(l => l.slots.map(c => c?.source.mediaId)),
+    doc.background.mediaId,
+  ].filter((id): id is string => Boolean(id));
+  if (mediaIds.length === 0) return doc;
   try {
-    const urls = await resolveMediaUrls(mediaIds);
+    const urls = await resolveMediaUrls([...new Set(mediaIds)]);
+    const withUrls = mapClips(doc, clip => {
+      const id = clip.source.mediaId;
+      return id && urls.has(id) ? { ...clip, source: { ...clip.source, url: urls.get(id)! } } : clip;
+    });
     return {
-      frames: frames.map(f => (f.mediaId && urls.has(f.mediaId) ? { ...f, url: urls.get(f.mediaId)! } : f)),
-      background: background.mediaId && urls.has(background.mediaId)
-        ? { ...background, url: urls.get(background.mediaId) }
-        : background,
-      grid,
-      composition,
+      ...withUrls,
+      background: doc.background.mediaId && urls.has(doc.background.mediaId)
+        ? { ...doc.background, url: urls.get(doc.background.mediaId) }
+        : doc.background,
     };
   } catch (error) {
     console.error('Failed to resolve media URLs:', error);
-    return { frames, background, grid, composition };
+    return doc;
   }
 };
 
 const EMPTY_DOCUMENT: ProjectDocument = {
-  frames: [],
+  ...emptyShow(),
   background: DEFAULT_BACKGROUND,
   grid: DEFAULT_GRID,
   composition: DEFAULT_COMPOSITION,
@@ -114,8 +126,8 @@ export function useProjectSession(onDocumentReplaced: () => void) {
   useEffect(() => projectStore.subscribe((state, prev) => {
     if (suspendedRef.current) return;
     if (
-      state.frames === prev.frames && state.background === prev.background &&
-      state.grid === prev.grid && state.composition === prev.composition
+      state.surfaces === prev.surfaces && state.layers === prev.layers && state.columns === prev.columns &&
+      state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition
     ) {
       return;
     }
@@ -246,8 +258,7 @@ export function useProjectSession(onDocumentReplaced: () => void) {
   const importFile = useCallback(async (file: File) => {
     const { project: imported, name } = await importProjectFile(file);
     await saveNow();
-    const { frames, background, grid, composition } = imported;
-    const record = await createProject(name, serializeProject({ frames, background, grid, composition }, name));
+    const record = await createProject(name, serializeProject(documentOf(imported), name));
     await applyRecord(record, imported.warnings);
     flash(`Imported as new project "${name}"`);
   }, [saveNow, applyRecord, flash]);

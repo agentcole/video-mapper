@@ -8,7 +8,7 @@ import { projectStore } from './projectStore';
 // a view setting and deliberately not part of the history.
 // ---------------------------------------------------------------------------
 
-type Snapshot = Pick<ProjectState, 'frames' | 'background' | 'composition'>;
+type Snapshot = Pick<ProjectState, 'surfaces' | 'layers' | 'columns' | 'background' | 'composition'>;
 
 export interface HistoryOptions {
   limit?: number;
@@ -25,7 +25,9 @@ export interface ProjectHistory {
 }
 
 const snapshotOf = (s: ProjectState): Snapshot => ({
-  frames: s.frames,
+  surfaces: s.surfaces,
+  layers: s.layers,
+  columns: s.columns,
   background: s.background,
   composition: s.composition,
 });
@@ -57,7 +59,9 @@ export const createHistory = (
 
   store.subscribe((state, prev) => {
     if (
-      state.frames === prev.frames &&
+      state.surfaces === prev.surfaces &&
+      state.layers === prev.layers &&
+      state.columns === prev.columns &&
       state.background === prev.background &&
       state.composition === prev.composition
     ) {

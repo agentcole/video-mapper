@@ -82,8 +82,11 @@ export interface MediaLibraryStats {
   maxSize: number // max allowed total size
 }
 
+// A frame is the editor's / renderers' view of one mapped surface with the
+// content its layer currently plays (see state/showModel.ts)
 export interface MediaFrame {
-  id: string
+  id: string // = surface id
+  layerId?: string // the layer feeding this surface (derived, read-only)
   type: MediaType
   url: string
   filename?: string

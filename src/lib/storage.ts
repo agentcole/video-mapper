@@ -1,6 +1,7 @@
 import { Zip, ZipDeflate, ZipPassThrough, unzip, strToU8, strFromU8, type Unzipped } from 'fflate';
-import type { MediaFrame, BackgroundSettings } from '../types';
+import type { BackgroundSettings } from '../types';
 import type { ProjectDocument } from '../state/projectStore';
+import { allClips, mapClips, type Clip } from '../state/showModel';
 import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION } from './defaults';
 import { parseProjectData, PROJECT_VERSION, type ParsedProject, type PackageMediaEntry } from './projectSchema';
 import { getMediaFile, importMediaBlob, importMediaRecords } from './mediaStorage';
@@ -16,17 +17,20 @@ export { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION };
 export type LoadedProject = ParsedProject;
 
 // Blob URLs are session-specific — media is re-resolved from its mediaId
-const stripFrameUrl = (frame: MediaFrame): MediaFrame => (frame.mediaId ? { ...frame, url: '' } : frame);
+const stripClipUrl = (clip: Clip): Clip =>
+  clip.source.mediaId ? { ...clip, source: { ...clip.source, url: '' } } : clip;
 const stripBackgroundUrl = (bg: BackgroundSettings): BackgroundSettings => (bg.mediaId ? { ...bg, url: '' } : bg);
 
 export const serializeProject = (doc: ProjectDocument, name?: string) => ({
   ...(name ? { name } : {}),
-  frames: doc.frames.map(stripFrameUrl),
-  background: stripBackgroundUrl(doc.background),
-  grid: doc.grid,
-  composition: doc.composition,
   version: PROJECT_VERSION,
   timestamp: new Date().toISOString(),
+  composition: doc.composition,
+  grid: doc.grid,
+  background: stripBackgroundUrl(doc.background),
+  surfaces: doc.surfaces,
+  columns: doc.columns,
+  layers: mapClips(doc, stripClipUrl).layers,
 });
 
 export type SerializedProject = ReturnType<typeof serializeProject>;
@@ -52,8 +56,9 @@ export const exportProjectJson = (doc: ProjectDocument, name: string): void => {
   downloadBlob(blob, `${safeFileName(name)}.json`);
 };
 
+// Every clip's media (not only the playing ones) + the background
 const mediaIdsOf = (doc: ProjectDocument): string[] => [
-  ...new Set([...doc.frames.map(f => f.mediaId), doc.background.mediaId].filter((id): id is string => Boolean(id))),
+  ...new Set([...allClips(doc).map(c => c.source.mediaId), doc.background.mediaId].filter((id): id is string => Boolean(id))),
 ];
 
 /**

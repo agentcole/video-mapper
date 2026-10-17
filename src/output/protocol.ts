@@ -1,4 +1,4 @@
-import type { ProjectDocument } from '../state/projectStore';
+import type { RenderDocument } from '../state/projectStore';
 import type { LiveState } from '../state/liveStore';
 
 // ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ export type LiveSnapshot = Pick<LiveState, 'masterOpacity' | 'blackout' | 'showT
 export interface OutputSnapshot {
   // Frames/background with a mediaId carry no URL: blob URLs belong to the
   // window that created them, so each output resolves media from IndexedDB
-  doc: ProjectDocument;
+  doc: RenderDocument;
   live: LiveSnapshot;
 }
 

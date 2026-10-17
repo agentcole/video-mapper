@@ -29,8 +29,8 @@ const useOutputSync = () => {
       getProject(projectId)
         .then(record => {
           if (receivedLiveState || record?.data == null) return;
-          const { frames, background, grid, composition } = parseProjectData(record.data);
-          projectStore.getState().replaceDocument({ frames, background, grid, composition });
+          const { surfaces, layers, columns, background, grid, composition } = parseProjectData(record.data);
+          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition });
         })
         .catch(error => console.warn('Could not load the saved project for the output:', error));
     }

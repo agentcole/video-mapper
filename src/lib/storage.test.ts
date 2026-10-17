@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import type { MediaFrame } from '../types';
 import type { ProjectDocument } from '../state/projectStore';
+import { allClips, emptyShow, showFromFrames } from '../state/showModel';
 import { DEFAULT_BACKGROUND, DEFAULT_COMPOSITION, DEFAULT_GRID } from './defaults';
 import { clearAllMedia, getMedia, importMediaBlob } from './mediaStorage';
 import { buildProjectPackage, importProjectFile, serializeProject } from './storage';
@@ -18,15 +19,20 @@ const frame = (id: string, mediaId?: string): MediaFrame => ({
 });
 
 const doc = (frames: MediaFrame[]): ProjectDocument => ({
-  frames, background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION,
+  ...showFromFrames(emptyShow(), frames),
+  background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION,
 });
 
 describe('serializeProject', () => {
   it('drops session blob URLs but keeps remote URLs and the name', () => {
     const data = serializeProject(doc([frame('a', 'media-1'), frame('b')]), 'Club night');
     expect(data.name).toBe('Club night');
-    expect(data.frames[0].url).toBe('');
-    expect(data.frames[1].url).toBe('https://example.com/clip.mp4');
+    expect(data.version).toBe('5.0.0');
+    expect(data.surfaces).toHaveLength(2);
+    const [stored, remote] = allClips(data);
+    expect(stored.source.url).toBe('');
+    expect(stored.source.mediaId).toBe('media-1');
+    expect(remote.source.url).toBe('https://example.com/clip.mp4');
   });
 });
 
