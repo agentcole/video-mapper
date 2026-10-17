@@ -78,6 +78,11 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 - **Controller templates** with LED colours, detected by port name: Akai APC mini mk2 and APC40 mkII, Novation Launchpad Mini MK3 and Launchpad X, DJ TechTools Midi Fighter Twister, Korg nanoKONTROL2 (built from the manufacturers' documentation, not yet tried on hardware).
 - **MIDI clock in** sets the master tempo and, after Start, the bar. Beat-snapped triggers keep the beat while the editor window is hidden. Details: [docs/design/midi.md](docs/design/midi.md).
 
+### 🖥️ Screens & Slices (multiple projectors)
+- **Screens** (Output section): give each projector or display its own output with its own resolution. A screen's **slices** take a rectangle of the composition (*Input*) and place it on the screen through four corners (*Output*, a corner pin) — e.g. a wide composition split across two projectors, each keystoned on its own. *Split…* does columns × rows with overlap in one step.
+- The stage switches between the composition with the slices' inputs and a screen as its output window shows it; drag rectangles and corners (snapping to edges and other slices, Alt: free), arrow keys for 1 px steps, numbers in the panel.
+- Each screen opens in its own output window (`?output=<screen id>`), on a display remembered per machine; the test card shows the screen's name and resolution. Without screens, outputs show the whole composition as before. Details: [docs/design/screens.md](docs/design/screens.md).
+
 ### 🥁 Master Clock & Beat Snap
 - **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
 - **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
@@ -206,7 +211,7 @@ npm run preview
 
 - **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
 - The editor letterboxes and scales the composition to your window; Present mode maps it to the output
-- **Output window**: opens the composition in its own window for the projector while you keep editing. In Chromium browsers, *Detect screens* lets you pick the target display (Window Management API); elsewhere drag the window over. The output mirrors the editor live, shows no editor UI, hides the cursor, keeps the display awake and starts from the autosaved project (it keeps its last picture if the editor reloads). In the output window: click or **F** for fullscreen, **B** for blackout. While an output is live the editor preview is muted.
+- **Output window**: opens the composition (or, with screens, one screen) in its own window for the projector while you keep editing. In Chromium browsers, *Detect displays* lets you pick the target display (Window Management API); elsewhere drag the window over. The output mirrors the editor live, shows no editor UI, hides the cursor, keeps the display awake and starts from the autosaved project (it keeps its last picture if the editor reloads). In the output window: click or **F** for fullscreen, **B** for blackout. While an output is live the editor preview is muted.
 - **Master fader** dims the whole output (and scales audio volume); **Blackout (B)** kills picture and sound instantly
 - **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
 - **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
@@ -301,6 +306,9 @@ src/
 │   ├── FrameContent.tsx     # Frame content for the CSS renderer
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
+│   ├── ScreensPanel.tsx     # Screens and slices (replaces the layers dock in the screen editor)
+│   ├── SliceOverlay.tsx     # Slice inputs / outputs on the stage (drag, snap)
+│   ├── ScreenDom.tsx        # A screen with the CSS renderer (one warped copy per slice)
 │   ├── ClipLauncher.tsx     # Layers × columns clip launcher (bottom dock)
 │   ├── TempoBar.tsx         # Master clock: tap, BPM, nudge, resync, beat snap
 │   ├── EffectsPanel.tsx     # Effect stacks and generator parameters
@@ -310,7 +318,7 @@ src/
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
-├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), master clock, undo, project session
+├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), master clock, screens, undo, project session
 ├── effects/                 # ISF parser/translator, effect library, bundled shaders (isf/*.fs), ?isf-check
 ├── output/                  # Output window app + editor ⇄ output sync
 ├── render/
@@ -353,6 +361,7 @@ src/
 - [ ] Timeline for synchronized playback
 - [ ] Audio waveform visualization
 - [ ] Export as video file
+- [x] Screens and slices: several outputs, each with its own part of the composition and corner pin
 - [ ] Advanced polygon warp with mesh deformation (WebGL)
 - [ ] Bezier curve mask edges
 

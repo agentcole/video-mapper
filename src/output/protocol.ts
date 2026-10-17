@@ -10,7 +10,8 @@ import type { AudioSnapshot } from '../audio/audioBus';
 
 export const OUTPUT_CHANNEL = 'video-mapper-output';
 
-// Output windows are the same app with this query parameter
+// Output windows are the same app with this query parameter; its value is
+// the screen the window shows (empty: the whole composition)
 export const OUTPUT_QUERY_PARAM = 'output';
 
 export const HEARTBEAT_INTERVAL_MS = 2000;
@@ -37,7 +38,7 @@ export type OutputMessage =
   | { type: 'close-outputs' }
   | { type: 'audio'; snapshot: AudioSnapshot } // the editor's audio analysis, ~94 per second
   // outputs → editor
-  | { type: 'hello'; outputId: string }
-  | { type: 'heartbeat'; outputId: string }
+  | { type: 'hello'; outputId: string; screenId: string | null }
+  | { type: 'heartbeat'; outputId: string; screenId: string | null }
   | { type: 'bye'; outputId: string }
   | { type: 'toggle-blackout' };

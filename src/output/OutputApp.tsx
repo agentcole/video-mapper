@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { allClips, type ClipSource } from '../state/showModel';
 import { usePreload } from '../render/preload';
@@ -12,20 +12,25 @@ import { resolveMediaUrls } from '../lib/mediaStorage';
 import { FrameContent } from '../components/FrameContent';
 import { BackgroundLayer, GridOverlay } from '../components/StageLayers';
 import { TestCard } from '../components/TestCard';
+import { ScreenDom } from '../components/ScreenDom';
 import { GpuStage } from '../render/GpuStage';
-import { OUTPUT_CHANNEL, HEARTBEAT_INTERVAL_MS, type OutputMessage } from './protocol';
+import { OUTPUT_CHANNEL, OUTPUT_QUERY_PARAM, HEARTBEAT_INTERVAL_MS, type OutputMessage } from './protocol';
 
 // ---------------------------------------------------------------------------
 // Output window: the composition only — no editor UI, ever. It mirrors the
 // editor over a BroadcastChannel, and starts from the autosaved project so it
 // also works on its own (or keeps the last picture if the editor goes away).
 // It starts from the editor's open project as last saved.
+// With ?output=<screen id> it shows that screen: its slices of the
+// composition, at the screen's resolution (docs/design/screens.md).
 // ---------------------------------------------------------------------------
 
 const CURSOR_IDLE_MS = 2000;
 const HINT_MS = 5000;
 
-const useOutputSync = () => {
+/** Mirror the editor; true once there is a document (saved or live). */
+const useOutputSync = (screenId: string | null): boolean => {
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     void loadUserEffects();
     // Live state from the editor always wins over the saved project
@@ -35,8 +40,9 @@ const useOutputSync = () => {
       getProject(projectId)
         .then(record => {
           if (receivedLiveState || record?.data == null) return;
-          const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros } = parseProjectData(record.data);
-          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo, effects, macros });
+          const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros, screens } = parseProjectData(record.data);
+          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo, effects, macros, screens });
+          setReady(true);
         })
         .catch(error => console.warn('Could not load the saved project for the output:', error));
     }
@@ -52,16 +58,17 @@ const useOutputSync = () => {
         receivedLiveState = true;
         projectStore.getState().replaceDocument(message.snapshot.doc);
         liveStore.setState(message.snapshot.live);
+        setReady(true);
       } else if (message.type === 'audio') {
         publishAudio(message.snapshot);
       } else if (message.type === 'control-ready') {
-        send({ type: 'hello', outputId });
+        send({ type: 'hello', outputId, screenId });
       } else if (message.type === 'close-outputs') {
         window.close();
       }
     };
-    send({ type: 'hello', outputId });
-    const heartbeat = setInterval(() => send({ type: 'heartbeat', outputId }), HEARTBEAT_INTERVAL_MS);
+    send({ type: 'hello', outputId, screenId });
+    const heartbeat = setInterval(() => send({ type: 'heartbeat', outputId, screenId }), HEARTBEAT_INTERVAL_MS);
     const sayBye = () => send({ type: 'bye', outputId });
     window.addEventListener('pagehide', sayBye);
 
@@ -71,7 +78,8 @@ const useOutputSync = () => {
       window.removeEventListener('pagehide', sayBye);
       channel.close();
     };
-  }, []);
+  }, [screenId]);
+  return ready;
 };
 
 // Blob URLs belong to the window that made them — resolve stored media here
@@ -115,7 +123,8 @@ const useWakeLock = () => {
 };
 
 export const OutputApp: React.FC = () => {
-  useOutputSync();
+  const screenId = useMemo(() => new URLSearchParams(window.location.search).get(OUTPUT_QUERY_PARAM) || null, []);
+  const ready = useOutputSync(screenId);
   useWakeLock();
 
   const frames = useProjectStore(s => s.frames);
@@ -135,6 +144,12 @@ export const OutputApp: React.FC = () => {
   const bpm = useProjectStore(s => s.tempo.bpm);
   const compositionEffects = useProjectStore(s => s.effects);
   const macros = useProjectStore(s => s.macros);
+  const screens = useProjectStore(s => s.screens);
+  const screen = screenId ? screens.find(s => s.id === screenId) ?? null : null;
+  // A screen that isn't in the project (deleted): black, never the wrong picture
+  const missingScreen = screenId !== null && !screen;
+  // What this window shows: a screen, or the whole composition
+  const space = screen ?? composition;
   const [gpuFailed, setGpuFailed] = useState(false);
   const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
@@ -157,8 +172,12 @@ export const OutputApp: React.FC = () => {
   const [cursorIdle, setCursorIdle] = useState(false);
   const [showHint, setShowHint] = useState(true);
 
+  const screenName = screen?.name;
   useEffect(() => {
-    document.title = 'Video Mapper — Output';
+    document.title = `Video Mapper — ${screenName ?? 'Output'}`;
+  }, [screenName]);
+
+  useEffect(() => {
     const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
     const onFullscreenChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
     window.addEventListener('resize', onResize);
@@ -212,9 +231,35 @@ export const OutputApp: React.FC = () => {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const scale = Math.min(viewport.w / composition.width, viewport.h / composition.height) || 1;
-  const offsetX = (viewport.w - composition.width * scale) / 2;
-  const offsetY = (viewport.h - composition.height * scale) / 2;
+  const scale = Math.min(viewport.w / space.width, viewport.h / space.height) || 1;
+  const offsetX = (viewport.w - space.width * scale) / 2;
+  const offsetY = (viewport.h - space.height * scale) / 2;
+
+  // The composition with the CSS renderer (once, or once per slice of a screen)
+  const compositionDom = (audible: boolean) => (
+    <div className="absolute inset-0" style={{ opacity: masterOpacity }}>
+      <BackgroundLayer
+        background={background}
+        url={urlOf(background)}
+        outputGain={audible ? outputGain : 0}
+        playback={playback}
+      />
+      {frames.filter(f => f.visible !== false).map(frame => (
+        <FrameContent
+          key={frame.id}
+          frame={frame}
+          url={urlOf(frame)}
+          playback={playback}
+          outputGain={audible ? outputGain : 0}
+          showPlaceholder={false}
+          preload={preloadFor(frame)}
+          startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
+          gain={crossfadeGain(frame.crossfade, crossfader)}
+          bpm={bpm}
+        />
+      ))}
+    </div>
+  );
 
   return (
     <div
@@ -225,13 +270,13 @@ export const OutputApp: React.FC = () => {
       <div
         className="absolute bg-black"
         style={{
-          width: composition.width,
-          height: composition.height,
+          width: space.width,
+          height: space.height,
           transform: `translate(${offsetX}px, ${offsetY}px) scale(${scale})`,
           transformOrigin: '0 0',
         }}
       >
-        {useGpu ? (
+        {missingScreen ? null : useGpu ? (
           <GpuStage
             scene={{
               frames: frames.filter(f => f.visible !== false).map(f => ({ ...f, url: urlOf(f) })),
@@ -243,6 +288,7 @@ export const OutputApp: React.FC = () => {
               macros: macros.map(m => m.value),
               background: { ...background, url: urlOf(background) },
               composition,
+              screen,
               masterOpacity,
               outputGain,
               playback,
@@ -257,39 +303,22 @@ export const OutputApp: React.FC = () => {
               setGpuFailed(true);
             }}
           />
+        ) : screen ? (
+          <ScreenDom screen={screen} composition={composition} renderComposition={compositionDom} />
         ) : (
-          <div className="absolute inset-0" style={{ opacity: masterOpacity }}>
-            <BackgroundLayer
-              background={background}
-              url={urlOf(background)}
-              outputGain={outputGain}
-              playback={playback}
-            />
-            {frames.filter(f => f.visible !== false).map(frame => (
-              <FrameContent
-                key={frame.id}
-                frame={frame}
-                url={urlOf(frame)}
-                playback={playback}
-                outputGain={outputGain}
-                showPlaceholder={false}
-                preload={preloadFor(frame)}
-                startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
-                gain={crossfadeGain(frame.crossfade, crossfader)}
-                bpm={bpm}
-              />
-            ))}
-          </div>
+          compositionDom(true)
         )}
 
-        {grid.show && grid.showInPresentation && <GridOverlay grid={grid} />}
+        {/* The grid is in composition px — not shown on a screen */}
+        {!screenId && grid.show && grid.showInPresentation && <GridOverlay grid={grid} />}
 
+        {/* On a screen the test card is the screen's: its name and resolution, for the projector */}
         {showTestCard && (
           <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 550 }}>
             <TestCard
-              width={composition.width}
-              height={composition.height}
-              label={`${composition.width} × ${composition.height}`}
+              width={space.width}
+              height={space.height}
+              label={screen ? `${screen.name} · ${screen.width} × ${screen.height}` : `${composition.width} × ${composition.height}`}
             />
           </div>
         )}
@@ -298,6 +327,13 @@ export const OutputApp: React.FC = () => {
           <div className="absolute inset-0 bg-black pointer-events-none" style={{ zIndex: 950 }} />
         )}
       </div>
+
+      {/* Only while the mouse moves: the projector itself stays black */}
+      {missingScreen && ready && showHint && (
+        <div className="absolute inset-0 flex items-center justify-center text-white/40 text-sm pointer-events-none">
+          This screen is no longer in the project
+        </div>
+      )}
 
       {!isFullscreen && showHint && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-black/85 backdrop-blur-md text-white/90 text-xs rounded-lg shadow-2xl px-3 py-2 pointer-events-none">

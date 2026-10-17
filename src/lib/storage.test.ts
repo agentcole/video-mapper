@@ -23,7 +23,7 @@ const frame = (id: string, mediaId?: string): MediaFrame => ({
 const doc = (frames: MediaFrame[]): ProjectDocument => ({
   ...showFromFrames(emptyShow(), frames),
   background: DEFAULT_BACKGROUND, grid: DEFAULT_GRID, composition: DEFAULT_COMPOSITION, tempo: DEFAULT_TEMPO, effects: [],
-  macros: DEFAULT_MACROS,
+  macros: DEFAULT_MACROS, screens: [],
 });
 
 describe('serializeProject', () => {

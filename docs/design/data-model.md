@@ -57,4 +57,4 @@ This keeps 1.3 a pure data-model change. The clip launcher (2.1) works on layers
 - ~~2.3 Transitions: a layer crossfades from the old to the new active clip.~~ Done — see [transitions.md](transitions.md). Format 5.3 adds `Layer.transition`, `Layer.crossfade` and `Clip.transition`.
 - ~~2.4 Effects.~~ Done — see [effects.md](effects.md). Format 5.4 adds `Clip.effects`, `Clip.generator`, `Layer.effects`, the composition's `effects` and the `shaders` a project carries.
 - ~~2.5 Modulation.~~ Done — see [modulation.md](modulation.md). Format 5.5 adds `mods` on effects, generators and layers, and the composition's `macros`.
-- 3.1 Screens/slices: surfaces that sample a *region of the composition* (render-to-texture, GPU renderer) instead of a single layer.
+- ~~3.1 Screens/slices.~~ Done — see [screens.md](screens.md). Format 5.6 adds `screens`: outputs with their own resolution whose slices take a rectangle of the composition onto four corners. Surfaces that sample a region of the composition (instead of a layer) remain open (3.7).

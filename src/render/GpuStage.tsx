@@ -4,7 +4,7 @@ import { Gl2Compositor } from './webgl/Gl2Compositor';
 
 interface GpuStageProps {
   scene: RenderScene;
-  // Device pixels per composition px (stage scale × devicePixelRatio)
+  // Device pixels per composition (or screen) px: stage scale × devicePixelRatio
   pixelsPerUnit: number;
   // WebGL2 missing or the compositor failed — the caller falls back to CSS
   onUnavailable: (reason: string) => void;
@@ -63,8 +63,10 @@ export const GpuStage: React.FC<GpuStageProps> = ({ scene, pixelsPerUnit, onUnav
     };
   }, []);
 
-  const width = scene.composition.width * pixelsPerUnit;
-  const height = scene.composition.height * pixelsPerUnit;
+  // The canvas shows the composition, or the screen it is drawing
+  const space = scene.screen ?? scene.composition;
+  const width = space.width * pixelsPerUnit;
+  const height = space.height * pixelsPerUnit;
   useEffect(() => {
     compositorRef.current?.resize(width, height);
   }, [width, height]);

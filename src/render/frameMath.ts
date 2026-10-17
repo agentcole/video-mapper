@@ -35,7 +35,7 @@ export interface FrameRenderParams {
 const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 /** 8-element homography (h22 = 1) → column-major mat3. */
-const toMat3 = (h: number[]): number[] => [h[0], h[3], h[6], h[1], h[4], h[7], h[2], h[5], 1];
+export const toMat3 = (h: number[]): number[] => [h[0], h[3], h[6], h[1], h[4], h[7], h[2], h[5], 1];
 
 export function frameRenderParams(frame: MediaFrame): FrameRenderParams {
   const w = frame.width;

@@ -36,6 +36,12 @@ import { EffectsPanel } from './EffectsPanel';
 import { DashboardPanel } from './DashboardPanel';
 import { ControlsPanel } from './ControlsPanel';
 import { LearnOverlay } from './LearnOverlay';
+import { ScreensPanel } from './ScreensPanel';
+import { ScreenDom } from './ScreenDom';
+import { SliceInputOverlay, SliceOutputOverlay } from './SliceOverlay';
+import { FrameContent } from './FrameContent';
+import { openScreenEditor, screenEditorStore, selectSlice, useScreenEditor } from '../state/screenEditor';
+import { duplicateSlice, nudgeSelection, removeSlice } from '../state/screenActions';
 import { resumeAudioInput } from '../audio/audioInput';
 import { resumeMidi } from '../control/midi';
 import { controlStore } from '../control/mappings';
@@ -223,11 +229,34 @@ export const Canvas: React.FC = () => {
   }, [selectedFrameIds]);
 
   // ------------------------------------------------------------------
-  // Composition view transform (letterboxed fit)
+  // Screen editor (3.1): the stage shows the composition with the slices'
+  // inputs, or a screen with their outputs
   // ------------------------------------------------------------------
-  const viewScale = Math.min(viewport.w / composition.width, viewport.h / composition.height) || 1;
-  const viewOffsetX = (viewport.w - composition.width * viewScale) / 2;
-  const viewOffsetY = (viewport.h - composition.height * viewScale) / 2;
+  const screens = useProjectStore(s => s.screens);
+  const screensOpen = useScreenEditor(s => s.open);
+  const screenView = useScreenEditor(s => s.view);
+  const editedScreenId = useScreenEditor(s => s.screenId);
+  const viewScreen = screensOpen && screenView === 'output' ? screens.find(s => s.id === editedScreenId) ?? null : null;
+  // Opening it ends drawing and frame selection: frames aren't editable there
+  useEffect(() => screenEditorStore.subscribe((state, prev) => {
+    if (!state.open || prev.open) return;
+    setSelectedFrameIds([]);
+    setIsDrawMode(false);
+    setDrawShape(null);
+  }), []);
+
+  // ------------------------------------------------------------------
+  // Stage view transform (letterboxed fit of the composition or screen)
+  // ------------------------------------------------------------------
+  const space = viewScreen ?? composition;
+  // The screen editor leaves a margin so handles on the edges can be grabbed
+  const stageMargin = screensOpen && !isPresentationMode ? 24 : 0;
+  const viewScale = Math.min(
+    Math.max(1, viewport.w - 2 * stageMargin) / space.width,
+    Math.max(1, viewport.h - 2 * stageMargin) / space.height,
+  ) || 1;
+  const viewOffsetX = (viewport.w - space.width * viewScale) / 2;
+  const viewOffsetY = (viewport.h - space.height * viewScale) / 2;
 
   // Track the canvas element size (window resizes, fullscreen changes)
   useEffect(() => {
@@ -359,13 +388,14 @@ export const Canvas: React.FC = () => {
     macros: macroValues,
     background,
     composition,
+    screen: viewScreen,
     masterOpacity,
     outputGain: editorGain,
     playback,
     showPlaceholders: !isPresentationMode,
     preload,
     layerTriggers,
-  }), [visibleFrames, crossfader, macroValues, bpm, clockOrigin, timeOrigin, compositionEffects, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
+  }), [visibleFrames, crossfader, macroValues, bpm, clockOrigin, timeOrigin, compositionEffects, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers, viewScreen]);
 
   // ------------------------------------------------------------------
   // Clip launcher
@@ -527,12 +557,16 @@ export const Canvas: React.FC = () => {
       }
 
       // ESC works even while typing: exit mode, cancel draw, or deselect
+      const screenEditor = screenEditorStore.getState();
       if (e.key === 'Escape') {
         if (isPresentationMode) {
           setIsPresentationMode(false);
           if (document.fullscreenElement) {
             document.exitFullscreen();
           }
+        } else if (screenEditor.open) {
+          if (screenEditor.sliceId) selectSlice(null);
+          else openScreenEditor(false);
         } else if (polygonDrawState.isDrawing) {
           setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
           setIsDrawMode(false);
@@ -590,6 +624,33 @@ export const Canvas: React.FC = () => {
           }
           return;
         }
+      }
+
+      // Screen editor: Delete, arrows and Cmd/Ctrl+D act on the selected
+      // slice; frame shortcuts (select all, clipboard) do nothing there
+      if (screenEditor.open) {
+        const command = e.metaKey || e.ctrlKey;
+        const { screenId, sliceId } = screenEditor;
+        if (!command && (e.key === 'Delete' || e.key === 'Backspace')) {
+          e.preventDefault();
+          if (screenId && sliceId) removeSlice(screenId, sliceId);
+          return;
+        }
+        if (!command && !isToggleInput && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          e.preventDefault();
+          const step = e.shiftKey ? 10 : 1;
+          nudgeSelection(
+            e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0,
+            e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0,
+          );
+          return;
+        }
+        if (command && (e.key === 'd' || e.key === 'D')) {
+          e.preventDefault();
+          if (screenId && sliceId) duplicateSlice(screenId, sliceId);
+          return;
+        }
+        if (command && ['a', 'c', 'x', 'v'].includes(e.key.toLowerCase())) return;
       }
 
       const hasSelection = selectedFrameIds.length > 0;
@@ -755,7 +816,8 @@ export const Canvas: React.FC = () => {
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const targetEl = e.target as HTMLElement;
     const isEmptyArea = targetEl === canvasRef.current || targetEl === stageRef.current || targetEl.dataset.canvasBg === 'true';
-    if (!isEmptyArea || isPresentationMode) return;
+    // The screen editor's overlay handles the stage itself
+    if (!isEmptyArea || isPresentationMode || screenEditorStore.getState().open) return;
 
     const comp = toComp(e.clientX, e.clientY);
 
@@ -1254,6 +1316,7 @@ export const Canvas: React.FC = () => {
   }, []);
 
   const handleDrawMode = useCallback((shape: ShapeType) => {
+    openScreenEditor(false);
     if (isDrawMode && drawShape === shape) {
       setIsDrawMode(false);
       setDrawShape(null);
@@ -1381,7 +1444,8 @@ export const Canvas: React.FC = () => {
         />
       )}
 
-      {!isPresentationMode && (
+      {!isPresentationMode && screensOpen && <ScreensPanel />}
+      {!isPresentationMode && !screensOpen && (
         <LayersPanel
           frames={frames}
           selectedFrameIds={selectedFrameIds}
@@ -1471,8 +1535,8 @@ export const Canvas: React.FC = () => {
           data-canvas-bg="true"
           className="absolute bg-black"
           style={{
-            width: composition.width,
-            height: composition.height,
+            width: space.width,
+            height: space.height,
             transform: `translate(${viewOffsetX}px, ${viewOffsetY}px) scale(${viewScale})`,
             transformOrigin: '0 0',
           }}
@@ -1486,42 +1550,77 @@ export const Canvas: React.FC = () => {
               onUnavailable={handleGpuUnavailable}
             />
           )}
-          <div
-            data-canvas-bg="true"
-            className="absolute inset-0"
-            style={{ opacity: masterOpacity, pointerEvents: renderer === 'gpu' ? 'none' : undefined }}
-          >
-            {renderer !== 'gpu' && (
-              <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
-            )}
-
-            {/* Frames */}
-            {visibleFrames.map(frame => (
-              <MediaFrameComponent
-                key={frame.id}
-                frame={frame}
-                isSelected={selectedFrameIds.includes(frame.id) && !isPresentationMode}
-                onUpdateFrame={updateFrame}
-                onDeleteFrame={deleteFrame}
-                onFrameDragStart={handleDragStart}
-                onFrameResizeStart={handleResizeStart}
-                onFrameRotateStart={handleRotateStart}
-                isPresentationMode={isPresentationMode}
-                onOpenFrameMediaLibrary={handleOpenMediaLibraryForFrame}
-                playback={playback}
-                clientToComp={toComp}
-                snapToGrid={snapToGrid}
-                overlayContainer={overlayEl}
-                viewScale={viewScale}
-                outputGain={editorGain}
-                renderContent={renderer !== 'gpu'}
-                preload={preloadFor(frame)}
-                startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
-                gain={crossfadeGain(frame.crossfade, crossfader)}
-                bpm={bpm}
+          {viewScreen ? (
+            // A screen with the CSS renderer: a copy of the composition per slice
+            renderer !== 'gpu' && (
+              <ScreenDom
+                screen={viewScreen}
+                composition={composition}
+                renderComposition={(audible) => (
+                  <div className="absolute inset-0" style={{ opacity: masterOpacity }}>
+                    <BackgroundLayer background={background} outputGain={audible ? editorGain : 0} playback={playback} />
+                    {visibleFrames.map(frame => (
+                      <FrameContent
+                        key={frame.id}
+                        frame={frame}
+                        playback={playback}
+                        outputGain={audible ? editorGain : 0}
+                        showPlaceholder={false}
+                        preload={preloadFor(frame)}
+                        startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
+                        gain={crossfadeGain(frame.crossfade, crossfader)}
+                        bpm={bpm}
+                      />
+                    ))}
+                  </div>
+                )}
               />
-            ))}
-          </div>
+            )
+          ) : (
+            <div
+              data-canvas-bg="true"
+              className="absolute inset-0"
+              style={{ opacity: masterOpacity, pointerEvents: renderer === 'gpu' ? 'none' : undefined }}
+            >
+              {renderer !== 'gpu' && (
+                <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
+              )}
+
+              {/* Frames */}
+              {visibleFrames.map(frame => (
+                <MediaFrameComponent
+                  key={frame.id}
+                  frame={frame}
+                  isSelected={selectedFrameIds.includes(frame.id) && !isPresentationMode && !screensOpen}
+                  onUpdateFrame={updateFrame}
+                  onDeleteFrame={deleteFrame}
+                  onFrameDragStart={handleDragStart}
+                  onFrameResizeStart={handleResizeStart}
+                  onFrameRotateStart={handleRotateStart}
+                  isPresentationMode={isPresentationMode || screensOpen}
+                  onOpenFrameMediaLibrary={handleOpenMediaLibraryForFrame}
+                  playback={playback}
+                  clientToComp={toComp}
+                  snapToGrid={snapToGrid}
+                  overlayContainer={overlayEl}
+                  viewScale={viewScale}
+                  outputGain={editorGain}
+                  renderContent={renderer !== 'gpu'}
+                  preload={preloadFor(frame)}
+                  startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
+                  gain={crossfadeGain(frame.crossfade, crossfader)}
+                  bpm={bpm}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Screen editor: slice inputs on the composition, or outputs on the screen */}
+          {screensOpen && !isPresentationMode && (
+            viewScreen
+              ? <SliceOutputOverlay screen={viewScreen} viewScale={viewScale} />
+              : <SliceInputOverlay viewScale={viewScale} />
+          )}
 
           {/* Editor overlay — outlines, handles and hit areas of every frame,
               above the content and outside the master fader */}
@@ -1529,15 +1628,17 @@ export const Canvas: React.FC = () => {
 
           {/* Grid overlay — optionally stays visible in presentation mode for
               projector alignment */}
-          {gridVisible && <GridOverlay grid={grid} />}
+          {gridVisible && !viewScreen && <GridOverlay grid={grid} />}
 
           {/* Global output test card (projector setup) */}
           {showTestCard && (
             <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 550 }}>
               <TestCard
-                width={composition.width}
-                height={composition.height}
-                label={`${composition.width} × ${composition.height}`}
+                width={space.width}
+                height={space.height}
+                label={viewScreen
+                  ? `${viewScreen.name} · ${viewScreen.width} × ${viewScreen.height}`
+                  : `${composition.width} × ${composition.height}`}
               />
             </div>
           )}
@@ -1651,7 +1752,7 @@ export const Canvas: React.FC = () => {
         )}
 
         {/* Instructions overlay when empty */}
-        {frames.length === 0 && !isPresentationMode && (
+        {frames.length === 0 && !isPresentationMode && !screensOpen && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-white/50">
               <p className="text-base font-bold mb-1">Video Mapper</p>

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type {
   MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord, TempoSettings,
-  EffectInstance, Macro, ModMap,
+  EffectInstance, Macro, ModMap, Screen, Slice,
 } from '../types';
 import {
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_PERSPECTIVE_CORNERS,
@@ -9,6 +9,7 @@ import {
 } from './defaults';
 import { MAX_BPM, MIN_BPM } from '../state/clock';
 import { pinFrameToQuadVertices } from './geometry';
+import { MAX_SCREEN_SIZE, MIN_SLICE_SIZE } from '../state/screens';
 import {
   createColumns, emptyShow, framesFromShow, showFromFrames,
   type Clip, type Column, type Layer, type ShowDocument, type Surface,
@@ -32,7 +33,8 @@ import {
 // 5.3: transitions per layer / clip, crossfader side per layer
 // 5.4: ISF effect stacks (clip, layer, composition) and generator clips
 // 5.5: parameter modulation (LFO, audio, macros) and macro faders
-export const PROJECT_VERSION = '5.5.0';
+// 5.6: screens (outputs) with slices of the composition
+export const PROJECT_VERSION = '5.6.0';
 
 const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 
@@ -262,6 +264,52 @@ const parseMacros = (raw: unknown): Macro[] =>
     return result.success ? result.data : fallback;
   });
 
+// 5.6 — screens and their slices. A broken slice or screen is skipped
+const SliceSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().max(80).catch('Slice'),
+  enabled: z.boolean().catch(true),
+  input: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number().min(MIN_SLICE_SIZE),
+    height: z.number().min(MIN_SLICE_SIZE),
+  }),
+  output: z.tuple([PointSchema, PointSchema, PointSchema, PointSchema]),
+});
+const ScreenSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().max(80).catch('Screen'),
+  width: z.number().int().min(16).max(MAX_SCREEN_SIZE),
+  height: z.number().int().min(16).max(MAX_SCREEN_SIZE),
+  slices: z.array(z.unknown()).catch([]),
+});
+const parseScreens = (raw: unknown, warnings: string[]): Screen[] => {
+  if (!Array.isArray(raw)) return [];
+  const ids = new Set<string>();
+  const screens: Screen[] = [];
+  raw.forEach((value, i) => {
+    const result = ScreenSchema.safeParse(value);
+    if (!result.success || ids.has(result.data.id)) {
+      warnings.push(`Screen ${i + 1} was skipped (${result.success ? 'duplicate id' : describeIssue(result.error)}).`);
+      return;
+    }
+    ids.add(result.data.id);
+    const slices: Slice[] = [];
+    result.data.slices.forEach((sliceValue, j) => {
+      const slice = SliceSchema.safeParse(sliceValue);
+      if (!slice.success || ids.has(slice.data.id)) {
+        warnings.push(`Slice ${j + 1} of ${result.data.name} was skipped (${slice.success ? 'duplicate id' : describeIssue(slice.error)}).`);
+        return;
+      }
+      ids.add(slice.data.id);
+      slices.push(slice.data);
+    });
+    screens.push({ ...result.data, slices });
+  });
+  return screens;
+};
+
 const CompositionSchema = z.object({
   width: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.width),
   height: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.height),
@@ -294,6 +342,7 @@ export interface ParsedProject extends ShowDocument {
   tempo: TempoSettings;
   effects: EffectInstance[]; // composition effect stack
   macros: Macro[];
+  screens: Screen[];
   shaders: { id: string; name: string; source: string }[]; // imported ISF shaders the project uses
   media?: ExportedMediaRecord[]; // legacy: base64-embedded media
   mediaFiles?: PackageMediaEntry[]; // project packages: media files in the zip
@@ -462,6 +511,7 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
   const tempo = isRecord(raw.tempo) ? TempoSchema.parse(raw.tempo) : DEFAULT_TEMPO;
   const effects = EffectsSchema.parse(raw.effects) ?? [];
   const macros = parseMacros(raw.macros);
+  const screens = parseScreens(raw.screens, warnings);
   const shaders = Array.isArray(raw.shaders)
     ? raw.shaders.flatMap(s => (isRecord(s) && typeof s.id === 'string' && typeof s.source === 'string'
       ? [{ id: s.id, name: typeof s.name === 'string' ? s.name : s.id, source: s.source }]
@@ -490,5 +540,5 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
 
-  return { ...show, frames, background, grid, composition, tempo, effects, macros, shaders, media, mediaFiles, name, warnings };
+  return { ...show, frames, background, grid, composition, tempo, effects, macros, screens, shaders, media, mediaFiles, name, warnings };
 };

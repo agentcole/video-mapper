@@ -15,9 +15,11 @@ import {
 
 interface OutputStatus {
   connected: number; // output windows with a recent heartbeat
+  // Live output windows per screen ('' = the whole composition)
+  screens: Record<string, number>;
 }
 
-export const outputStatusStore = createStore<OutputStatus>()(() => ({ connected: 0 }));
+export const outputStatusStore = createStore<OutputStatus>()(() => ({ connected: 0, screens: {} }));
 
 export function useOutputStatus<T>(selector: (state: OutputStatus) => T): T {
   return useStore(outputStatusStore, selector);
@@ -27,14 +29,14 @@ const stripUrl = <T extends { mediaId?: string; url?: string }>(item: T): T =>
   item.mediaId ? { ...item, url: '' } : item;
 
 export const createSnapshot = (): OutputSnapshot => {
-  const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros } = projectStore.getState();
+  const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros, screens } = projectStore.getState();
   const {
     masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
     clockOrigin, scheduled, crossfader, timeOrigin,
   } = liveStore.getState();
   const show = mapClips({ surfaces, layers, columns }, clip => ({ ...clip, source: stripUrl(clip.source) }));
   return {
-    doc: { ...show, background: stripUrl(background), grid, composition, tempo, effects, macros },
+    doc: { ...show, background: stripUrl(background), grid, composition, tempo, effects, macros, screens },
     live: {
       masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
       clockOrigin, scheduled, crossfader, timeOrigin,
@@ -59,10 +61,14 @@ export function startControlSync(): () => void {
   if (typeof BroadcastChannel === 'undefined') return () => {};
   const ch = new BroadcastChannel(OUTPUT_CHANNEL);
   channel = ch;
-  const lastSeen = new Map<string, number>();
+  const lastSeen = new Map<string, { at: number; screenId: string }>();
   let pending = false;
 
-  const updateStatus = () => outputStatusStore.setState({ connected: lastSeen.size });
+  const updateStatus = () => {
+    const screens: Record<string, number> = {};
+    for (const { screenId } of lastSeen.values()) screens[screenId] = (screens[screenId] ?? 0) + 1;
+    outputStatusStore.setState({ connected: lastSeen.size, screens });
+  };
 
   const send = () => {
     if (lastSeen.size === 0) return;
@@ -89,18 +95,18 @@ export function startControlSync(): () => void {
     const message = event.data;
     switch (message.type) {
       case 'hello':
-        lastSeen.set(message.outputId, Date.now());
+        lastSeen.set(message.outputId, { at: Date.now(), screenId: message.screenId ?? '' });
         updateStatus();
         send();
         break;
       case 'heartbeat':
         if (!lastSeen.has(message.outputId)) {
           // An output that outlived an editor reload — bring it up to date
-          lastSeen.set(message.outputId, Date.now());
+          lastSeen.set(message.outputId, { at: Date.now(), screenId: message.screenId ?? '' });
           updateStatus();
           send();
         } else {
-          lastSeen.set(message.outputId, Date.now());
+          lastSeen.set(message.outputId, { at: Date.now(), screenId: message.screenId ?? '' });
         }
         break;
       case 'bye':
@@ -117,8 +123,8 @@ export function startControlSync(): () => void {
   const expiry = setInterval(() => {
     const now = Date.now();
     let changed = false;
-    for (const [id, seen] of lastSeen) {
-      if (now - seen > HEARTBEAT_TIMEOUT_MS) {
+    for (const [id, { at }] of lastSeen) {
+      if (now - at > HEARTBEAT_TIMEOUT_MS) {
         lastSeen.delete(id);
         changed = true;
       }
@@ -135,6 +141,6 @@ export function startControlSync(): () => void {
     pending = false;
     ch.close();
     if (channel === ch) channel = null;
-    outputStatusStore.setState({ connected: 0 });
+    outputStatusStore.setState({ connected: 0, screens: {} });
   };
 }

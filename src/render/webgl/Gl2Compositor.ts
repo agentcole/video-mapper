@@ -1,6 +1,7 @@
-import type { EffectInstance, MediaFrame, Point } from '../../types';
+import type { EffectInstance, MediaFrame, Point, Screen } from '../../types';
 import type { RenderScene, SceneRenderer } from '../types';
-import { frameRenderParams, MAX_POLYGON_VERTICES } from '../frameMath';
+import { frameRenderParams, MAX_POLYGON_VERTICES, toMat3 } from '../frameMath';
+import { isValidQuad, screenToSlice, sliceZoom } from '../../state/screens';
 import { crossfadeGain, fadeProgress, transitionMs } from '../../state/transitions';
 import { beatAt, clockNow } from '../../state/clock';
 import { hasMods, modulate, modulatedParams, seedOf, type ModContext } from '../../state/modulation';
@@ -11,12 +12,16 @@ import { drawTestCard } from '../testCardCanvas';
 import { MediaPool, type MediaItem, type MediaTexture } from './MediaPool';
 import {
   QUAD_VERTEX, FULLSCREEN_VERTEX, COPY_FRAGMENT, BACKGROUND_FRAGMENT, FRAME_FRAGMENT, BLEND_MODE_CODES,
+  SLICE_VERTEX, SLICE_FRAGMENT,
 } from './shaders';
 
 // ---------------------------------------------------------------------------
 // WebGL2 compositor: background + frames into an offscreen target, then the
 // master fader on the way to the canvas. Normal-blended frames use GPU
 // blending; other blend modes read the layers below from a ping-pong copy.
+// For a screen (3.1) the composition is rendered at its own resolution and
+// the canvas shows the screen: each slice samples its input rectangle and
+// lands on its four output corners.
 // ---------------------------------------------------------------------------
 
 const BACKGROUND_KEY = '__background__';
@@ -75,15 +80,23 @@ export class Gl2Compositor implements SceneRenderer {
   private frameProgram!: Program;
   private backgroundProgram!: Program;
   private copyProgram!: Program;
+  private sliceProgram!: Program;
   private quadBuffer!: WebGLBuffer;
   private quadVao!: WebGLVertexArrayObject;
+  private sliceBuffer!: WebGLBuffer;
+  private sliceVao!: WebGLVertexArrayObject;
+  private maxTextureSize = 4096;
   private emptyVao!: WebGLVertexArrayObject;
   private targets: Target[] = [];
   private pool: MediaPool;
   private testCards = new Map<string, MediaTexture>();
   private lost = false;
+  // The composition picture (render targets) …
   private width = 1;
   private height = 1;
+  // … and the canvas. The same size, unless a screen is drawn.
+  private canvasWidth = 1;
+  private canvasHeight = 1;
   private lastScene: RenderScene | null = null;
   private lastCompositionWidth = 0;
   // Per frame, the media last drawn: after a trigger it stays on screen
@@ -131,6 +144,8 @@ export class Gl2Compositor implements SceneRenderer {
     this.frameProgram = this.createProgram(QUAD_VERTEX, FRAME_FRAGMENT);
     this.backgroundProgram = this.createProgram(FULLSCREEN_VERTEX, BACKGROUND_FRAGMENT);
     this.copyProgram = this.createProgram(FULLSCREEN_VERTEX, COPY_FRAGMENT);
+    this.sliceProgram = this.createProgram(SLICE_VERTEX, SLICE_FRAGMENT);
+    this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
 
     this.quadBuffer = gl.createBuffer()!;
     this.quadVao = gl.createVertexArray()!;
@@ -140,6 +155,14 @@ export class Gl2Compositor implements SceneRenderer {
     const location = gl.getAttribLocation(this.frameProgram.program, 'a_position');
     gl.enableVertexAttribArray(location);
     gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
+    this.sliceBuffer = gl.createBuffer()!;
+    this.sliceVao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.sliceVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.sliceBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, 12 * 4, gl.DYNAMIC_DRAW);
+    const sliceLocation = gl.getAttribLocation(this.sliceProgram.program, 'a_position');
+    gl.enableVertexAttribArray(sliceLocation);
+    gl.vertexAttribPointer(sliceLocation, 2, gl.FLOAT, false, 0, 0);
     this.emptyVao = gl.createVertexArray()!;
     gl.bindVertexArray(null);
 
@@ -214,16 +237,31 @@ export class Gl2Compositor implements SceneRenderer {
   // ---- Public API --------------------------------------------------------------
 
   resize(width: number, height: number): void {
-    const maxSize = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) as number;
-    const w = Math.max(1, Math.min(maxSize, Math.round(width)));
-    const h = Math.max(1, Math.min(maxSize, Math.round(height)));
-    if (w === this.width && h === this.height) return;
-    this.width = w;
-    this.height = h;
+    const w = Math.max(1, Math.min(this.maxTextureSize, Math.round(width)));
+    const h = Math.max(1, Math.min(this.maxTextureSize, Math.round(height)));
+    if (w === this.canvasWidth && h === this.canvasHeight) return;
+    this.canvasWidth = w;
+    this.canvasHeight = h;
     this.canvas.width = w;
     this.canvas.height = h;
-    if (!this.lost) this.createTargets();
     this.lastScene = null;
+  }
+
+  /**
+   * Size of the composition picture: the canvas — or, for a screen, the
+   * composition at the density its slices show it (at most its own
+   * resolution), in steps of a quarter so dragging a corner doesn't
+   * reallocate the targets on every move.
+   */
+  private targetSize(scene: RenderScene): { width: number; height: number } {
+    const screen = scene.screen;
+    if (!screen) return { width: this.canvasWidth, height: this.canvasHeight };
+    const { width, height } = scene.composition;
+    const canvasScale = Math.max(this.canvasWidth / screen.width, this.canvasHeight / screen.height);
+    const zooms = screen.slices.filter(s => s.enabled).map(sliceZoom);
+    const needed = canvasScale * (zooms.length > 0 ? Math.max(...zooms) : 1);
+    const scale = Math.min(Math.max(0.25, Math.ceil(needed * 4) / 4), 1, this.maxTextureSize / width, this.maxTextureSize / height);
+    return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
   }
 
   render(scene: RenderScene): void {
@@ -239,6 +277,12 @@ export class Gl2Compositor implements SceneRenderer {
     this.lastCompositionWidth = scene.composition.width;
 
     const gl = this.gl;
+    const target = this.targetSize(scene);
+    if (target.width !== this.width || target.height !== this.height) {
+      this.width = target.width;
+      this.height = target.height;
+      this.createTargets();
+    }
     const nowClock = clockNow();
     const time = (nowClock - scene.timeOrigin) / 1000;
     const clock = { bpm: scene.bpm, origin: scene.clockOrigin };
@@ -301,11 +345,15 @@ export class Gl2Compositor implements SceneRenderer {
       if (result) picture = result.texture;
     }
 
-    // Present with the master fader
+    // Present with the master fader: the composition, or the screen's slices of it
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, this.width, this.height);
-    gl.disable(gl.BLEND);
-    this.copy(picture, scene.masterOpacity);
+    gl.viewport(0, 0, this.canvasWidth, this.canvasHeight);
+    if (scene.screen) {
+      this.drawScreen(scene, scene.screen, picture);
+    } else {
+      gl.disable(gl.BLEND);
+      this.copy(picture, scene.masterOpacity);
+    }
     this.effects.endFrame();
   }
 
@@ -566,6 +614,44 @@ export class Gl2Compositor implements SceneRenderer {
     gl.uniform1f(this.uniform(p, 'u_gain'), gain);
     gl.bindVertexArray(this.emptyVao);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  /** The screen on the canvas: black, then every enabled slice (later ones on top). */
+  private drawScreen(scene: RenderScene, screen: Screen, picture: WebGLTexture) {
+    const gl = this.gl;
+    const p = this.sliceProgram;
+    const u = (name: string) => this.uniform(p, name);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(p.program);
+    gl.uniform2f(u('u_screenSize'), screen.width, screen.height);
+    gl.uniform1f(u('u_gain'), scene.masterOpacity);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, picture);
+    gl.uniform1i(u('u_picture'), 0);
+    gl.bindVertexArray(this.sliceVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.sliceBuffer);
+    const { width: compW, height: compH } = scene.composition;
+    // Grow the quad a little so antialiased edges aren't cut off
+    const pad = (EDGE_PAD_PX * screen.width) / this.canvasWidth;
+    for (const slice of screen.slices) {
+      if (!slice.enabled || !isValidQuad(slice.output)) continue;
+      const hinv = screenToSlice(slice);
+      if (!hinv) continue;
+      const cx = slice.output.reduce((sum, q) => sum + q.x, 0) / 4;
+      const cy = slice.output.reduce((sum, q) => sum + q.y, 0) / 4;
+      const [a, b, c, d] = slice.output.map((q): Point => {
+        const len = Math.hypot(q.x - cx, q.y - cy) || 1;
+        return { x: q.x + ((q.x - cx) / len) * pad, y: q.y + ((q.y - cy) / len) * pad };
+      });
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([a.x, a.y, b.x, b.y, c.x, c.y, a.x, a.y, c.x, c.y, d.x, d.y]));
+      gl.uniformMatrix3fv(u('u_hinv'), false, toMat3(hinv));
+      const { x, y, width, height } = slice.input;
+      gl.uniform4f(u('u_input'), x / compW, y / compH, width / compW, height / compH);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+    }
   }
 
   private drawBackground(scene: RenderScene) {

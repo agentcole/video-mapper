@@ -11,7 +11,7 @@ import { findClip, type Layer } from './showModel';
 // triggers and the tempo: undo never changes what is playing or its beat.
 // ---------------------------------------------------------------------------
 
-type Snapshot = Pick<ProjectState, 'surfaces' | 'layers' | 'columns' | 'background' | 'composition' | 'effects'>;
+type Snapshot = Pick<ProjectState, 'surfaces' | 'layers' | 'columns' | 'background' | 'composition' | 'effects' | 'screens'>;
 
 export interface HistoryOptions {
   limit?: number;
@@ -34,6 +34,7 @@ const snapshotOf = (s: ProjectState): Snapshot => ({
   background: s.background,
   composition: s.composition,
   effects: s.effects,
+  screens: s.screens,
 });
 
 export const createHistory = (
@@ -68,7 +69,8 @@ export const createHistory = (
       state.columns === prev.columns &&
       state.background === prev.background &&
       state.composition === prev.composition &&
-      state.effects === prev.effects
+      state.effects === prev.effects &&
+      state.screens === prev.screens
     ) {
       return;
     }
@@ -78,7 +80,8 @@ export const createHistory = (
       !applying &&
       state.surfaces === prev.surfaces && state.columns === prev.columns &&
       state.background === prev.background && state.composition === prev.composition &&
-      state.effects === prev.effects && onlyActiveClipsChanged(state.layers, prev.layers)
+      state.effects === prev.effects && state.screens === prev.screens &&
+      onlyActiveClipsChanged(state.layers, prev.layers)
     ) {
       return;
     }

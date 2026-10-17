@@ -110,3 +110,20 @@ describe('project history', () => {
     expect(store.getState().frames[0].x).toBe(3);
   });
 });
+
+describe('screens in the history', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('undoes screen edits', () => {
+    const store = createProjectStore();
+    const history = createHistory(store, { debounceMs: 400 });
+    history.reset();
+    store.getState().setScreens(() => [{ id: 's', name: 'Screen 1', width: 1920, height: 1080, slices: [] }]);
+    vi.advanceTimersByTime(400);
+    history.undo();
+    expect(store.getState().screens).toEqual([]);
+    history.redo();
+    expect(store.getState().screens.map(s => s.id)).toEqual(['s']);
+  });
+});

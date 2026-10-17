@@ -39,6 +39,46 @@ void main() {
 }
 `;
 
+/** Slice vertices in screen px → clip space (the canvas shows the whole screen). */
+export const SLICE_VERTEX = /* glsl */ `#version 300 es
+in vec2 a_position;           // screen px
+uniform vec2 u_screenSize;
+out vec2 v_screen;
+void main() {
+  v_screen = a_position;
+  vec2 ndc = a_position / u_screenSize * 2.0 - 1.0;
+  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+}
+`;
+
+/**
+ * A slice: each screen pixel maps back through the inverse homography to
+ * the slice's unit square, then into its input rectangle of the composition.
+ * Edges are antialiased; outside the composition is transparent.
+ */
+export const SLICE_FRAGMENT = /* glsl */ `#version 300 es
+precision highp float;
+in vec2 v_screen;
+uniform mat3 u_hinv;          // screen px → slice unit square
+uniform sampler2D u_picture;  // the composition (bottom row first)
+uniform vec4 u_input;         // input rectangle: x, y, width, height (0..1 of the composition)
+uniform float u_gain;         // master fader
+out vec4 outColor;
+void main() {
+  vec3 p = u_hinv * vec3(v_screen, 1.0);
+  if (p.z <= 0.0) discard;
+  vec2 uv = p.xy / p.z;
+  vec2 fw = max(fwidth(uv), vec2(1e-6));
+  vec2 edge = min(uv, 1.0 - uv) / fw;
+  float coverage = clamp(min(edge.x, edge.y) + 0.5, 0.0, 1.0);
+  if (coverage <= 0.0) discard;
+  vec2 comp = u_input.xy + uv * u_input.zw;
+  bool inside = comp.x >= 0.0 && comp.x <= 1.0 && comp.y >= 0.0 && comp.y <= 1.0;
+  vec4 color = inside ? vec4(texture(u_picture, vec2(comp.x, 1.0 - comp.y)).rgb, 1.0) : vec4(0.0);
+  outColor = color * coverage * vec4(vec3(u_gain), 1.0);
+}
+`;
+
 export const BACKGROUND_FRAGMENT = /* glsl */ `#version 300 es
 precision highp float;
 uniform vec2 u_targetSize;  // render target px

@@ -264,3 +264,36 @@ describe('compareVersions', () => {
     expect(compareVersions('4.1', '4.1.0')).toBe(0);
   });
 });
+
+describe('screens (5.6)', () => {
+  const base = { version: '5.6.0', surfaces: [], layers: [] };
+  const goodSlice = {
+    id: 'slice-1', name: 'Left', enabled: true,
+    input: { x: 0, y: 0, width: 960, height: 1080 },
+    output: [{ x: 0, y: 0 }, { x: 1920, y: 0 }, { x: 1920, y: 1080 }, { x: 0, y: 1080 }],
+  };
+
+  it('reads screens and slices', () => {
+    const project = parseProjectData({ ...base, screens: [{ id: 'screen-1', name: 'Projector', width: 1920, height: 1080, slices: [goodSlice] }] });
+    expect(project.screens).toEqual([{ id: 'screen-1', name: 'Projector', width: 1920, height: 1080, slices: [goodSlice] }]);
+    expect(project.warnings).toEqual([]);
+  });
+
+  it('has none in older projects', () => {
+    expect(parseProjectData({ ...base, version: '5.5.0' }).screens).toEqual([]);
+  });
+
+  it('skips broken slices and screens with a warning', () => {
+    const project = parseProjectData({
+      ...base,
+      screens: [
+        { id: 'screen-1', name: 'A', width: 1920, height: 1080, slices: [goodSlice, { ...goodSlice, id: 'slice-2', output: [{ x: 0, y: 0 }] }] },
+        { id: 'screen-2', name: 'B', width: 0, height: 1080, slices: [] },
+        { id: 'screen-1', name: 'C', width: 1920, height: 1080, slices: [] },
+      ],
+    });
+    expect(project.screens.map(s => s.name)).toEqual(['A']);
+    expect(project.screens[0].slices.map(s => s.id)).toEqual(['slice-1']);
+    expect(project.warnings).toHaveLength(3);
+  });
+});

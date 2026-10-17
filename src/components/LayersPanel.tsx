@@ -16,6 +16,7 @@ import {
   Pentagon,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
+import { NumberField } from './ui/number-field';
 import { scaleFrameSize } from '../lib/geometry';
 import { field, iconButton, option, panelSurface, panelTitle, sectionLabel } from './ui/theme';
 
@@ -43,28 +44,6 @@ const ShapeIcon: React.FC<{ frame: MediaFrame }> = ({ frame }) => {
   if (frame.shape === 'polygon') return <Pentagon className={cls} />;
   return <Square className={cls} />;
 };
-
-// Numeric input that commits parseable values as you type
-const NumberField: React.FC<{
-  label: string;
-  value: number;
-  onCommit: (value: number) => void;
-  step?: number;
-}> = ({ label, value, onCommit, step = 1 }) => (
-  <label className="flex items-center gap-1 text-[11px] text-gray-400">
-    <span className="w-4 shrink-0">{label}</span>
-    <input
-      type="number"
-      value={Math.round(value * 100) / 100}
-      step={step}
-      onChange={(e) => {
-        const n = parseFloat(e.target.value);
-        if (!Number.isNaN(n)) onCommit(n);
-      }}
-      className="w-full min-w-0 bg-white/10 rounded px-1.5 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-400"
-    />
-  </label>
-);
 
 export const LayersPanel: React.FC<LayersPanelProps> = ({
   frames,

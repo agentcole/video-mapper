@@ -1,4 +1,4 @@
-import type { BackgroundSettings, CompositionSettings, EffectInstance, MediaFrame, MediaType } from '../types';
+import type { BackgroundSettings, CompositionSettings, EffectInstance, MediaFrame, MediaType, Screen } from '../types';
 import type { LiveState } from '../state/liveStore';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +19,9 @@ export interface RenderScene {
   macros: number[]; // macro fader values, for modulation
   background: BackgroundSettings;
   composition: CompositionSettings;
+  // Draw this screen (its slices of the composition) instead of the
+  // composition itself; the canvas then has the screen's aspect
+  screen?: Screen | null;
   masterOpacity: number;
   outputGain: number; // audio volume (master × blackout, 0 when muted)
   playback: LiveState['playback'];

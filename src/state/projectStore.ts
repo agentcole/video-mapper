@@ -1,6 +1,6 @@
 import { createStore, useStore, type StoreApi } from 'zustand';
 import type {
-  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings, EffectInstance, Macro,
+  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings, EffectInstance, Macro, Screen,
 } from '../types';
 import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_TEMPO } from '../lib/defaults';
 import { emptyShow, framesFromShow, showFromFrames, type ShowDocument } from './showModel';
@@ -27,6 +27,7 @@ export interface ProjectDocument extends ShowDocument {
   tempo: TempoSettings; // master clock (BPM, bar length, beat snap)
   effects: EffectInstance[]; // composition effect stack (on the whole output)
   macros: Macro[]; // macro faders (saved, not undoable — like the tempo)
+  screens: Screen[]; // outputs and their slices of the composition (none: outputs show all of it)
 }
 
 // A document given either as the model or (output windows, tests) as frames
@@ -45,11 +46,13 @@ export interface ProjectState extends ProjectDocument {
   setTempo: (updater: Updater<TempoSettings>) => void;
   setEffects: (updater: Updater<EffectInstance[]>) => void;
   setMacros: (updater: Updater<Macro[]>) => void;
+  setScreens: (updater: Updater<Screen[]>) => void;
   // Swap in a whole document (load / import / undo) in one update
   replaceDocument: (doc: DocumentInput) => void;
 }
 
 const NO_EFFECTS: EffectInstance[] = [];
+const NO_SCREENS: Screen[] = [];
 
 const showOf = (s: ShowDocument): ShowDocument => ({ surfaces: s.surfaces, layers: s.layers, columns: s.columns });
 
@@ -73,6 +76,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       tempo: initial.tempo ?? DEFAULT_TEMPO,
       effects: initial.effects ?? NO_EFFECTS,
       macros: initial.macros ?? DEFAULT_MACROS,
+      screens: initial.screens ?? NO_SCREENS,
       ...show,
       frames: framesFromShow(show),
       setFrames: (updater) => set(s => {
@@ -98,6 +102,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       setTempo: (updater) => set(s => ({ tempo: apply(updater, s.tempo) })),
       setEffects: (updater) => set(s => ({ effects: apply(updater, s.effects) })),
       setMacros: (updater) => set(s => ({ macros: apply(updater, s.macros) })),
+      setScreens: (updater) => set(s => ({ screens: apply(updater, s.screens) })),
       replaceDocument: (doc) => set(s => {
         const nextShow = resolveShow(showOf(s), doc);
         return {
@@ -107,6 +112,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
           ...(doc.tempo ? { tempo: doc.tempo } : {}),
           ...(doc.effects ? { effects: doc.effects } : {}),
           ...(doc.macros ? { macros: doc.macros } : {}),
+          ...(doc.screens ? { screens: doc.screens } : {}),
           ...nextShow,
           frames: framesFromShow(nextShow, s.frames),
         };

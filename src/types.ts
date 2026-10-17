@@ -131,6 +131,37 @@ export interface Point {
   y: number
 }
 
+// ---- Screens and slices (roadmap 3.1, see docs/design/screens.md) ----------
+
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+// Four corners: top left, top right, bottom right, bottom left
+export type Quad = [Point, Point, Point, Point]
+
+// A part of the composition (input, composition px) placed on a screen
+// (output, screen px — four corners, so it can be warped)
+export interface Slice {
+  id: string
+  name: string
+  enabled: boolean
+  input: Rect
+  output: Quad
+}
+
+// One output: a projector or display, with its own resolution
+export interface Screen {
+  id: string
+  name: string
+  width: number
+  height: number
+  slices: Slice[]
+}
+
 // Stored media in IndexedDB
 export interface StoredMedia {
   id: string

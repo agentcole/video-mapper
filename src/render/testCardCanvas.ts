@@ -17,7 +17,8 @@ export function drawTestCard(width: number, height: number, label?: string, reso
   const cx = width / 2;
   const cy = height / 2;
   const r = Math.min(width, height) / 4;
-  const fontSize = Math.max(12, Math.min(width, height) / 12);
+  // Monospace glyphs are about 0.6 em wide: the label fits in 90 % of the width
+  const fontSize = Math.max(12, Math.min(Math.min(width, height) / 12, (0.9 * width) / (0.6 * Math.max(1, label?.length ?? 0))));
 
   // Checkerboard
   ctx.fillStyle = '#1f2937';
