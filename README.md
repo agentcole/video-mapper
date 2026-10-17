@@ -22,15 +22,15 @@ A high-performance web-based video mapping application built with React, TypeScr
 ### 🎨 Frame Manipulation
 - **Transform Controls**:
   - Drag to move frames anywhere on the canvas
-  - Resize using 8 directional handles (corners and edges)
+  - Resize using 8 directional handles (corners and edges) on every shape
   - Rotate using the green circular handle above each frame
 - **Shape Options**:
   - Rectangle frames (default)
   - Circle/ellipse frames with proper clipping
   - **Freeform Polygon frames** with vertex editing
-    - Click to place vertices, double-click to close
-    - Drag purple handles to edit vertex positions
-    - Choose between Clip mode (cuts media) or Warp mode (stretches media)
+    - Click to place vertices, double-click (or click the first point) to close
+    - Drag purple handles to edit vertex positions; the frame box refits to the shape afterwards
+    - The polygon cuts the media; a convex 4-vertex polygon can **stretch the media onto the quad** (its vertices become corner pins)
 
 ### ⚙️ Advanced Controls (Hover to Access)
 - **Video Controls**:
@@ -39,24 +39,24 @@ A high-performance web-based video mapping application built with React, TypeScr
   - Audio mute/unmute
 - **Visual Controls**:
   - Opacity adjustment
-  - Z-index layering control
-  - Shape switching (rectangle ↔ circle)
+  - Blend modes (16 CSS blend modes, mixed against everything below the layer)
+  - Shape switching (rectangle ↔ circle ↔ polygon); layer order lives in the layers panel
 - **Frame Actions**:
   - Delete individual frames
   - Settings panel with all adjustments
 
 ### 💾 Project Management
-- **Auto-save**: Automatic saving to localStorage
+- **Auto-save**: Automatic saving to localStorage (one project slot); a failed save (e.g. storage full) shows a notice with an export shortcut
 - **Manual Save**: Save current project state
-- **Export**: Download project as JSON file
-- **Import**: Load previously exported projects
+- **Export**: Download project as JSON file (optionally with embedded media)
+- **Import**: Load previously exported projects; older formats are migrated on load
 
 ### 📱 Progressive Web App (PWA)
 - **Offline Support**: Works without internet connection
 - **Installable**: Can be installed as a desktop/mobile app
-- **Persistent Storage**: Media and projects persist across sessions using IndexedDB
+- **Persistent Storage**: Media persists in IndexedDB (persistent storage is requested on the first upload), projects in localStorage
 - **Fast Loading**: Service Worker caching for instant loads
-- **Background Sync**: Automatic updates available when online
+- **Show-safe updates**: a new version is offered as a small notice in the editor — never a blocking dialog or an automatic reload, and never on the output
 
 ## Getting Started
 
@@ -78,6 +78,13 @@ The application will start at `http://localhost:5173` (default Vite port).
 
 ```bash
 npm run build
+```
+
+### Tests & Lint
+
+```bash
+npm test        # unit tests (Vitest) for geometry and project migration
+npm run lint
 ```
 
 ### Preview Production Build
@@ -129,16 +136,55 @@ npm run preview
 
 ### Manipulating Frames
 
-- **Move**: Click and drag the frame content
-- **Resize**: Click and drag the blue square handles on the edges/corners
+- **Move**: Click and drag inside the frame's shape
+- **Resize**: Click and drag the yellow square handles on the edges/corners
 - **Rotate**: Click and drag the green circular handle above the frame
 - **Delete**: Hover over frame → Click trash icon
 - **Settings**: Hover over frame → Click layers icon
 
 ### Keyboard Shortcuts
 
-- **ESC**: Cancel draw mode (coming soon)
-- **Delete**: Delete selected frame (coming soon)
+- **P**: Toggle presentation mode
+- **F**: Toggle fullscreen
+- **B**: Blackout (kill all output — picture and sound — instantly)
+- **G** / **Shift+G**: Toggle grid / snap-to-grid
+- **Delete/Backspace**: Delete selection
+- **Arrow keys**: Nudge selection by 1px (Shift = grid-size steps)
+- **Cmd/Ctrl+Z** / **Shift+Cmd/Ctrl+Z**: Undo / redo
+- **Cmd/Ctrl+C / X / V**: Copy / cut / paste frames
+- **Cmd/Ctrl+D**: Duplicate selection
+- **Cmd/Ctrl+A**: Select all frames
+- **ESC**: Exit presentation mode, cancel draw mode, or deselect
+
+### Composition & Output (Resolume-style)
+
+- **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
+- The editor letterboxes and scales the composition to your window; Present mode maps it to the output
+- **Master fader** dims the whole output (and scales audio volume); **Blackout (B)** kills picture and sound instantly
+- **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
+- **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
+
+### Warping (unified corner pin)
+
+- Corner pin works the same on **every shape** (Photoshop-style): the four pins sit on the frame's box and define one homography; the media, the shape outline, the editing grid, vertex and resize handles, the selection outline and the click area all go through it — polygons/triangles keep straight edges, circles warp as conics
+- Polygons with corner pin: double-click the shape (or use the pen button) to switch between editing the **corner pins** and the **shape's vertices**; vertices stay under the cursor even on a warped frame
+- Pins cannot be dragged into a folded or mirrored quad
+- A warped editing grid renders inside the frame while corner-pin editing, Resolume slice-style
+- Corner-pin handles and polygon vertices snap to the canvas grid when snapping is on
+- Typing W/H in the layers panel scales the pins like the resize handles do
+
+### Layers & Selection
+
+- **Layers panel** (right dock): visibility toggles, rename (double-click), reorder, duplicate/delete, plus numeric X/Y/W/H/rotation, opacity and blend mode for the selected frame
+- **Multi-select**: shift+click frames or drag a marquee on empty canvas (hit-testing follows the warped shape); group drag, nudge, duplicate, copy/paste and delete all operate on the selection
+- **Undo/redo** across frames, background and composition changes (gestures coalesce into single steps)
+
+### Grid & Snapping
+
+- Toggle the grid overlay and snap-to-grid from the "Grid" section in the control panel (or **G** / **Shift+G**)
+- Grid size is selectable (8–128 px); accent lines mark every 5th cell
+- Snapping applies to drawing, dragging, resizing (rotation-aware), corner-pin handles, polygon vertices, and file drops
+- Optionally keep the grid visible in presentation mode for projector alignment
 
 ## Offline Usage
 
@@ -152,17 +198,14 @@ Thanks to PWA capabilities, Video Mapper works offline:
 
 **Note**: Media loaded from URLs will only be cached if visited once while online. For full offline capability, upload your media files directly or ensure they're cached by visiting them first.
 
-## Performance Optimization
+## Performance
 
-This application is built with performance in mind:
+The current renderer is DOM/CSS based:
 
-- **Hardware Acceleration**: CSS transforms use GPU acceleration
-- **Efficient Rendering**: React components are optimized to minimize re-renders
-- **Video Optimization**: 
-  - Videos use the native `<video>` element for best browser performance
-  - Poster frames and lazy loading can be added for better initial load times
-- **Event Throttling**: Mouse events are efficiently handled to prevent performance issues
-- **Memory Management**: Object URLs are properly managed to prevent memory leaks
+- **Hardware Acceleration**: CSS transforms (including `matrix3d` corner pin) are composited on the GPU
+- **Video**: each frame uses its own native `<video>` element, so the same clip on N frames is decoded N times
+- **Memory**: one object URL per stored media for the whole session, revoked when the media is deleted
+- **Known limits**: every pointer move during a drag re-renders all frames (no memoization yet); a GPU compositor (WebGPU/WebGL2) is the planned next step
 - **Service Worker Caching**: Assets are cached for fast offline access
 
 ### Recommended Best Practices
@@ -175,13 +218,13 @@ This application is built with performance in mind:
 
 ## Technology Stack
 
-- **React 18**: UI framework
+- **React 19**: UI framework
 - **TypeScript**: Type safety
 - **Vite**: Build tool and dev server
 - **Tailwind CSS**: Utility-first styling
-- **shadcn/ui**: High-quality component library
+- **shadcn/ui** + **Radix UI** primitives (slider, slot)
 - **Lucide React**: Icon library
-- **Radix UI**: Accessible component primitives
+- **Vitest**: Unit tests
 - **vite-plugin-pwa**: Progressive Web App support
 - **Workbox**: Service Worker caching strategies
 
@@ -197,35 +240,44 @@ This application is built with performance in mind:
 ```
 src/
 ├── components/
-│   ├── ui/              # shadcn/ui components
-│   ├── Canvas.tsx       # Main canvas component
-│   ├── MediaFrame.tsx   # Individual frame component
-│   └── ControlPanel.tsx # Control panel UI
+│   ├── ui/                  # shadcn/ui components
+│   ├── Canvas.tsx           # Stage, gestures, history, persistence
+│   ├── MediaFrame.tsx       # Frame content + editor overlay (handles, outlines, hit area)
+│   ├── ControlPanel.tsx     # Left control panel
+│   ├── LayersPanel.tsx      # Right layers dock with numeric properties
+│   ├── MediaLibrary.tsx     # IndexedDB media library modal
+│   ├── BackgroundSettings.tsx
+│   ├── TestCard.tsx         # Calibration test pattern
+│   ├── UpdatePrompt.tsx     # Service worker registration + update notice
+│   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
 ├── lib/
-│   ├── utils.ts         # Utility functions
-│   ├── storage.ts       # localStorage management
-│   └── mediaStorage.ts  # IndexedDB media management
-├── types/
-│   └── index.ts         # TypeScript type definitions
-├── App.tsx              # Root component
-├── main.tsx             # Entry point with SW registration
-└── index.css            # Global styles
+│   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
+│   ├── storage.ts           # Project persistence + migrations (+ tests)
+│   ├── mediaStorage.ts      # IndexedDB media management
+│   └── utils.ts
+├── types.ts                 # TypeScript type definitions
+├── App.tsx                  # Root component
+├── main.tsx                 # Entry point
+└── index.css                # Global styles
 ```
 
 ## Future Enhancements
 
-- [ ] Multi-select frames
-- [ ] Copy/paste frames
-- [ ] Undo/redo functionality
+- [x] Grid and snap-to-grid
+- [x] More keyboard shortcuts (delete, nudge, duplicate, clipboard, undo)
+- [x] Multi-select frames (shift+click, marquee)
+- [x] Copy/paste frames
+- [x] Undo/redo functionality
+- [x] Fixed composition resolution with letterboxed editing
+- [x] Unified corner pin for all shapes + warped editing grid
+- [x] Layers panel with numeric transform properties
+- [x] Soft edge blending, test patterns, master fader & blackout
+- [x] Export with embedded media (portable project files)
 - [ ] Timeline for synchronized playback
 - [ ] Audio waveform visualization
-- [ ] Grid and snap-to-grid
-- [ ] More keyboard shortcuts
 - [ ] Export as video file
-- [ ] Advanced polygon warp with mesh deformation
+- [ ] Advanced polygon warp with mesh deformation (WebGL)
 - [ ] Bezier curve mask edges
-- [ ] Background sync for offline changes
-- [ ] Push notifications for project updates
 
 ## License
 

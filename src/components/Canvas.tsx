@@ -1,23 +1,97 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import type { MediaFrame, DragState, ResizeState, RotateState, DrawState, ShapeType, Point, StoredMedia, BackgroundSettings } from '../types';
+import type {
+  MediaFrame, DragState, ResizeState, RotateState, DrawState, MarqueeState,
+  ShapeType, Point, StoredMedia, BackgroundSettings, GridSettings, CompositionSettings,
+} from '../types';
 import { MediaFrameComponent } from './MediaFrame';
 import { ControlPanel } from './ControlPanel';
+import { LayersPanel } from './LayersPanel';
 import { MediaLibrary } from './MediaLibrary';
 import { BackgroundSettingsPanel } from './BackgroundSettings';
-import { saveProject, loadProject, exportProject, importProject, generateFrameId, DEFAULT_BACKGROUND } from '../lib/storage';
-import { storeMedia, resolveMediaUrls } from '../lib/mediaStorage';
+import { TestCard } from './TestCard';
+import { UpdatePrompt } from './UpdatePrompt';
+import {
+  saveProject, loadProject, exportProject, importProject, generateFrameId,
+  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, type LoadedProject,
+} from '../lib/storage';
+import { storeMedia, resolveMediaUrls, exportMediaRecords, importMediaRecords, getMediaObjectUrl } from '../lib/mediaStorage';
+import { dedupePolygon, getFrameCompOutline, rotateVector } from '../lib/geometry';
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
   isDrawing: boolean;
-  vertices: Point[]; // Screen coordinates while drawing
+  vertices: Point[]; // Composition coordinates while drawing
   startX: number;
   startY: number;
 }
 
+// Snapshot for undo/redo
+interface HistorySnapshot {
+  frames: MediaFrame[];
+  background: BackgroundSettings;
+  composition: CompositionSettings;
+}
+
+const HISTORY_LIMIT = 50;
+const HISTORY_DEBOUNCE_MS = 400;
+
+// Full frame defaults; overrides supply position/size/shape and media info
+const createFrame = (
+  overrides: Partial<MediaFrame> & Pick<MediaFrame, 'x' | 'y' | 'width' | 'height' | 'shape'>
+): Omit<MediaFrame, 'id'> => ({
+  type: 'image',
+  url: '',
+  rotation: 0,
+  textureMode: 'clip',
+  loop: true,
+  opacity: 1,
+  zIndex: 0,
+  playbackRate: 1,
+  muted: false,
+  blur: 0,
+  brightness: 100,
+  contrast: 100,
+  grayscale: 0,
+  saturate: 100,
+  hueRotate: 0,
+  invert: 0,
+  sepia: 0,
+  blendMode: 'normal',
+  flipHorizontal: false,
+  flipVertical: false,
+  lockAspectRatio: true,
+  contentScale: 1,
+  contentOffsetX: 0,
+  contentOffsetY: 0,
+  perspectiveMode: false,
+  perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
+  visible: true,
+  testPattern: false,
+  softEdge: { left: 0, right: 0, top: 0, bottom: 0 },
+  ...overrides,
+});
+
+const filenameFromUrl = (url: string): string | undefined => {
+  try {
+    const lastSegment = new URL(url).pathname.split('/').pop();
+    return lastSegment ? decodeURIComponent(lastSegment) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// Axis-aligned bounding box of a frame's rendered outline (shape through
+// corner pin and rotation) in composition space
+const frameAABB = (f: MediaFrame) => {
+  const outline = getFrameCompOutline(f);
+  const xs = outline.map(p => p.x);
+  const ys = outline.map(p => p.y);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+};
+
 export const Canvas: React.FC = () => {
   const [frames, setFrames] = useState<MediaFrame[]>([]);
-  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [isPresentationMode, setIsPresentationMode] = useState(false);
   const [dragState, setDragState] = useState<DragState>({
     isDragging: false,
@@ -37,6 +111,7 @@ export const Canvas: React.FC = () => {
     startHeight: 0,
     startFrameX: 0,
     startFrameY: 0,
+    rotation: 0,
   });
   const [rotateState, setRotateState] = useState<RotateState>({
     isRotating: false,
@@ -58,20 +133,88 @@ export const Canvas: React.FC = () => {
     startX: 0,
     startY: 0,
   });
+  const [marquee, setMarquee] = useState<MarqueeState>({
+    isActive: false,
+    startX: 0,
+    startY: 0,
+    currentX: 0,
+    currentY: 0,
+    additive: false,
+  });
   const [isDrawMode, setIsDrawMode] = useState(false);
   const [drawShape, setDrawShape] = useState<ShapeType | null>(null);
   const [pendingMediaUrl, setPendingMediaUrl] = useState<{url: string, type: 'video' | 'image', mediaId?: string} | null>(null);
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
   const [mediaLibraryTargetBackground, setMediaLibraryTargetBackground] = useState(false); // Is media library for background?
-  const [, setMediaUrlCache] = useState<Map<string, string>>(new Map());
   const [background, setBackground] = useState<BackgroundSettings>(DEFAULT_BACKGROUND);
+  const [grid, setGrid] = useState<GridSettings>(DEFAULT_GRID);
+  const [composition, setComposition] = useState<CompositionSettings>(DEFAULT_COMPOSITION);
   const [isBackgroundSettingsOpen, setIsBackgroundSettingsOpen] = useState(false);
   const [showPresentationControls, setShowPresentationControls] = useState(false);
   const [playbackCommand, setPlaybackCommand] = useState<'play' | 'pause' | null>(null);
+  // Live output controls (not persisted)
+  const [masterOpacity, setMasterOpacity] = useState(1);
+  const [blackout, setBlackout] = useState(false);
+  const [showTestCard, setShowTestCard] = useState(false);
+  // Last autosave failure (e.g. storage full) — shown until the next success
+  const [autosaveError, setAutosaveError] = useState<string | null>(null);
+  // Guards auto-save so an empty initial state doesn't overwrite the stored
+  // project before it has been loaded
+  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+  // Viewport (editor window) size — drives the letterboxed stage transform
+  const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  // Editor overlay (frame handles/outlines/hit areas are portalled here)
+  const [overlayEl, setOverlayEl] = useState<HTMLDivElement | null>(null);
   const backgroundVideoRef = useRef<HTMLVideoElement>(null);
+  const clipboardRef = useRef<MediaFrame[] | null>(null);
+  const dragMovedRef = useRef(false);
+  const historyRef = useRef<{
+    past: HistorySnapshot[];
+    future: HistorySnapshot[];
+    last: HistorySnapshot | null;
+    timer: number | null;
+    applying: boolean;
+  }>({ past: [], future: [], last: null, timer: null, applying: false });
+
+  // ------------------------------------------------------------------
+  // Composition view transform (letterboxed fit)
+  // ------------------------------------------------------------------
+  const viewScale = Math.min(viewport.w / composition.width, viewport.h / composition.height) || 1;
+  const viewOffsetX = (viewport.w - composition.width * viewScale) / 2;
+  const viewOffsetY = (viewport.h - composition.height * viewScale) / 2;
+
+  // Track the canvas element size (window resizes, fullscreen changes)
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      const rect = el.getBoundingClientRect();
+      setViewport({ w: rect.width, h: rect.height });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Convert a pointer position (client coords) into composition coordinates
+  const toComp = useCallback((clientX: number, clientY: number): Point => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    const left = rect?.left ?? 0;
+    const top = rect?.top ?? 0;
+    return {
+      x: (clientX - left - viewOffsetX) / viewScale,
+      y: (clientY - top - viewOffsetY) / viewScale,
+    };
+  }, [viewOffsetX, viewOffsetY, viewScale]);
+
+  // Snap a composition coordinate to the grid when snapping is enabled
+  const snapToGrid = useCallback((value: number): number => {
+    if (!grid.snap) return value;
+    return Math.round(value / grid.size) * grid.size;
+  }, [grid.snap, grid.size]);
 
   // Check if there are any video frames
   const hasVideos = frames.some(f => f.type === 'video');
@@ -89,50 +232,9 @@ export const Canvas: React.FC = () => {
     setTimeout(() => setPlaybackCommand(null), 100);
   }, []);
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyPress = (e: KeyboardEvent) => {
-      // ESC to exit presentation mode or draw mode
-      if (e.key === 'Escape') {
-        if (isPresentationMode) {
-          setIsPresentationMode(false);
-          if (document.fullscreenElement) {
-            document.exitFullscreen();
-          }
-        } else if (polygonDrawState.isDrawing) {
-          // Cancel polygon drawing
-          setPolygonDrawState({
-            isDrawing: false,
-            vertices: [],
-            startX: 0,
-            startY: 0,
-          });
-          setIsDrawMode(false);
-          setDrawShape(null);
-          setPendingMediaUrl(null);
-        } else if (isDrawMode) {
-          setIsDrawMode(false);
-          setDrawShape(null);
-          setPendingMediaUrl(null);
-        }
-      }
-      // P for presentation mode (only if not typing in input)
-      if ((e.key === 'p' || e.key === 'P') && !isMediaLibraryOpen) {
-        togglePresentationMode();
-      }
-      // F for fullscreen
-      if ((e.key === 'f' || e.key === 'F') && !isMediaLibraryOpen) {
-        toggleFullscreen();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen]);
-
   const togglePresentationMode = useCallback(() => {
     setIsPresentationMode(prev => !prev);
-    setSelectedFrameId(null);
+    setSelectedFrameIds([]);
     setIsDrawMode(false);
     setDrawShape(null);
   }, []);
@@ -151,7 +253,7 @@ export const Canvas: React.FC = () => {
 
   const enterFullscreenPresentation = useCallback(async () => {
     setIsPresentationMode(true);
-    setSelectedFrameId(null);
+    setSelectedFrameIds([]);
     setIsDrawMode(false);
     setDrawShape(null);
     try {
@@ -161,182 +263,396 @@ export const Canvas: React.FC = () => {
     }
   }, []);
 
-  // Load project on mount and resolve media URLs
-  useEffect(() => {
-    const loadAndResolveMedia = async () => {
-      const savedProject = loadProject();
-      if (savedProject) {
-        const { frames: savedFrames, background: savedBackground } = savedProject;
-        
-        // Get all unique media IDs that need to be resolved (frames + background)
-        const mediaIds = [
-          ...savedFrames.filter(f => f.mediaId).map(f => f.mediaId!),
-          ...(savedBackground.mediaId ? [savedBackground.mediaId] : []),
-        ];
-        
-        if (mediaIds.length > 0) {
-          try {
-            const urlMap = await resolveMediaUrls(mediaIds);
-            setMediaUrlCache(urlMap);
-            
-            // Update frames with resolved URLs
-            const resolvedFrames = savedFrames.map(frame => {
-              if (frame.mediaId && urlMap.has(frame.mediaId)) {
-                return { ...frame, url: urlMap.get(frame.mediaId)! };
-              }
-              return frame;
-            });
-            setFrames(resolvedFrames);
-            
-            // Update background with resolved URL
-            if (savedBackground.mediaId && urlMap.has(savedBackground.mediaId)) {
-              setBackground({ ...savedBackground, url: urlMap.get(savedBackground.mediaId) });
-            } else {
-              setBackground(savedBackground);
-            }
-          } catch (error) {
-            console.error('Failed to resolve media URLs:', error);
-            setFrames(savedFrames);
-            setBackground(savedBackground);
-          }
-        } else {
-          setFrames(savedFrames);
-          setBackground(savedBackground);
+  // ------------------------------------------------------------------
+  // Project load / save
+  // ------------------------------------------------------------------
+
+  // Resolve mediaId references to fresh blob URLs and apply project state.
+  // Shared by initial load and project import.
+  const applyProject = useCallback(async ({ frames: newFrames, background: newBackground, grid: newGrid, composition: newComposition }: LoadedProject) => {
+    const mediaIds = [
+      ...newFrames.filter(f => f.mediaId).map(f => f.mediaId!),
+      ...(newBackground.mediaId ? [newBackground.mediaId] : []),
+    ];
+
+    let resolvedFrames = newFrames;
+    let resolvedBackground = newBackground;
+    if (mediaIds.length > 0) {
+      try {
+        const urlMap = await resolveMediaUrls(mediaIds);
+        resolvedFrames = newFrames.map(frame =>
+          frame.mediaId && urlMap.has(frame.mediaId)
+            ? { ...frame, url: urlMap.get(frame.mediaId)! }
+            : frame
+        );
+        if (newBackground.mediaId && urlMap.has(newBackground.mediaId)) {
+          resolvedBackground = { ...newBackground, url: urlMap.get(newBackground.mediaId) };
         }
+      } catch (error) {
+        console.error('Failed to resolve media URLs:', error);
       }
-    };
-    
-    loadAndResolveMedia();
+    }
+
+    setFrames(resolvedFrames);
+    setBackground(resolvedBackground);
+    setGrid(newGrid);
+    setComposition(newComposition);
+    setSelectedFrameIds([]);
   }, []);
 
-  // Auto-save
+  // Load project on mount
   useEffect(() => {
+    const load = async () => {
+      const savedProject = loadProject();
+      if (savedProject) {
+        await applyProject(savedProject);
+      }
+      setIsProjectLoaded(true);
+    };
+    load();
+  }, [applyProject]);
+
+  // Auto-save (debounced). Waits for the initial load so the empty first
+  // render doesn't overwrite the stored project, then persists every change —
+  // including deleting the last frame.
+  useEffect(() => {
+    if (!isProjectLoaded) return;
     const timer = setTimeout(() => {
-      if (frames.length > 0 || background.type !== 'color') {
-        saveProject(frames, background);
+      try {
+        saveProject(frames, background, grid, composition);
+        setAutosaveError(null);
+      } catch (error) {
+        setAutosaveError((error as Error).message);
       }
     }, 1000);
     return () => clearTimeout(timer);
-  }, [frames, background]);
+  }, [frames, background, grid, composition, isProjectLoaded]);
 
+  // ------------------------------------------------------------------
+  // Undo / redo — debounced snapshots so a whole gesture is one entry
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!isProjectLoaded) return;
+    const h = historyRef.current;
+    const current: HistorySnapshot = { frames, background, composition };
+
+    if (h.applying) {
+      h.applying = false;
+      h.last = current;
+      return;
+    }
+    if (h.last === null) {
+      h.last = current; // baseline after initial load
+      return;
+    }
+    if (h.timer !== null) clearTimeout(h.timer);
+    h.timer = window.setTimeout(() => {
+      h.past.push(h.last!);
+      if (h.past.length > HISTORY_LIMIT) h.past.shift();
+      h.future = [];
+      h.last = current;
+      h.timer = null;
+    }, HISTORY_DEBOUNCE_MS);
+  }, [frames, background, composition, isProjectLoaded]);
+
+  const applySnapshot = useCallback((snapshot: HistorySnapshot) => {
+    historyRef.current.applying = true;
+    setFrames(snapshot.frames);
+    setBackground(snapshot.background);
+    setComposition(snapshot.composition);
+    // Drop selection entries that no longer exist in the restored state
+    setSelectedFrameIds(prev => prev.filter(id => snapshot.frames.some(f => f.id === id)));
+  }, []);
+
+  const undo = useCallback(() => {
+    const h = historyRef.current;
+    // Commit any pending (dirty) change first so it becomes undoable
+    if (h.timer !== null) {
+      clearTimeout(h.timer);
+      h.timer = null;
+      h.past.push(h.last!);
+      if (h.past.length > HISTORY_LIMIT) h.past.shift();
+      h.future = [];
+      h.last = { frames, background, composition };
+    }
+    const prev = h.past.pop();
+    if (!prev) return;
+    h.future.push(h.last!);
+    h.last = prev;
+    applySnapshot(prev);
+  }, [frames, background, composition, applySnapshot]);
+
+  const redo = useCallback(() => {
+    const h = historyRef.current;
+    const next = h.future.pop();
+    if (!next) return;
+    h.past.push(h.last!);
+    if (h.past.length > HISTORY_LIMIT) h.past.shift();
+    h.last = next;
+    applySnapshot(next);
+  }, [applySnapshot]);
+
+  // Master fader and blackout apply to audio as well as pixels
+  const outputGain = blackout ? 0 : masterOpacity;
+  useEffect(() => {
+    if (backgroundVideoRef.current) backgroundVideoRef.current.volume = outputGain;
+  }, [outputGain, background.type, background.url]);
+
+  // Names of the layers using a stored media (for the library's delete warning)
+  const getMediaUsage = useCallback((mediaId: string): string[] => {
+    const users = frames
+      .filter(f => f.mediaId === mediaId)
+      .map(f => f.name || f.filename || 'Untitled layer');
+    if (background.mediaId === mediaId) users.push('Background');
+    return users;
+  }, [frames, background.mediaId]);
+
+  // ------------------------------------------------------------------
+  // Frame CRUD
+  // ------------------------------------------------------------------
   const addFrame = useCallback((frame: Omit<MediaFrame, 'id'>) => {
-    const newFrame: MediaFrame = {
-      ...frame,
-      id: generateFrameId(),
-      // Ensure all effect properties have defaults
-      blur: frame.blur ?? 0,
-      brightness: frame.brightness ?? 100,
-      contrast: frame.contrast ?? 100,
-      grayscale: frame.grayscale ?? 0,
-      saturate: frame.saturate ?? 100,
-      hueRotate: frame.hueRotate ?? 0,
-      invert: frame.invert ?? 0,
-      sepia: frame.sepia ?? 0,
-      blendMode: frame.blendMode ?? 'normal',
-      flipHorizontal: frame.flipHorizontal ?? false,
-      flipVertical: frame.flipVertical ?? false,
-      lockAspectRatio: frame.lockAspectRatio ?? true,
-      textureMode: frame.textureMode ?? 'clip',
-      vertices: frame.vertices,
-      contentScale: frame.contentScale ?? 1,
-      contentOffsetX: frame.contentOffsetX ?? 0,
-      contentOffsetY: frame.contentOffsetY ?? 0,
-      perspectiveMode: frame.perspectiveMode ?? false,
-      perspectiveCorners: frame.perspectiveCorners ?? {
-        tl: { x: 0, y: 0 },
-        tr: { x: 0, y: 0 },
-        br: { x: 0, y: 0 },
-        bl: { x: 0, y: 0 },
-      },
-    };
+    const newFrame: MediaFrame = { ...createFrame(frame), id: generateFrameId() };
     setFrames(prev => [...prev, newFrame]);
-    setSelectedFrameId(newFrame.id);
+    setSelectedFrameIds([newFrame.id]);
   }, []);
 
   const updateFrame = useCallback((id: string, updates: Partial<MediaFrame>) => {
     setFrames(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
   }, []);
 
-  const deleteFrame = useCallback((id: string) => {
-    setFrames(prev => prev.filter(f => f.id !== id));
-    if (selectedFrameId === id) {
-      setSelectedFrameId(null);
-    }
-  }, [selectedFrameId]);
+  const deleteFrames = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    setFrames(prev => prev.filter(f => !idSet.has(f.id)));
+    setSelectedFrameIds(prev => prev.filter(id => !idSet.has(id)));
+  }, []);
 
-  // Handle canvas mouse down
-  const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === canvasRef.current) {
-      setSelectedFrameId(null);
-      
-      if (isDrawMode && drawShape) {
-        if (drawShape === 'polygon') {
-          // Polygon drawing: add vertex on click
-          const rect = canvasRef.current?.getBoundingClientRect();
-          if (rect) {
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            if (!polygonDrawState.isDrawing) {
-              // Start new polygon
-              setPolygonDrawState({
-                isDrawing: true,
-                vertices: [{ x, y }],
-                startX: x,
-                startY: y,
-              });
-            } else {
-              // Check if clicking near first vertex to close polygon
-              const firstVertex = polygonDrawState.vertices[0];
-              const distance = Math.sqrt(
-                Math.pow(x - firstVertex.x, 2) + Math.pow(y - firstVertex.y, 2)
-              );
-              
-              if (distance < 20 && polygonDrawState.vertices.length >= 3) {
-                // Close polygon
-                finishPolygon();
-              } else {
-                // Add new vertex
-                setPolygonDrawState(prev => ({
-                  ...prev,
-                  vertices: [...prev.vertices, { x, y }],
-                }));
-              }
-            }
+  const duplicateFrames = useCallback((ids: string[]) => {
+    if (ids.length === 0) return;
+    const newIds: string[] = [];
+    setFrames(prev => {
+      const sources = prev.filter(f => ids.includes(f.id));
+      const copies = sources.map((source, i) => {
+        const id = generateFrameId();
+        newIds.push(id);
+        return {
+          ...source,
+          id,
+          x: source.x + 20,
+          y: source.y + 20,
+          zIndex: prev.length + i,
+          vertices: source.vertices?.map(v => ({ ...v })),
+          perspectiveCorners: {
+            tl: { ...source.perspectiveCorners.tl },
+            tr: { ...source.perspectiveCorners.tr },
+            br: { ...source.perspectiveCorners.br },
+            bl: { ...source.perspectiveCorners.bl },
+          },
+          softEdge: { ...source.softEdge },
+        };
+      });
+      return [...prev, ...copies];
+    });
+    setSelectedFrameIds(newIds);
+  }, []);
+
+  // Move a frame one step up/down in the z-order (used by the layers panel).
+  // Normalizes all zIndex values to their sorted order.
+  const reorderFrame = useCallback((id: string, direction: 'up' | 'down') => {
+    setFrames(prev => {
+      const sorted = [...prev].sort((a, b) => a.zIndex - b.zIndex);
+      const i = sorted.findIndex(f => f.id === id);
+      if (i === -1) return prev;
+      const j = direction === 'up' ? i + 1 : i - 1;
+      if (j < 0 || j >= sorted.length) return prev;
+      [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+      const zMap = new Map(sorted.map((f, idx) => [f.id, idx]));
+      return prev.map(f => ({ ...f, zIndex: zMap.get(f.id)! }));
+    });
+  }, []);
+
+  const selectFrame = useCallback((id: string, additive: boolean) => {
+    setSelectedFrameIds(prev => {
+      if (additive) {
+        return prev.includes(id) ? prev : [...prev, id];
+      }
+      // Keep an existing multi-selection when clicking one of its members
+      // (collapse-to-single happens on mouse-up without drag)
+      return prev.includes(id) ? prev : [id];
+    });
+  }, []);
+
+  // Copy selected frames to the internal clipboard
+  const copySelection = useCallback(() => {
+    const selected = frames.filter(f => selectedFrameIds.includes(f.id));
+    if (selected.length === 0) return false;
+    clipboardRef.current = JSON.parse(JSON.stringify(selected));
+    return true;
+  }, [frames, selectedFrameIds]);
+
+  const pasteClipboard = useCallback(() => {
+    const clip = clipboardRef.current;
+    if (!clip || clip.length === 0) return;
+    const newIds: string[] = [];
+    setFrames(prev => {
+      const copies = clip.map((source, i) => {
+        const id = generateFrameId();
+        newIds.push(id);
+        return { ...source, id, x: source.x + 20, y: source.y + 20, zIndex: prev.length + i };
+      });
+      return [...prev, ...copies];
+    });
+    setSelectedFrameIds(newIds);
+    // Cascade repeated pastes
+    clipboardRef.current = clip.map(f => ({ ...f, x: f.x + 20, y: f.y + 20 }));
+  }, []);
+
+  // ------------------------------------------------------------------
+  // Keyboard shortcuts
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+        || target.tagName === 'SELECT' || target.isContentEditable;
+
+      // ESC works even while typing: exit mode, cancel draw, or deselect
+      if (e.key === 'Escape') {
+        if (isPresentationMode) {
+          setIsPresentationMode(false);
+          if (document.fullscreenElement) {
+            document.exitFullscreen();
           }
+        } else if (polygonDrawState.isDrawing) {
+          setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
+          setIsDrawMode(false);
+          setDrawShape(null);
+          setPendingMediaUrl(null);
+        } else if (isDrawMode) {
+          setIsDrawMode(false);
+          setDrawShape(null);
+          setPendingMediaUrl(null);
+        } else if (selectedFrameIds.length > 0) {
+          setSelectedFrameIds([]);
+        }
+        return;
+      }
+
+      if (isTyping || isMediaLibraryOpen) return;
+
+      const hasSelection = selectedFrameIds.length > 0;
+
+      // Undo / redo
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      // Clipboard
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C') && hasSelection) {
+        e.preventDefault();
+        copySelection();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'x' || e.key === 'X') && hasSelection) {
+        e.preventDefault();
+        if (copySelection()) deleteFrames(selectedFrameIds);
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'v' || e.key === 'V')) {
+        e.preventDefault();
+        pasteClipboard();
+        return;
+      }
+
+      // Cmd/Ctrl+A selects all frames
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'a' || e.key === 'A') && !isPresentationMode) {
+        e.preventDefault();
+        setSelectedFrameIds(frames.map(f => f.id));
+        return;
+      }
+
+      // Cmd/Ctrl+D duplicates the selection
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'd' || e.key === 'D') && hasSelection) {
+        e.preventDefault();
+        duplicateFrames(selectedFrameIds);
+        return;
+      }
+
+      if (e.metaKey || e.ctrlKey) return;
+
+      // Delete / Backspace removes the selection
+      if ((e.key === 'Delete' || e.key === 'Backspace') && hasSelection) {
+        e.preventDefault();
+        deleteFrames(selectedFrameIds);
+        return;
+      }
+
+      // Arrow keys nudge the selection (Shift = bigger steps)
+      if (hasSelection && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        const step = e.shiftKey ? (grid.snap ? grid.size : 10) : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+        const idSet = new Set(selectedFrameIds);
+        setFrames(prev => prev.map(f => idSet.has(f.id) ? { ...f, x: f.x + dx, y: f.y + dy } : f));
+        return;
+      }
+
+      // P for presentation mode
+      if (e.key === 'p' || e.key === 'P') {
+        togglePresentationMode();
+      }
+      // F for fullscreen
+      if (e.key === 'f' || e.key === 'F') {
+        toggleFullscreen();
+      }
+      // G toggles the grid, Shift+G toggles snapping
+      if (e.key === 'g' || e.key === 'G') {
+        if (e.shiftKey) {
+          setGrid(prev => ({ ...prev, snap: !prev.snap }));
         } else {
-          // Rectangle or circle: drag to draw
-          setDrawState({
-            isDrawing: true,
-            startX: e.clientX,
-            startY: e.clientY,
-            currentX: e.clientX,
-            currentY: e.clientY,
-          });
+          setGrid(prev => ({ ...prev, show: !prev.show }));
         }
       }
-    }
-  }, [isDrawMode, drawShape, polygonDrawState]);
-
-  // Handle double-click to close polygon
-  const handleCanvasDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === canvasRef.current && drawShape === 'polygon' && polygonDrawState.isDrawing) {
-      if (polygonDrawState.vertices.length >= 3) {
-        finishPolygon();
+      // B toggles blackout (live performance safety)
+      if (e.key === 'b' || e.key === 'B') {
+        setBlackout(prev => !prev);
       }
-    }
-  }, [drawShape, polygonDrawState]);
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [
+    isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen,
+    selectedFrameIds, frames, grid.snap, grid.size,
+    deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo,
+    togglePresentationMode, toggleFullscreen,
+  ]);
+
+  // ------------------------------------------------------------------
+  // Drawing
+  // ------------------------------------------------------------------
 
   // Finish polygon and create frame
   const finishPolygon = useCallback(() => {
-    if (polygonDrawState.vertices.length < 3) {
+    // A double-click (or closing on the first point) can repeat a vertex,
+    // which would degenerate the shape — drop near-duplicates first
+    const drawnVertices = dedupePolygon(polygonDrawState.vertices, 1 / viewScale);
+    if (drawnVertices.length < 3) {
       setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
       return;
     }
 
     // Calculate bounding box
-    const xs = polygonDrawState.vertices.map(v => v.x);
-    const ys = polygonDrawState.vertices.map(v => v.y);
+    const xs = drawnVertices.map(v => v.x);
+    const ys = drawnVertices.map(v => v.y);
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
@@ -351,82 +667,153 @@ export const Canvas: React.FC = () => {
     }
 
     // Convert vertices to normalized coordinates (0-1) relative to bounding box
-    const normalizedVertices: Point[] = polygonDrawState.vertices.map(v => ({
+    const normalizedVertices: Point[] = drawnVertices.map(v => ({
       x: (v.x - minX) / width,
       y: (v.y - minY) / height,
     }));
 
-    const newFrame: Omit<MediaFrame, 'id'> = {
+    addFrame(createFrame({
       type: pendingMediaUrl?.type || 'image',
       url: pendingMediaUrl?.url || '',
       mediaId: pendingMediaUrl?.mediaId,
+      filename: pendingMediaUrl?.url ? filenameFromUrl(pendingMediaUrl.url) : undefined,
       x: minX,
       y: minY,
       width,
       height,
-      rotation: 0,
       shape: 'polygon',
       vertices: normalizedVertices,
-      textureMode: 'clip',
-      loop: true,
-      opacity: 1,
       zIndex: frames.length,
-      playbackRate: 1,
-      muted: false,
-      blur: 0,
-      brightness: 100,
-      contrast: 100,
-      grayscale: 0,
-      saturate: 100,
-      hueRotate: 0,
-      invert: 0,
-      sepia: 0,
-      blendMode: 'normal',
-      flipHorizontal: false,
-      flipVertical: false,
       lockAspectRatio: false, // Polygons don't have aspect ratio lock
-      contentScale: 1,
-      contentOffsetX: 0,
-      contentOffsetY: 0,
-      perspectiveMode: false,
-      perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
-    };
-
-    if (pendingMediaUrl?.url) {
-      try {
-        const urlObj = new URL(pendingMediaUrl.url);
-        const pathname = urlObj.pathname;
-        const lastSegment = pathname.split('/').pop();
-        if (lastSegment) {
-          newFrame.filename = decodeURIComponent(lastSegment);
-        }
-      } catch {
-        // If URL parsing fails, leave filename undefined
-      }
-    }
-
-    addFrame(newFrame);
+    }));
     setPendingMediaUrl(null);
     setPolygonDrawState({ isDrawing: false, vertices: [], startX: 0, startY: 0 });
     setIsDrawMode(false);
     setDrawShape(null);
-  }, [polygonDrawState, pendingMediaUrl, frames.length, addFrame]);
+  }, [polygonDrawState, pendingMediaUrl, frames.length, addFrame, viewScale]);
 
-  // Handle frame drag start
+  // Handle canvas mouse down (empty area: draw or marquee-select)
+  const handleCanvasMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const targetEl = e.target as HTMLElement;
+    const isEmptyArea = targetEl === canvasRef.current || targetEl === stageRef.current || targetEl.dataset.canvasBg === 'true';
+    if (!isEmptyArea || isPresentationMode) return;
+
+    const comp = toComp(e.clientX, e.clientY);
+
+    if (isDrawMode && drawShape) {
+      setSelectedFrameIds([]);
+      if (drawShape === 'polygon') {
+        // The second press of a double-click closes the polygon (onDoubleClick)
+        // — it must not add a duplicate vertex
+        if (e.detail >= 2) return;
+        // Polygon drawing: add vertex on click
+        const x = snapToGrid(comp.x);
+        const y = snapToGrid(comp.y);
+
+        if (!polygonDrawState.isDrawing) {
+          // Start new polygon
+          setPolygonDrawState({
+            isDrawing: true,
+            vertices: [{ x, y }],
+            startX: x,
+            startY: y,
+          });
+        } else {
+          // Check if clicking near first vertex to close polygon
+          const firstVertex = polygonDrawState.vertices[0];
+          const distance = Math.sqrt(
+            Math.pow(x - firstVertex.x, 2) + Math.pow(y - firstVertex.y, 2)
+          );
+
+          if (distance < 20 / viewScale && polygonDrawState.vertices.length >= 3) {
+            // Close polygon
+            finishPolygon();
+          } else {
+            // Add new vertex
+            setPolygonDrawState(prev => ({
+              ...prev,
+              vertices: [...prev.vertices, { x, y }],
+            }));
+          }
+        }
+      } else {
+        // Rectangle or circle: drag to draw
+        const x = snapToGrid(comp.x);
+        const y = snapToGrid(comp.y);
+        setDrawState({
+          isDrawing: true,
+          startX: x,
+          startY: y,
+          currentX: x,
+          currentY: y,
+        });
+      }
+      return;
+    }
+
+    // Not in draw mode: start a rubber-band selection
+    if (!e.shiftKey) {
+      setSelectedFrameIds([]);
+    }
+    setMarquee({
+      isActive: true,
+      startX: comp.x,
+      startY: comp.y,
+      currentX: comp.x,
+      currentY: comp.y,
+      additive: e.shiftKey,
+    });
+  }, [isPresentationMode, isDrawMode, drawShape, polygonDrawState, toComp, snapToGrid, viewScale, finishPolygon]);
+
+  // Handle double-click to close polygon
+  const handleCanvasDoubleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const targetEl = e.target as HTMLElement;
+    const isEmptyArea = targetEl === canvasRef.current || targetEl === stageRef.current || targetEl.dataset.canvasBg === 'true';
+    if (isEmptyArea && drawShape === 'polygon' && polygonDrawState.isDrawing) {
+      if (polygonDrawState.vertices.length >= 3) {
+        finishPolygon();
+      }
+    }
+  }, [drawShape, polygonDrawState, finishPolygon]);
+
+  // ------------------------------------------------------------------
+  // Frame gestures (drag / resize / rotate)
+  // ------------------------------------------------------------------
+
+  // Handle frame drag start — establishes the (possibly multi-) selection
   const handleDragStart = useCallback((frameId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     const frame = frames.find(f => f.id === frameId);
     if (!frame) return;
 
+    // Work out the group being dragged: an already-selected frame drags the
+    // whole selection; an unselected one becomes the (additive) selection.
+    let group: string[];
+    if (selectedFrameIds.includes(frameId)) {
+      group = selectedFrameIds;
+    } else {
+      group = e.shiftKey ? [...selectedFrameIds, frameId] : [frameId];
+      setSelectedFrameIds(group);
+    }
+
+    const groupStartPositions: Record<string, Point> = {};
+    for (const id of group) {
+      const f = frames.find(fr => fr.id === id);
+      if (f) groupStartPositions[id] = { x: f.x, y: f.y };
+    }
+
+    const comp = toComp(e.clientX, e.clientY);
+    dragMovedRef.current = false;
     setDragState({
       isDragging: true,
       frameId,
-      startX: e.clientX,
-      startY: e.clientY,
+      startX: comp.x,
+      startY: comp.y,
       offsetX: frame.x,
       offsetY: frame.y,
+      groupStartPositions,
     });
-  }, [frames]);
+  }, [frames, selectedFrameIds, toComp]);
 
   // Handle resize start
   const handleResizeStart = useCallback((frameId: string, handle: string, e: React.MouseEvent) => {
@@ -434,18 +821,22 @@ export const Canvas: React.FC = () => {
     const frame = frames.find(f => f.id === frameId);
     if (!frame) return;
 
+    const comp = toComp(e.clientX, e.clientY);
     setResizeState({
       isResizing: true,
       frameId,
       handle: handle as ResizeState['handle'],
-      startX: e.clientX,
-      startY: e.clientY,
+      startX: comp.x,
+      startY: comp.y,
       startWidth: frame.width,
       startHeight: frame.height,
       startFrameX: frame.x,
       startFrameY: frame.y,
+      rotation: frame.rotation,
+      // Snapshot corners so we can scale them proportionally while resizing
+      startPerspectiveCorners: frame.perspectiveMode ? { ...frame.perspectiveCorners } : undefined,
     });
-  }, [frames]);
+  }, [frames, toComp]);
 
   // Handle rotate start
   const handleRotateStart = useCallback((frameId: string, e: React.MouseEvent) => {
@@ -455,7 +846,8 @@ export const Canvas: React.FC = () => {
 
     const centerX = frame.x + frame.width / 2;
     const centerY = frame.y + frame.height / 2;
-    const angle = Math.atan2(e.clientY - centerY, e.clientX - centerX);
+    const comp = toComp(e.clientX, e.clientY);
+    const angle = Math.atan2(comp.y - centerY, comp.x - centerX);
 
     setRotateState({
       isRotating: true,
@@ -464,83 +856,125 @@ export const Canvas: React.FC = () => {
       centerX,
       centerY,
     });
-  }, [frames]);
+  }, [frames, toComp]);
 
   // Handle mouse move
   const handleMouseMove = useCallback((e: MouseEvent) => {
-    // Handle dragging
+    const needsComp = dragState.isDragging || resizeState.isResizing || rotateState.isRotating
+      || drawState.isDrawing || marquee.isActive;
+    if (!needsComp) return;
+    const comp = toComp(e.clientX, e.clientY);
+
+    // Handle dragging (moves the whole selected group)
     if (dragState.isDragging && dragState.frameId) {
-      const deltaX = e.clientX - dragState.startX;
-      const deltaY = e.clientY - dragState.startY;
-      updateFrame(dragState.frameId, {
-        x: dragState.offsetX + deltaX,
-        y: dragState.offsetY + deltaY,
-      });
+      const deltaX = comp.x - dragState.startX;
+      const deltaY = comp.y - dragState.startY;
+      if (Math.abs(deltaX) > 3 / viewScale || Math.abs(deltaY) > 3 / viewScale) {
+        dragMovedRef.current = true;
+      }
+      const positions = dragState.groupStartPositions ?? { [dragState.frameId]: { x: dragState.offsetX, y: dragState.offsetY } };
+      setFrames(prev => prev.map(f => {
+        const start = positions[f.id];
+        if (!start) return f;
+        return { ...f, x: snapToGrid(start.x + deltaX), y: snapToGrid(start.y + deltaY) };
+      }));
     }
 
-    // Handle resizing
+    // Handle resizing (rotation-aware: deltas in the frame's local axes,
+    // opposite corner/edge anchored in composition space)
     if (resizeState.isResizing && resizeState.frameId) {
       const frame = frames.find(f => f.id === resizeState.frameId);
       if (!frame) return;
-      
-      const deltaX = e.clientX - resizeState.startX;
-      const deltaY = e.clientY - resizeState.startY;
+
       const handle = resizeState.handle;
+      const rot = resizeState.rotation;
+      const isRotated = Math.abs(((rot % 360) + 360) % 360) > 0.01;
       const aspectRatio = resizeState.startWidth / resizeState.startHeight;
+
+      // Pointer delta in the frame's local (unrotated) axes
+      const d = rotateVector(comp.x - resizeState.startX, comp.y - resizeState.startY, -rot);
 
       let newWidth = resizeState.startWidth;
       let newHeight = resizeState.startHeight;
-      let newX = resizeState.startFrameX;
-      let newY = resizeState.startFrameY;
+
+      // Frame edges at resize start — for unrotated frames snapping targets
+      // the dragged edge so frames align to grid lines.
+      const startLeft = resizeState.startFrameX;
+      const startTop = resizeState.startFrameY;
+      const startRight = resizeState.startFrameX + resizeState.startWidth;
+      const startBottom = resizeState.startFrameY + resizeState.startHeight;
+
+      const snapWidthEast = (raw: number) => isRotated ? snapToGrid(raw) : snapToGrid(startLeft + raw) - startLeft;
+      const snapWidthWest = (raw: number) => isRotated ? snapToGrid(raw) : startRight - snapToGrid(startRight - raw);
+      const snapHeightSouth = (raw: number) => isRotated ? snapToGrid(raw) : snapToGrid(startTop + raw) - startTop;
+      const snapHeightNorth = (raw: number) => isRotated ? snapToGrid(raw) : startBottom - snapToGrid(startBottom - raw);
 
       if (frame.lockAspectRatio && (handle === 'nw' || handle === 'ne' || handle === 'sw' || handle === 'se')) {
-        // Corner handles with aspect ratio lock
-        const isEast = handle.includes('e');
-        const isSouth = handle.includes('s');
-        
-        if (isEast) {
-          newWidth = Math.max(50, resizeState.startWidth + deltaX);
-          newHeight = newWidth / aspectRatio;
+        // Corner handles with aspect ratio lock (snap width, derive height)
+        if (handle.includes('e')) {
+          newWidth = Math.max(50, snapWidthEast(resizeState.startWidth + d.x));
         } else {
-          newWidth = Math.max(50, resizeState.startWidth - deltaX);
-          newHeight = newWidth / aspectRatio;
-          newX = resizeState.startFrameX + deltaX;
+          newWidth = Math.max(50, snapWidthWest(resizeState.startWidth - d.x));
         }
-        
-        if (!isSouth) {
-          newY = resizeState.startFrameY + resizeState.startHeight - newHeight;
-        }
+        newHeight = newWidth / aspectRatio;
       } else {
         // Free resize or edge handles
         if (handle?.includes('e')) {
-          newWidth = Math.max(50, resizeState.startWidth + deltaX);
+          newWidth = Math.max(50, snapWidthEast(resizeState.startWidth + d.x));
         }
         if (handle?.includes('w')) {
-          newWidth = Math.max(50, resizeState.startWidth - deltaX);
-          newX = resizeState.startFrameX + deltaX;
+          newWidth = Math.max(50, snapWidthWest(resizeState.startWidth - d.x));
         }
         if (handle?.includes('s')) {
-          newHeight = Math.max(50, resizeState.startHeight + deltaY);
+          newHeight = Math.max(50, snapHeightSouth(resizeState.startHeight + d.y));
         }
         if (handle?.includes('n')) {
-          newHeight = Math.max(50, resizeState.startHeight - deltaY);
-          newY = resizeState.startFrameY + deltaY;
+          newHeight = Math.max(50, snapHeightNorth(resizeState.startHeight - d.y));
         }
       }
 
-      updateFrame(resizeState.frameId, {
+      // Anchor: the corner/edge opposite the handle stays fixed in
+      // composition space, even when the frame is rotated.
+      const anchorSignX = handle?.includes('w') ? 1 : handle?.includes('e') ? -1 : 0;
+      const anchorSignY = handle?.includes('n') ? 1 : handle?.includes('s') ? -1 : 0;
+      const startCenter = {
+        x: resizeState.startFrameX + resizeState.startWidth / 2,
+        y: resizeState.startFrameY + resizeState.startHeight / 2,
+      };
+      const anchorLocalStart = rotateVector(anchorSignX * resizeState.startWidth / 2, anchorSignY * resizeState.startHeight / 2, rot);
+      const anchorWorld = { x: startCenter.x + anchorLocalStart.x, y: startCenter.y + anchorLocalStart.y };
+      const anchorLocalNew = rotateVector(anchorSignX * newWidth / 2, anchorSignY * newHeight / 2, rot);
+      const newCenter = { x: anchorWorld.x - anchorLocalNew.x, y: anchorWorld.y - anchorLocalNew.y };
+
+      const resizeUpdates: Partial<MediaFrame> = {
         width: newWidth,
         height: newHeight,
-        x: newX,
-        y: newY,
-      });
+        x: newCenter.x - newWidth / 2,
+        y: newCenter.y - newHeight / 2,
+      };
+
+      // When perspective mode is active, scale corner offsets proportionally so the
+      // visual warp shape stays consistent as the frame bounding box changes.
+      if (resizeState.startPerspectiveCorners) {
+        const scaleX = newWidth  / resizeState.startWidth;
+        const scaleY = newHeight / resizeState.startHeight;
+        const sc = resizeState.startPerspectiveCorners;
+        resizeUpdates.perspectiveCorners = {
+          tl: { x: sc.tl.x * scaleX, y: sc.tl.y * scaleY },
+          tr: { x: sc.tr.x * scaleX, y: sc.tr.y * scaleY },
+          br: { x: sc.br.x * scaleX, y: sc.br.y * scaleY },
+          bl: { x: sc.bl.x * scaleX, y: sc.bl.y * scaleY },
+        };
+      }
+
+      updateFrame(resizeState.frameId, resizeUpdates);
     }
 
     // Handle rotating
     if (rotateState.isRotating && rotateState.frameId) {
       const angle = Math.atan2(
-        e.clientY - rotateState.centerY,
-        e.clientX - rotateState.centerX
+        comp.y - rotateState.centerY,
+        comp.x - rotateState.centerX
       );
       const rotation = ((angle - rotateState.startAngle) * 180 / Math.PI) % 360;
       updateFrame(rotateState.frameId, { rotation });
@@ -550,76 +984,44 @@ export const Canvas: React.FC = () => {
     if (drawState.isDrawing) {
       setDrawState(prev => ({
         ...prev,
-        currentX: e.clientX,
-        currentY: e.clientY,
+        currentX: snapToGrid(comp.x),
+        currentY: snapToGrid(comp.y),
       }));
     }
-  }, [dragState, resizeState, rotateState, drawState, updateFrame]);
+
+    // Handle marquee selection
+    if (marquee.isActive) {
+      setMarquee(prev => ({ ...prev, currentX: comp.x, currentY: comp.y }));
+    }
+  }, [dragState, resizeState, rotateState, drawState, marquee.isActive, frames, updateFrame, snapToGrid, toComp, viewScale]);
 
   // Handle mouse up
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: MouseEvent) => {
     // Finish drawing (only for rectangle/circle, not polygon)
     if (drawState.isDrawing && drawShape && drawShape !== 'polygon') {
       const x = Math.min(drawState.startX, drawState.currentX);
       const y = Math.min(drawState.startY, drawState.currentY);
       const width = Math.abs(drawState.currentX - drawState.startX);
       const height = Math.abs(drawState.currentY - drawState.startY);
+      const isBigEnough = width > 20 && height > 20;
 
-      if (width > 20 && height > 20) {
+      if (isBigEnough) {
         // Always create a frame, even without media URL
-        const newFrame: Omit<MediaFrame, 'id'> = {
+        addFrame(createFrame({
           type: pendingMediaUrl?.type || 'image',
           url: pendingMediaUrl?.url || '',
           mediaId: pendingMediaUrl?.mediaId,
+          filename: pendingMediaUrl?.url ? filenameFromUrl(pendingMediaUrl.url) : undefined,
           x,
           y,
           width,
           height,
-          rotation: 0,
           shape: drawShape,
-          textureMode: 'clip',
-          loop: true,
-          opacity: 1,
           zIndex: frames.length,
-          playbackRate: 1,
-          muted: false,
-          blur: 0,
-          brightness: 100,
-          contrast: 100,
-          grayscale: 0,
-          saturate: 100,
-          hueRotate: 0,
-          invert: 0,
-          sepia: 0,
-          blendMode: 'normal',
-          flipHorizontal: false,
-          flipVertical: false,
-          lockAspectRatio: true,
-          contentScale: 1,
-          contentOffsetX: 0,
-          contentOffsetY: 0,
-          perspectiveMode: false,
-          perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
-        };
-
-        // Add filename if URL is provided
-        if (pendingMediaUrl?.url) {
-          try {
-            const urlObj = new URL(pendingMediaUrl.url);
-            const pathname = urlObj.pathname;
-            const lastSegment = pathname.split('/').pop();
-            if (lastSegment) {
-              newFrame.filename = decodeURIComponent(lastSegment);
-            }
-          } catch {
-            // If URL parsing fails, leave filename undefined
-          }
-        }
-
-        addFrame(newFrame);
+        }));
         setPendingMediaUrl(null);
       }
-      
+
       setDrawState({
         isDrawing: false,
         startX: 0,
@@ -627,14 +1029,43 @@ export const Canvas: React.FC = () => {
         currentX: 0,
         currentY: 0,
       });
-      setIsDrawMode(false);
-      setDrawShape(null);
+      // Stay in draw mode after an accidental tiny drag so the user can
+      // simply try again; only a successful frame (or ESC) exits the mode.
+      if (isBigEnough) {
+        setIsDrawMode(false);
+        setDrawShape(null);
+      }
     }
 
-    setDragState(prev => ({ ...prev, isDragging: false, frameId: null }));
+    // Finish marquee selection
+    if (marquee.isActive) {
+      const minX = Math.min(marquee.startX, marquee.currentX);
+      const maxX = Math.max(marquee.startX, marquee.currentX);
+      const minY = Math.min(marquee.startY, marquee.currentY);
+      const maxY = Math.max(marquee.startY, marquee.currentY);
+      if (maxX - minX > 4 || maxY - minY > 4) {
+        const hit = frames
+          .filter(f => f.visible !== false)
+          .filter(f => {
+            const box = frameAABB(f);
+            return box.minX < maxX && box.maxX > minX && box.minY < maxY && box.maxY > minY;
+          })
+          .map(f => f.id);
+        setSelectedFrameIds(prev => marquee.additive ? [...new Set([...prev, ...hit])] : hit);
+      }
+      setMarquee(prev => ({ ...prev, isActive: false }));
+    }
+
+    // Plain click (no drag) on a member of a multi-selection collapses the
+    // selection to that frame — standard multi-select behavior.
+    if (dragState.isDragging && dragState.frameId && !dragMovedRef.current && !e.shiftKey) {
+      setSelectedFrameIds([dragState.frameId]);
+    }
+
+    setDragState(prev => ({ ...prev, isDragging: false, frameId: null, groupStartPositions: undefined }));
     setResizeState(prev => ({ ...prev, isResizing: false, frameId: null }));
     setRotateState(prev => ({ ...prev, isRotating: false, frameId: null }));
-  }, [drawState, drawShape, frames.length, addFrame, pendingMediaUrl]);
+  }, [drawState, drawShape, marquee, dragState, frames, addFrame, pendingMediaUrl]);
 
   // Add mouse event listeners
   useEffect(() => {
@@ -646,66 +1077,47 @@ export const Canvas: React.FC = () => {
     };
   }, [handleMouseMove, handleMouseUp]);
 
+  // ------------------------------------------------------------------
+  // Media handling
+  // ------------------------------------------------------------------
+
   // Handle file drop
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
 
+    const comp = toComp(e.clientX, e.clientY);
     const files = Array.from(e.dataTransfer.files);
+    let offset = 0;
     for (const file of files) {
       if (file.type.startsWith('video/') || file.type.startsWith('image/')) {
         const type = file.type.startsWith('video/') ? 'video' : 'image';
-        
+
         try {
           // Store in IndexedDB
           const storedMedia = await storeMedia(file, file.name, type);
-          const url = URL.createObjectURL(storedMedia.blob);
-          
-          // Update cache
-          setMediaUrlCache(prev => new Map(prev).set(storedMedia.id, url));
-          
-          addFrame({
+          const url = getMediaObjectUrl(storedMedia);
+
+          addFrame(createFrame({
             type,
             url,
             mediaId: storedMedia.id,
             filename: file.name,
-            x: e.clientX - 150,
-            y: e.clientY - 100,
+            x: snapToGrid(comp.x - 150 + offset),
+            y: snapToGrid(comp.y - 100 + offset),
             width: 300,
             height: 200,
-            rotation: 0,
             shape: 'rectangle',
-            textureMode: 'clip',
-            loop: true,
-            opacity: 1,
             zIndex: frames.length,
-            playbackRate: 1,
-            muted: false,
-            blur: 0,
-            brightness: 100,
-            contrast: 100,
-            grayscale: 0,
-            saturate: 100,
-            hueRotate: 0,
-            invert: 0,
-            sepia: 0,
-            blendMode: 'normal',
-            flipHorizontal: false,
-            flipVertical: false,
-            lockAspectRatio: true,
-            contentScale: 1,
-            contentOffsetX: 0,
-            contentOffsetY: 0,
-            perspectiveMode: false,
-            perspectiveCorners: { tl: { x: 0, y: 0 }, tr: { x: 0, y: 0 }, br: { x: 0, y: 0 }, bl: { x: 0, y: 0 } },
-          });
+          }));
+          offset += 20;
         } catch (error) {
           console.error('Failed to store media:', error);
           alert((error as Error).message);
         }
       }
     }
-  }, [frames.length, addFrame]);
+  }, [frames.length, addFrame, snapToGrid, toComp]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -720,9 +1132,8 @@ export const Canvas: React.FC = () => {
 
   // Handle media selection from library
   const handleSelectMedia = useCallback(async (media: StoredMedia) => {
-    const url = URL.createObjectURL(media.blob);
-    setMediaUrlCache(prev => new Map(prev).set(media.id, url));
-    
+    const url = getMediaObjectUrl(media);
+
     // Check if selecting for background
     if (mediaLibraryTargetBackground) {
       setBackground(prev => ({
@@ -782,26 +1193,54 @@ export const Canvas: React.FC = () => {
   }, [isDrawMode, drawShape]);
 
   const handleSave = useCallback(() => {
-    saveProject(frames, background);
-    alert('Project saved!');
-  }, [frames, background]);
+    try {
+      saveProject(frames, background, grid, composition);
+      setAutosaveError(null);
+      alert('Project saved!');
+    } catch (error) {
+      alert((error as Error).message);
+    }
+  }, [frames, background, grid, composition]);
 
   const handleExport = useCallback(() => {
-    exportProject(frames, background);
-  }, [frames, background]);
+    exportProject(frames, background, grid, composition);
+  }, [frames, background, grid, composition]);
+
+  // Export with all referenced media embedded (base64) — portable but large
+  const handleExportWithMedia = useCallback(async () => {
+    try {
+      const mediaIds = [
+        ...frames.filter(f => f.mediaId).map(f => f.mediaId!),
+        ...(background.mediaId ? [background.mediaId] : []),
+      ];
+      const records = await exportMediaRecords(mediaIds);
+      exportProject(frames, background, grid, composition, records);
+    } catch (error) {
+      alert('Failed to export with media: ' + (error as Error).message);
+    }
+  }, [frames, background, grid, composition]);
 
   const handleImport = useCallback(async (file: File) => {
     try {
       const imported = await importProject(file);
-      setFrames(imported.frames);
-      setBackground(imported.background);
+      // Restore embedded media (if the file carries it) before resolving
+      if (imported.media && imported.media.length > 0) {
+        await importMediaRecords(imported.media);
+      }
+      // Resolve mediaId references against the local media library so
+      // imported frames show their media without a page reload
+      await applyProject(imported);
       alert('Project imported successfully!');
     } catch (error) {
       alert('Failed to import project: ' + (error as Error).message);
     }
-  }, []);
+  }, [applyProject]);
 
-  // Draw preview rectangle/circle
+  // ------------------------------------------------------------------
+  // Render
+  // ------------------------------------------------------------------
+
+  // Draw preview rectangle/circle (composition coords)
   const drawPreview = drawState.isDrawing && drawShape && drawShape !== 'polygon' ? {
     x: Math.min(drawState.startX, drawState.currentX),
     y: Math.min(drawState.startY, drawState.currentY),
@@ -809,18 +1248,45 @@ export const Canvas: React.FC = () => {
     height: Math.abs(drawState.currentY - drawState.startY),
   } : null;
 
+  // Marquee rect (composition coords)
+  const marqueeRect = marquee.isActive ? {
+    x: Math.min(marquee.startX, marquee.currentX),
+    y: Math.min(marquee.startY, marquee.currentY),
+    width: Math.abs(marquee.currentX - marquee.startX),
+    height: Math.abs(marquee.currentY - marquee.startY),
+  } : null;
+
   // Polygon preview points string for SVG
   const polygonPreviewPoints = polygonDrawState.isDrawing && polygonDrawState.vertices.length > 0
     ? polygonDrawState.vertices.map(v => `${v.x},${v.y}`).join(' ')
     : null;
 
+  const gridVisible = grid.show && (!isPresentationMode || grid.showInPresentation);
+
   return (
     <>
+      {/* Non-blocking notices — never shown on the output. The update prompt
+          stays mounted so the service worker is registered once. */}
+      <div
+        className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[2000] flex flex-col items-center gap-2"
+        style={{ display: isPresentationMode ? 'none' : undefined }}
+      >
+        <UpdatePrompt />
+        {autosaveError && (
+          <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+            <span>Autosave failed: {autosaveError}</span>
+            <button onClick={handleExport} className="underline whitespace-nowrap">Export project</button>
+            <button onClick={() => setAutosaveError(null)} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
+      </div>
+
       {!isPresentationMode && (
         <ControlPanel
           onAddUrl={handleAddUrl}
           onSave={handleSave}
           onExport={handleExport}
+          onExportWithMedia={handleExportWithMedia}
           onImport={handleImport}
           onDrawMode={handleDrawMode}
           isDrawMode={isDrawMode}
@@ -831,6 +1297,29 @@ export const Canvas: React.FC = () => {
           onPlayAll={handlePlayAll}
           onPauseAll={handlePauseAll}
           hasVideos={hasVideos}
+          grid={grid}
+          onUpdateGrid={(updates) => setGrid(prev => ({ ...prev, ...updates }))}
+          composition={composition}
+          onUpdateComposition={(updates) => setComposition(prev => ({ ...prev, ...updates }))}
+          masterOpacity={masterOpacity}
+          onMasterOpacityChange={setMasterOpacity}
+          blackout={blackout}
+          onToggleBlackout={() => setBlackout(prev => !prev)}
+          showTestCard={showTestCard}
+          onToggleTestCard={() => setShowTestCard(prev => !prev)}
+        />
+      )}
+
+      {!isPresentationMode && (
+        <LayersPanel
+          frames={frames}
+          selectedFrameIds={selectedFrameIds}
+          onSelect={selectFrame}
+          onUpdate={updateFrame}
+          onDelete={(id) => deleteFrames([id])}
+          onDuplicate={(id) => duplicateFrames([id])}
+          onReorder={reorderFrame}
+          composition={composition}
         />
       )}
 
@@ -843,6 +1332,7 @@ export const Canvas: React.FC = () => {
           setMediaLibraryTargetBackground(false);
         }}
         onSelectMedia={handleSelectMedia}
+        getMediaUsage={getMediaUsage}
       />
 
       {/* Background Settings Panel */}
@@ -853,11 +1343,10 @@ export const Canvas: React.FC = () => {
         isOpen={isBackgroundSettingsOpen}
         onClose={() => setIsBackgroundSettingsOpen(false)}
       />
-      
+
       <div
         ref={canvasRef}
-        className="w-full h-full relative overflow-hidden cursor-crosshair"
-        style={{ backgroundColor: background.type === 'color' ? background.color : undefined }}
+        className={`w-full h-full relative overflow-hidden bg-[#0a0a0a] ${isDrawMode ? 'cursor-crosshair' : ''}`}
         onMouseDown={handleCanvasMouseDown}
         onDoubleClick={handleCanvasDoubleClick}
         onDrop={handleDrop}
@@ -874,25 +1363,188 @@ export const Canvas: React.FC = () => {
         }}
         onMouseLeave={() => isPresentationMode && setShowPresentationControls(false)}
       >
-        {/* Background Image/Video */}
-        {background.type === 'image' && background.url && (
-          <img
-            src={background.url}
-            alt="Background"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          />
-        )}
-        {background.type === 'video' && background.url && (
-          <video
-            ref={backgroundVideoRef}
-            src={background.url}
-            loop={background.loop ?? true}
-            muted={background.muted ?? true}
-            autoPlay
-            playsInline
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-          />
-        )}
+        {/* Composition stage — everything inside is in composition coordinates */}
+        <div
+          ref={stageRef}
+          data-canvas-bg="true"
+          className="absolute bg-black"
+          style={{
+            width: composition.width,
+            height: composition.height,
+            transform: `translate(${viewOffsetX}px, ${viewOffsetY}px) scale(${viewScale})`,
+            transformOrigin: '0 0',
+          }}
+        >
+          {/* Master-faded output (background + frames) */}
+          <div data-canvas-bg="true" className="absolute inset-0" style={{ opacity: masterOpacity }}>
+            {/* Background */}
+            {background.type === 'color' && (
+              <div
+                data-canvas-bg="true"
+                className="absolute inset-0"
+                style={{ backgroundColor: background.color }}
+              />
+            )}
+            {background.type === 'image' && background.url && (
+              <img
+                src={background.url}
+                alt="Background"
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              />
+            )}
+            {background.type === 'video' && background.url && (
+              <video
+                ref={backgroundVideoRef}
+                src={background.url}
+                loop={background.loop ?? true}
+                muted={background.muted ?? true}
+                autoPlay
+                playsInline
+                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+              />
+            )}
+
+            {/* Frames */}
+            {frames.filter(f => f.visible !== false).map(frame => (
+              <MediaFrameComponent
+                key={frame.id}
+                frame={frame}
+                isSelected={selectedFrameIds.includes(frame.id) && !isPresentationMode}
+                onUpdate={(updates) => updateFrame(frame.id, updates)}
+                onDelete={() => deleteFrames([frame.id])}
+                onDragStart={(e) => !isPresentationMode && handleDragStart(frame.id, e)}
+                onResizeStart={(e, handle) => !isPresentationMode && handleResizeStart(frame.id, handle, e)}
+                onRotateStart={(e) => !isPresentationMode && handleRotateStart(frame.id, e)}
+                isPresentationMode={isPresentationMode}
+                onOpenMediaLibrary={() => handleOpenMediaLibraryForFrame(frame.id)}
+                playbackCommand={playbackCommand}
+                clientToComp={toComp}
+                snapToGrid={snapToGrid}
+                overlayContainer={overlayEl}
+                viewScale={viewScale}
+                outputGain={outputGain}
+              />
+            ))}
+          </div>
+
+          {/* Editor overlay — outlines, handles and hit areas of every frame,
+              above the content and outside the master fader */}
+          <div ref={setOverlayEl} className="absolute inset-0 pointer-events-none" style={{ zIndex: 700 }} />
+
+          {/* Grid Overlay — minor lines every cell, accent lines every 5 cells.
+              Optionally stays visible in presentation mode for projector alignment. */}
+          {gridVisible && (
+            <div
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                zIndex: 500,
+                backgroundImage: [
+                  'linear-gradient(to right, rgba(34,211,238,0.35) 1px, transparent 1px)',
+                  'linear-gradient(to bottom, rgba(34,211,238,0.35) 1px, transparent 1px)',
+                  'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px)',
+                  'linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
+                ].join(', '),
+                backgroundSize: [
+                  `${grid.size * 5}px ${grid.size * 5}px`,
+                  `${grid.size * 5}px ${grid.size * 5}px`,
+                  `${grid.size}px ${grid.size}px`,
+                  `${grid.size}px ${grid.size}px`,
+                ].join(', '),
+              }}
+            />
+          )}
+
+          {/* Global output test card (projector setup) */}
+          {showTestCard && (
+            <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 550 }}>
+              <TestCard
+                width={composition.width}
+                height={composition.height}
+                label={`${composition.width} × ${composition.height}`}
+              />
+            </div>
+          )}
+
+          {/* Draw Preview for Rectangle/Circle */}
+          {drawPreview && (
+            <div
+              className="absolute border-4 border-dashed border-yellow-400 bg-yellow-400/20 pointer-events-none"
+              style={{
+                left: drawPreview.x,
+                top: drawPreview.y,
+                width: drawPreview.width,
+                height: drawPreview.height,
+                zIndex: 800,
+                clipPath: drawShape === 'circle' ? 'ellipse(50% 50% at 50% 50%)' : 'none',
+              }}
+            />
+          )}
+
+          {/* Marquee selection rectangle */}
+          {marqueeRect && (marqueeRect.width > 2 || marqueeRect.height > 2) && (
+            <div
+              className="absolute border border-cyan-400 bg-cyan-400/10 pointer-events-none"
+              style={{
+                left: marqueeRect.x,
+                top: marqueeRect.y,
+                width: marqueeRect.width,
+                height: marqueeRect.height,
+                zIndex: 800,
+              }}
+            />
+          )}
+
+          {/* Polygon Preview */}
+          {polygonDrawState.isDrawing && polygonDrawState.vertices.length > 0 && (
+            <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 800 }}>
+              {/* Draw lines between vertices */}
+              <polyline
+                points={polygonPreviewPoints || ''}
+                fill="rgba(250, 204, 21, 0.2)"
+                stroke="#facc15"
+                strokeWidth={3 / viewScale}
+                strokeDasharray="8 4"
+              />
+              {/* Draw vertices as circles */}
+              {polygonDrawState.vertices.map((vertex, index) => (
+                <circle
+                  key={index}
+                  cx={vertex.x}
+                  cy={vertex.y}
+                  r={(index === 0 ? 10 : 6) / viewScale}
+                  fill={index === 0 ? '#22c55e' : '#facc15'}
+                  stroke={index === 0 ? '#16a34a' : '#ca8a04'}
+                  strokeWidth={2 / viewScale}
+                />
+              ))}
+              {/* Instruction text */}
+              <text
+                x="50%"
+                y={40 / viewScale}
+                textAnchor="middle"
+                fill="white"
+                fontSize={16 / viewScale}
+                fontWeight="bold"
+                className="drop-shadow-lg"
+              >
+                {polygonDrawState.vertices.length < 3
+                  ? `Click to add vertices (${polygonDrawState.vertices.length}/3 minimum)`
+                  : 'Double-click or click green point to close polygon'
+                }
+              </text>
+            </svg>
+          )}
+
+          {/* Composition bounds outline (edit mode only) */}
+          {!isPresentationMode && (
+            <div className="absolute inset-0 pointer-events-none border border-white/25" style={{ zIndex: 900 }} />
+          )}
+
+          {/* Blackout — kills the whole output instantly (B) */}
+          {blackout && (
+            <div className="absolute inset-0 bg-black pointer-events-none" style={{ zIndex: 950 }} />
+          )}
+        </div>
 
         {/* Presentation Mode Controls - only show on corner hover */}
         {isPresentationMode && showPresentationControls && (
@@ -920,81 +1572,9 @@ export const Canvas: React.FC = () => {
             )}
           </div>
         )}
-        {/* Frames */}
-        {frames.map(frame => (
-          <MediaFrameComponent
-            key={frame.id}
-            frame={frame}
-            isSelected={selectedFrameId === frame.id && !isPresentationMode}
-            onSelect={() => !isPresentationMode && setSelectedFrameId(frame.id)}
-            onUpdate={(updates) => updateFrame(frame.id, updates)}
-            onDelete={() => deleteFrame(frame.id)}
-            onDragStart={(e) => !isPresentationMode && handleDragStart(frame.id, e)}
-            onResizeStart={(e, handle) => !isPresentationMode && handleResizeStart(frame.id, handle, e)}
-            onRotateStart={(e) => !isPresentationMode && handleRotateStart(frame.id, e)}
-            isPresentationMode={isPresentationMode}
-            onOpenMediaLibrary={() => handleOpenMediaLibraryForFrame(frame.id)}
-            playbackCommand={playbackCommand}
-          />
-        ))}
-
-        {/* Draw Preview for Rectangle/Circle */}
-        {drawPreview && (
-          <div
-            className="absolute border-4 border-dashed border-yellow-400 bg-yellow-400/20 pointer-events-none"
-            style={{
-              left: drawPreview.x,
-              top: drawPreview.y,
-              width: drawPreview.width,
-              height: drawPreview.height,
-              clipPath: drawShape === 'circle' ? 'ellipse(50% 50% at 50% 50%)' : 'none',
-            }}
-          />
-        )}
-
-        {/* Polygon Preview */}
-        {polygonDrawState.isDrawing && polygonDrawState.vertices.length > 0 && (
-          <svg className="absolute inset-0 w-full h-full pointer-events-none z-50">
-            {/* Draw lines between vertices */}
-            <polyline
-              points={polygonPreviewPoints || ''}
-              fill="rgba(250, 204, 21, 0.2)"
-              stroke="#facc15"
-              strokeWidth="3"
-              strokeDasharray="8 4"
-            />
-            {/* Draw vertices as circles */}
-            {polygonDrawState.vertices.map((vertex, index) => (
-              <circle
-                key={index}
-                cx={vertex.x}
-                cy={vertex.y}
-                r={index === 0 ? 10 : 6}
-                fill={index === 0 ? '#22c55e' : '#facc15'}
-                stroke={index === 0 ? '#16a34a' : '#ca8a04'}
-                strokeWidth="2"
-              />
-            ))}
-            {/* Instruction text */}
-            <text
-              x="50%"
-              y="30"
-              textAnchor="middle"
-              fill="white"
-              fontSize="14"
-              fontWeight="bold"
-              className="drop-shadow-lg"
-            >
-              {polygonDrawState.vertices.length < 3
-                ? `Click to add vertices (${polygonDrawState.vertices.length}/3 minimum)`
-                : 'Double-click or click green point to close polygon'
-              }
-            </text>
-          </svg>
-        )}
 
         {/* Instructions overlay when empty */}
-        {frames.length === 0 && (
+        {frames.length === 0 && !isPresentationMode && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-white/50">
               <p className="text-2xl font-bold mb-2">Video Mapper</p>
@@ -1006,4 +1586,3 @@ export const Canvas: React.FC = () => {
     </>
   );
 };
-

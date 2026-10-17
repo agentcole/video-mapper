@@ -8,7 +8,10 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // 'prompt': a new version waits until the user reloads (see
+      // UpdatePrompt) — never an automatic reload in the middle of a show.
+      // Registration happens only through the virtual:pwa-register module.
+      registerType: 'prompt',
       includeAssets: ['videomapper.svg', '/*.svg'],
       manifest: {
         name: 'Video Mapper',
@@ -18,12 +21,23 @@ export default defineConfig({
         background_color: '#1e293b',
         display: 'standalone',
         orientation: 'any',
+        start_url: '/',
+        categories: ['productivity', 'multimedia', 'utilities'],
         icons: [
           {
             src: 'videomapper.svg',
             sizes: 'any',
             type: 'image/svg+xml',
             purpose: 'any maskable'
+          }
+        ],
+        shortcuts: [
+          {
+            name: 'New Project',
+            short_name: 'New',
+            description: 'Create a new video mapping project',
+            url: '/',
+            icons: [{ src: 'videomapper.svg', sizes: 'any' }]
           }
         ]
       },

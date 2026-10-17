@@ -1,11 +1,24 @@
-import type { MediaFrame, BackgroundSettings } from '../types';
+import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord } from '../types';
+import { pinFrameToQuadVertices } from './geometry';
 
 const STORAGE_KEY = 'video-mapper-project';
-const VERSION = '3.0.0'; // Bumped for background & content scale support
+const VERSION = '4.1.0'; // Bumped for the single-homography warp model
 
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
   type: 'color',
   color: '#1e293b', // slate-800
+};
+
+export const DEFAULT_GRID: GridSettings = {
+  show: false,
+  snap: false,
+  size: 32,
+  showInPresentation: false,
+};
+
+export const DEFAULT_COMPOSITION: CompositionSettings = {
+  width: 1920,
+  height: 1080,
 };
 
 // Prepare frames for storage - remove temporary blob URLs
@@ -41,8 +54,8 @@ const DEFAULT_PERSPECTIVE_CORNERS = {
 };
 
 // Migrate old frame format to new format
-const migrateFrame = (frame: MediaFrame): MediaFrame => {
-  return {
+export const migrateFrame = (frame: MediaFrame): MediaFrame => {
+  const migrated: MediaFrame = {
     ...frame,
     // Add defaults for new properties if missing
     textureMode: frame.textureMode || 'clip',
@@ -53,42 +66,70 @@ const migrateFrame = (frame: MediaFrame): MediaFrame => {
     contentOffsetY: frame.contentOffsetY ?? 0,
     perspectiveMode: frame.perspectiveMode ?? false,
     perspectiveCorners: frame.perspectiveCorners ?? DEFAULT_PERSPECTIVE_CORNERS,
+    visible: frame.visible ?? true,
+    testPattern: frame.testPattern ?? false,
+    softEdge: frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 },
   };
+
+  // The old "warp" texture mode stretched media onto a 4-vertex polygon with
+  // a second homography. It is now a corner-pinned rectangle whose pins sit
+  // on those vertices (one homography per frame); anything else just clips.
+  if (migrated.textureMode === 'warp') {
+    const pinned = migrated.shape === 'polygon' ? pinFrameToQuadVertices(migrated) : null;
+    return pinned ? { ...migrated, ...pinned } : { ...migrated, textureMode: 'clip' };
+  }
+  return migrated;
 };
 
-export const saveProject = (frames: MediaFrame[], background?: BackgroundSettings): void => {
+export const saveProject = (
+  frames: MediaFrame[],
+  background?: BackgroundSettings,
+  grid?: GridSettings,
+  composition?: CompositionSettings
+): void => {
   try {
     const preparedFrames = prepareFramesForStorage(frames);
     const projectData = {
       frames: preparedFrames,
       background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
+      grid: grid || DEFAULT_GRID,
+      composition: composition || DEFAULT_COMPOSITION,
       version: VERSION,
       timestamp: new Date().toISOString(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projectData));
   } catch (error) {
     console.error('Failed to save project:', error);
-    throw new Error('Failed to save project to localStorage');
+    const isQuota = error instanceof DOMException && error.name === 'QuotaExceededError';
+    throw new Error(isQuota
+      ? 'browser storage is full — export the project to keep your changes'
+      : 'could not write to browser storage');
   }
 };
 
 export interface LoadedProject {
   frames: MediaFrame[];
   background: BackgroundSettings;
+  grid: GridSettings;
+  composition: CompositionSettings;
+  // Present when the project file embeds its media (export-with-media)
+  media?: ExportedMediaRecord[];
 }
 
 export const loadProject = (): LoadedProject | null => {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
     if (!data) return null;
-    
+
     const projectData = JSON.parse(data);
     if (!projectData.frames) return null;
-    
+
     // Migrate frames to ensure they have all new properties
     return {
       frames: projectData.frames.map(migrateFrame),
       background: projectData.background || DEFAULT_BACKGROUND,
+      grid: { ...DEFAULT_GRID, ...projectData.grid },
+      composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
     };
   } catch (error) {
     console.error('Failed to load project:', error);
@@ -96,11 +137,22 @@ export const loadProject = (): LoadedProject | null => {
   }
 };
 
-export const exportProject = (frames: MediaFrame[], background?: BackgroundSettings): void => {
+export const exportProject = (
+  frames: MediaFrame[],
+  background?: BackgroundSettings,
+  grid?: GridSettings,
+  composition?: CompositionSettings,
+  embeddedMedia?: ExportedMediaRecord[]
+): void => {
   try {
+    // Strip session-specific blob URLs — they are dead outside this session.
+    // Frames with a mediaId get their URL re-resolved from IndexedDB on import.
     const projectData = {
-      frames,
-      background: background || DEFAULT_BACKGROUND,
+      frames: prepareFramesForStorage(frames),
+      background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
+      grid: grid || DEFAULT_GRID,
+      composition: composition || DEFAULT_COMPOSITION,
+      ...(embeddedMedia && embeddedMedia.length > 0 ? { media: embeddedMedia } : {}),
       version: VERSION,
       timestamp: new Date().toISOString(),
     };
@@ -141,8 +193,11 @@ export const importProject = (file: File): Promise<LoadedProject> => {
         resolve({
           frames: projectData.frames.map(migrateFrame),
           background: projectData.background || DEFAULT_BACKGROUND,
+          grid: { ...DEFAULT_GRID, ...projectData.grid },
+          composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
+          media: Array.isArray(projectData.media) ? projectData.media : undefined,
         });
-      } catch (error) {
+      } catch {
         reject(new Error('Failed to parse project file'));
       }
     };
