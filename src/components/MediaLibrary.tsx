@@ -8,7 +8,6 @@ import {
   getStorageStats,
   formatBytes,
   MAX_FILE_SIZE,
-  MAX_TOTAL_SIZE,
 } from '../lib/mediaStorage';
 import {
   X,
@@ -19,14 +18,21 @@ import {
   HardDrive,
   FolderOpen,
   AlertTriangle,
+  Sparkles,
 } from 'lucide-react';
+import { effectsOfKind, useEffectLibrary } from '../effects/library';
 import { Button } from './ui/button';
+import { Dialog } from './ui/dialog';
+import { iconButton, segment, segmented } from './ui/theme';
+import { FolderBrowser } from './FolderBrowser';
+import { supportsLinkedFolders } from '../lib/mediaFolders';
 
 interface MediaLibraryProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectMedia: (media: StoredMedia) => void;
   getMediaUsage?: (mediaId: string) => string[]; // layer names using a media
+  onSelectGenerator?: (effectId: string) => void; // offer ISF generators (launcher slots)
 }
 
 export const MediaLibrary: React.FC<MediaLibraryProps> = ({
@@ -34,13 +40,20 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
   onClose,
   onSelectMedia,
   getMediaUsage,
+  onSelectGenerator,
 }) => {
   const [mediaList, setMediaList] = useState<StoredMedia[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [totalSize, setTotalSize] = useState(0);
+  const [maxSize, setMaxSize] = useState(0);
   const [mediaCount, setMediaCount] = useState(0);
   const [filter, setFilter] = useState<'all' | 'video' | 'image'>('all');
+  // Library = copies in browser storage; folders = files played from disk
+  const [source, setSource] = useState<'library' | 'folders' | 'generators'>('library');
+  const generators = effectsOfKind(useEffectLibrary(s => s.defs), 'generator');
+  const showSource = source === 'generators' && !onSelectGenerator ? 'library' : source;
+  const canLinkFolders = supportsLinkedFolders();
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -52,6 +65,7 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
       setMediaList(media.sort((a, b) => b.dateAdded - a.dateAdded));
       const stats = await getStorageStats();
       setTotalSize(stats.totalSize);
+      setMaxSize(stats.maxSize);
       setMediaCount(stats.count);
     } catch (err) {
       setError('Failed to load media library');
@@ -149,207 +163,185 @@ export const MediaLibrary: React.FC<MediaLibraryProps> = ({
     return m.type === filter;
   });
 
-  const storagePercentage = (totalSize / MAX_TOTAL_SIZE) * 100;
+  const storagePercentage = maxSize > 0 ? (totalSize / maxSize) * 100 : 0;
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1100] flex items-center justify-center p-4">
-      <div className="bg-slate-900 rounded-xl shadow-2xl w-full max-w-4xl max-h-[80vh] flex flex-col overflow-hidden border border-slate-700">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-700">
-          <div className="flex items-center gap-3">
-            <FolderOpen className="w-6 h-6 text-blue-400" />
-            <h2 className="text-xl font-bold text-white">Media Library</h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 hover:bg-slate-700 rounded-lg transition-colors"
-          >
-            <X className="w-5 h-5 text-slate-400" />
-          </button>
+    <Dialog title="Media Library" icon={<FolderOpen className="w-4 h-4" />} onClose={onClose}>
+      {/* Storage */}
+      <div className="px-3 py-2 border-b border-white/10 text-xs">
+        <div className="flex items-center justify-between text-gray-400 mb-1.5">
+          <span className="flex items-center gap-1.5">
+            <HardDrive className="w-3.5 h-3.5" />
+            {formatBytes(totalSize)} of {formatBytes(maxSize)} browser storage ({mediaCount} files)
+          </span>
+          <span className="text-gray-500">Max file {formatBytes(MAX_FILE_SIZE)}</span>
         </div>
-
-        {/* Storage Bar */}
-        <div className="px-4 py-3 border-b border-slate-700 bg-slate-800/50">
-          <div className="flex items-center justify-between text-sm text-slate-400 mb-2">
-            <div className="flex items-center gap-2">
-              <HardDrive className="w-4 h-4" />
-              <span>
-                {formatBytes(totalSize)} / {formatBytes(MAX_TOTAL_SIZE)} used ({mediaCount} files)
-              </span>
-            </div>
-            <span className="text-xs">Max file: {formatBytes(MAX_FILE_SIZE)}</span>
-          </div>
-          <div className="w-full h-2 bg-slate-700 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all ${
-                storagePercentage > 90
-                  ? 'bg-red-500'
-                  : storagePercentage > 70
-                  ? 'bg-yellow-500'
-                  : 'bg-blue-500'
-              }`}
-              style={{ width: `${Math.min(100, storagePercentage)}%` }}
-            />
-          </div>
-        </div>
-
-        {/* Toolbar */}
-        <div className="flex items-center justify-between p-3 border-b border-slate-700">
-          <div className="flex gap-2">
-            <Button
-              variant={filter === 'all' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setFilter('all')}
-            >
-              All
-            </Button>
-            <Button
-              variant={filter === 'video' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setFilter('video')}
-            >
-              <Video className="w-4 h-4 mr-1" />
-              Videos
-            </Button>
-            <Button
-              variant={filter === 'image' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setFilter('image')}
-            >
-              <ImageIcon className="w-4 h-4 mr-1" />
-              Images
-            </Button>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Upload className="w-4 h-4 mr-1" />
-              Upload
-            </Button>
-            {mediaCount > 0 && (
-              <Button variant="outline" size="sm" onClick={handleClearAll}>
-                <Trash2 className="w-4 h-4 mr-1" />
-                Clear All
-              </Button>
-            )}
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="video/*,image/*"
-            multiple
-            onChange={handleInputChange}
-            className="hidden"
+        <div className="w-full h-1 bg-white/10 rounded-full overflow-hidden">
+          <div
+            className={`h-full transition-all ${
+              storagePercentage > 90 ? 'bg-red-500' : storagePercentage > 70 ? 'bg-amber-400' : 'bg-cyan-400'
+            }`}
+            style={{ width: `${Math.min(100, storagePercentage)}%` }}
           />
         </div>
+      </div>
 
-        {/* Error Message */}
-        {error && (
-          <div className="mx-4 mt-3 p-3 bg-red-900/50 border border-red-700 rounded-lg flex items-center gap-2 text-red-200">
-            <AlertTriangle className="w-5 h-5 flex-shrink-0" />
-            <span className="text-sm">{error}</span>
-            <button
-              onClick={() => setError(null)}
-              className="ml-auto hover:text-white"
-            >
-              <X className="w-4 h-4" />
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-white/10">
+        {(canLinkFolders || onSelectGenerator) && (
+          <div className={segmented}>
+            <button onClick={() => setSource('library')} className={segment(showSource === 'library')}>
+              Library
             </button>
+            {canLinkFolders && (
+              <button
+                onClick={() => setSource('folders')}
+                className={segment(showSource === 'folders')}
+                title="Play files straight from a folder on disk"
+              >
+                Folders
+              </button>
+            )}
+            {onSelectGenerator && (
+              <button
+                onClick={() => setSource('generators')}
+                className={segment(showSource === 'generators')}
+                title="Shader generators (GPU renderer)"
+              >
+                <Sparkles className="w-3.5 h-3.5" /> Generators
+              </button>
+            )}
+          </div>
+        )}
+        <div className={segmented} style={{ display: showSource === 'generators' ? 'none' : undefined }}>
+          <button onClick={() => setFilter('all')} className={segment(filter === 'all')}>All</button>
+          <button onClick={() => setFilter('video')} className={segment(filter === 'video')}>
+            <Video className="w-3.5 h-3.5" /> Videos
+          </button>
+          <button onClick={() => setFilter('image')} className={segment(filter === 'image')}>
+            <ImageIcon className="w-3.5 h-3.5" /> Images
+          </button>
+        </div>
+        <div className="flex gap-2 ml-auto" style={{ display: showSource !== 'library' ? 'none' : undefined }}>
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+            <Upload /> Upload
+          </Button>
+          {mediaCount > 0 && (
+            <Button variant="outline" size="sm" onClick={handleClearAll} className="hover:bg-red-600">
+              <Trash2 /> Clear all
+            </Button>
+          )}
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/*,image/*"
+          multiple
+          onChange={handleInputChange}
+          className="hidden"
+        />
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="mx-3 mt-2 px-3 py-2 bg-red-600/20 ring-1 ring-red-500/60 rounded flex items-center gap-2 text-xs text-red-200">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span>{error}</span>
+          <button onClick={() => setError(null)} className={`ml-auto ${iconButton}`} title="Dismiss">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Content */}
+      <div
+        className={`relative flex-1 overflow-y-auto p-3 ${dragOver ? 'bg-cyan-500/10' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={handleDrop}
+      >
+        {showSource === 'generators' && onSelectGenerator ? (
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+            {generators.map(g => (
+              <button
+                key={g.id}
+                onClick={() => onSelectGenerator(g.id)}
+                className="aspect-video rounded bg-neutral-800 ring-1 ring-white/10 hover:ring-2 hover:ring-cyan-400 p-2 flex flex-col items-start justify-between text-left transition-shadow"
+                title={g.shader?.description || g.name}
+              >
+                <Sparkles className="w-5 h-5 text-cyan-300/70" />
+                <span className="w-full min-w-0">
+                  <span className="block text-[11px] text-white truncate font-semibold">{g.name}</span>
+                  <span className="block text-[10px] text-gray-400 truncate">{g.categories.join(' · ')}{g.builtin ? '' : ' · imported'}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : showSource === 'folders' ? (
+          <FolderBrowser filter={filter} onSelect={handleSelect} />
+        ) : loading ? (
+          <div className="flex items-center justify-center h-full py-12">
+            <div className="animate-spin w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full" />
+          </div>
+        ) : filteredMedia.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-gray-400 py-12 text-xs">
+            <Upload className="w-10 h-10 mb-3 opacity-40" />
+            <p className="text-sm font-semibold text-white mb-1">No media files</p>
+            <p className="text-gray-500 text-center max-w-xs">
+              Drop video or image files here, or click Upload to add media to your library
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-2">
+            {filteredMedia.map((media) => (
+              <div
+                key={media.id}
+                onClick={() => handleSelect(media)}
+                className="group relative aspect-video bg-neutral-800 rounded overflow-hidden cursor-pointer ring-1 ring-white/10 hover:ring-2 hover:ring-cyan-400 transition-shadow"
+              >
+                {media.thumbnail ? (
+                  <img src={media.thumbnail} alt={media.name} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white/30">
+                    {media.type === 'video' ? <Video className="w-6 h-6" /> : <ImageIcon className="w-6 h-6" />}
+                  </div>
+                )}
+
+                <span className="absolute top-1 left-1 bg-black/70 rounded-sm px-1 text-[9px] uppercase text-gray-300">
+                  {media.type}
+                </span>
+
+                <button
+                  onClick={(e) => handleDelete(media.id, e)}
+                  className="absolute top-1 right-1 p-1 rounded bg-black/70 hover:bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Delete from the library"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+
+                <div className="absolute inset-x-0 bottom-0 bg-black/70 px-1.5 py-0.5 flex items-baseline gap-1.5">
+                  <span className="flex-1 text-[10px] leading-tight text-white truncate">{media.name}</span>
+                  <span className="text-[9px] text-gray-400 shrink-0">{formatBytes(media.size)}</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Content */}
-        <div
-          className={`flex-1 overflow-y-auto p-4 ${
-            dragOver ? 'bg-blue-900/20' : ''
-          }`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragOver(true);
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-        >
-          {loading ? (
-            <div className="flex items-center justify-center h-full text-slate-400">
-              <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full" />
+        {dragOver && (
+          <div className="absolute inset-3 border-2 border-dashed border-cyan-400 rounded-lg bg-cyan-500/10 flex items-center justify-center pointer-events-none">
+            <div className="text-center text-cyan-200 text-sm">
+              <Upload className="w-8 h-8 mx-auto mb-2" />
+              Drop files to upload
             </div>
-          ) : filteredMedia.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400 py-12">
-              <Upload className="w-16 h-16 mb-4 opacity-50" />
-              <p className="text-lg font-medium mb-2">No media files</p>
-              <p className="text-sm text-slate-500 text-center max-w-xs">
-                Drag and drop video or image files here, or click Upload to add
-                media to your library
-              </p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-              {filteredMedia.map((media) => (
-                <div
-                  key={media.id}
-                  onClick={() => handleSelect(media)}
-                  className="group relative aspect-video bg-slate-800 rounded-lg overflow-hidden cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
-                >
-                  {/* Thumbnail */}
-                  {media.thumbnail ? (
-                    <img
-                      src={media.thumbnail}
-                      alt={media.name}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-slate-700">
-                      {media.type === 'video' ? (
-                        <Video className="w-8 h-8 text-slate-500" />
-                      ) : (
-                        <ImageIcon className="w-8 h-8 text-slate-500" />
-                      )}
-                    </div>
-                  )}
-
-                  {/* Type Badge */}
-                  <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-black/70 text-[10px] text-white uppercase font-medium">
-                    {media.type}
-                  </div>
-
-                  {/* Delete Button */}
-                  <button
-                    onClick={(e) => handleDelete(media.id, e)}
-                    className="absolute top-1 right-1 p-1 rounded bg-red-600/80 hover:bg-red-600 text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-
-                  {/* Info Overlay */}
-                  <div className="absolute inset-x-0 bottom-0 p-2 bg-gradient-to-t from-black/80 to-transparent">
-                    <p className="text-[10px] text-white truncate font-medium">
-                      {media.name}
-                    </p>
-                    <p className="text-[9px] text-slate-400">
-                      {formatBytes(media.size)}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Drop Overlay */}
-          {dragOver && (
-            <div className="absolute inset-4 border-2 border-dashed border-blue-500 rounded-xl bg-blue-900/20 flex items-center justify-center pointer-events-none">
-              <div className="text-center">
-                <Upload className="w-12 h-12 text-blue-400 mx-auto mb-2" />
-                <p className="text-blue-300 font-medium">Drop files to upload</p>
-              </div>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
       </div>
-    </div>
+    </Dialog>
   );
 };

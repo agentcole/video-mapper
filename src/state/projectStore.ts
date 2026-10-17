@@ -1,0 +1,122 @@
+import { createStore, useStore, type StoreApi } from 'zustand';
+import type {
+  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings, EffectInstance, Macro,
+} from '../types';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_TEMPO } from '../lib/defaults';
+import { emptyShow, framesFromShow, showFromFrames, type ShowDocument } from './showModel';
+
+// ---------------------------------------------------------------------------
+// Project store — the document being edited. Lives outside React so the
+// output window sync, autosave, history and (later) the remote API can read
+// and write it directly.
+//
+// The document is surfaces + layers + columns (see showModel.ts); `frames`
+// is the derived view (surface ⨝ layer ⨝ active clip) that the editor and
+// renderers work with. Frame edits are written back through the model.
+// ---------------------------------------------------------------------------
+
+type Updater<T> = T | ((prev: T) => T);
+
+const apply = <T>(updater: Updater<T>, prev: T): T =>
+  typeof updater === 'function' ? (updater as (p: T) => T)(prev) : updater;
+
+export interface ProjectDocument extends ShowDocument {
+  background: BackgroundSettings;
+  grid: GridSettings;
+  composition: CompositionSettings;
+  tempo: TempoSettings; // master clock (BPM, bar length, beat snap)
+  effects: EffectInstance[]; // composition effect stack (on the whole output)
+  macros: Macro[]; // macro faders (saved, not undoable — like the tempo)
+}
+
+// A document given either as the model or (output windows, tests) as frames
+export type DocumentInput = Partial<ProjectDocument> & { frames?: MediaFrame[] };
+
+export interface ProjectState extends ProjectDocument {
+  frames: MediaFrame[]; // derived — write through setFrames / updateFrame
+  // Setters accept a value or an updater, like React's setState
+  setFrames: (updater: Updater<MediaFrame[]>) => void;
+  updateFrame: (id: string, updates: Partial<MediaFrame>) => void;
+  // Edit the show model directly (clip launcher: slots, triggers, columns)
+  setShow: (updater: (show: ShowDocument) => ShowDocument) => void;
+  setBackground: (updater: Updater<BackgroundSettings>) => void;
+  setGrid: (updater: Updater<GridSettings>) => void;
+  setComposition: (updater: Updater<CompositionSettings>) => void;
+  setTempo: (updater: Updater<TempoSettings>) => void;
+  setEffects: (updater: Updater<EffectInstance[]>) => void;
+  setMacros: (updater: Updater<Macro[]>) => void;
+  // Swap in a whole document (load / import / undo) in one update
+  replaceDocument: (doc: DocumentInput) => void;
+}
+
+const NO_EFFECTS: EffectInstance[] = [];
+
+const showOf = (s: ShowDocument): ShowDocument => ({ surfaces: s.surfaces, layers: s.layers, columns: s.columns });
+
+/** Resolve a document input against the current show (frames are written through the model). */
+const resolveShow = (current: ShowDocument, input: DocumentInput): ShowDocument =>
+  input.frames
+    ? showFromFrames(current, input.frames)
+    : {
+        surfaces: input.surfaces ?? current.surfaces,
+        layers: input.layers ?? current.layers,
+        columns: input.columns ?? current.columns,
+      };
+
+export const createProjectStore = (initial: DocumentInput = {}): StoreApi<ProjectState> =>
+  createStore<ProjectState>()((set) => {
+    const show = resolveShow(emptyShow(), initial);
+    return {
+      background: initial.background ?? DEFAULT_BACKGROUND,
+      grid: initial.grid ?? DEFAULT_GRID,
+      composition: initial.composition ?? DEFAULT_COMPOSITION,
+      tempo: initial.tempo ?? DEFAULT_TEMPO,
+      effects: initial.effects ?? NO_EFFECTS,
+      macros: initial.macros ?? DEFAULT_MACROS,
+      ...show,
+      frames: framesFromShow(show),
+      setFrames: (updater) => set(s => {
+        const next = apply(updater, s.frames);
+        const nextShow = showFromFrames(showOf(s), next);
+        return { ...nextShow, frames: framesFromShow(nextShow, next) };
+      }),
+      updateFrame: (id, updates) => set(s => {
+        const next = s.frames.map(f => (f.id === id ? { ...f, ...updates } : f));
+        const nextShow = showFromFrames(showOf(s), next);
+        return { ...nextShow, frames: framesFromShow(nextShow, next) };
+      }),
+      setShow: (updater) => set(s => {
+        const current = showOf(s);
+        const nextShow = updater(current);
+        // Returning the same state object skips the update entirely
+        if (nextShow.surfaces === s.surfaces && nextShow.layers === s.layers && nextShow.columns === s.columns) return s;
+        return { ...showOf(nextShow), frames: framesFromShow(nextShow, s.frames) };
+      }),
+      setBackground: (updater) => set(s => ({ background: apply(updater, s.background) })),
+      setGrid: (updater) => set(s => ({ grid: apply(updater, s.grid) })),
+      setComposition: (updater) => set(s => ({ composition: apply(updater, s.composition) })),
+      setTempo: (updater) => set(s => ({ tempo: apply(updater, s.tempo) })),
+      setEffects: (updater) => set(s => ({ effects: apply(updater, s.effects) })),
+      setMacros: (updater) => set(s => ({ macros: apply(updater, s.macros) })),
+      replaceDocument: (doc) => set(s => {
+        const nextShow = resolveShow(showOf(s), doc);
+        return {
+          ...(doc.background ? { background: doc.background } : {}),
+          ...(doc.grid ? { grid: doc.grid } : {}),
+          ...(doc.composition ? { composition: doc.composition } : {}),
+          ...(doc.tempo ? { tempo: doc.tempo } : {}),
+          ...(doc.effects ? { effects: doc.effects } : {}),
+          ...(doc.macros ? { macros: doc.macros } : {}),
+          ...nextShow,
+          frames: framesFromShow(nextShow, s.frames),
+        };
+      }),
+    };
+  });
+
+// The app's single project store
+export const projectStore = createProjectStore();
+
+export function useProjectStore<T>(selector: (state: ProjectState) => T): T {
+  return useStore(projectStore, selector);
+}
