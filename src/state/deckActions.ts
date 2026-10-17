@@ -1,4 +1,4 @@
-import type { BlendMode, BeatSnap } from '../types';
+import type { BlendMode, BeatSnap, CrossfadeSide, Transition } from '../types';
 import { projectStore } from './projectStore';
 import { liveStore, type ScheduledTrigger } from './liveStore';
 import {
@@ -308,3 +308,22 @@ export const addDeckLayer = (): string => {
 
 export const updateDeckLayer = (layerId: string, patch: { name?: string; opacity?: number; blendMode?: BlendMode }): void =>
   setShow(show => updateLayer(show, layerId, patch));
+
+// A cut is stored as no transition
+const storedTransition = (transition: Transition | null): Transition | undefined =>
+  transition && transition.duration > 0 ? transition : undefined;
+
+/** How the layer changes clips and fades out when cleared. */
+export const setLayerTransition = (layerId: string, transition: Transition | null): void =>
+  setShow(show => updateLayer(show, layerId, { transition: storedTransition(transition) }));
+
+/**
+ * A clip's own transition, used when it starts: a transition (a cut is
+ * {duration 0}), or null to follow the layer.
+ */
+export const setClipTransition = (clipId: string, transition: Transition | null): void =>
+  setShow(show => updateClip(show, clipId, { transition: transition ?? undefined }));
+
+/** Put a layer on a crossfader side (null: off the crossfader). */
+export const setLayerCrossfade = (layerId: string, side: CrossfadeSide | null): void =>
+  setShow(show => updateLayer(show, layerId, { crossfade: side ?? undefined }));

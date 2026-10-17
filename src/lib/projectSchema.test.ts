@@ -174,6 +174,23 @@ describe('format 5', () => {
     expect(parseProjectData({ surfaces, layers, columns, tempo: { bpm: 9000 } }).tempo.bpm).toBe(DEFAULT_TEMPO.bpm);
   });
 
+  it('reads transitions and crossfader sides, dropping broken ones', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const layer = {
+      ...layers[0],
+      transition: { duration: 2, beats: true },
+      crossfade: 'A',
+      slots: layers[0].slots.map(c => (c ? { ...c, transition: { duration: -1 } } : c)),
+    };
+    const project = parseProjectData({ version: PROJECT_VERSION, surfaces, columns, layers: [layer] });
+    expect(project.layers[0].transition).toEqual({ duration: 2, beats: true });
+    expect(project.layers[0].crossfade).toBe('A');
+    expect(project.layers[0].slots[0]?.transition).toBeUndefined(); // invalid: follows the layer
+    const odd = parseProjectData({ version: PROJECT_VERSION, surfaces, columns, layers: [{ ...layer, crossfade: 'C' }] });
+    expect(odd.layers[0].crossfade).toBeUndefined();
+    expect(odd.warnings).toEqual([]);
+  });
+
   it('skips broken clips and surfaces individually and repairs references', () => {
     const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
     const project = parseProjectData({

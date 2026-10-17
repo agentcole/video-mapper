@@ -18,7 +18,7 @@ export const HEARTBEAT_TIMEOUT_MS = 6000;
 export type LiveSnapshot = Pick<
   LiveState,
   | 'masterOpacity' | 'blackout' | 'showTestCard' | 'playback' | 'renderer'
-  | 'cuedColumn' | 'preloadClipId' | 'layerTriggers' | 'clockOrigin' | 'scheduled'
+  | 'cuedColumn' | 'preloadClipId' | 'layerTriggers' | 'clockOrigin' | 'scheduled' | 'crossfader'
 >;
 
 export interface OutputSnapshot {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { allClips, type ClipSource } from '../state/showModel';
 import { usePreload } from '../render/preload';
+import { applyCrossfader, crossfadeGain } from '../state/transitions';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { getCurrentProjectId, getProject } from '../lib/projectRepository';
 import { parseProjectData } from '../lib/projectSchema';
@@ -123,6 +124,8 @@ export const OutputApp: React.FC = () => {
   const playback = useLiveStore(s => s.playback);
   const renderer = useLiveStore(s => s.renderer);
   const layerTriggers = useLiveStore(s => s.layerTriggers);
+  const crossfader = useLiveStore(s => s.crossfader);
+  const bpm = useProjectStore(s => s.tempo.bpm);
   const [gpuFailed, setGpuFailed] = useState(false);
   const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
@@ -222,7 +225,8 @@ export const OutputApp: React.FC = () => {
         {useGpu ? (
           <GpuStage
             scene={{
-              frames: frames.filter(f => f.visible !== false).map(f => ({ ...f, url: urlOf(f) })),
+              frames: applyCrossfader(frames.filter(f => f.visible !== false), crossfader).map(f => ({ ...f, url: urlOf(f) })),
+              bpm,
               background: { ...background, url: urlOf(background) },
               composition,
               masterOpacity,
@@ -257,6 +261,8 @@ export const OutputApp: React.FC = () => {
                 showPlaceholder={false}
                 preload={preloadFor(frame)}
                 startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
+                gain={crossfadeGain(frame.crossfade, crossfader)}
+                bpm={bpm}
               />
             ))}
           </div>

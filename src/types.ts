@@ -42,6 +42,16 @@ export interface TempoSettings {
   beatSnap: BeatSnap // composition default; clips can override it
 }
 
+// How a layer changes clips: a dissolve over `duration` seconds — or beats
+// of the master clock when `beats` is set. 0 is a cut.
+export interface Transition {
+  duration: number
+  beats?: boolean
+}
+
+// Crossfader side of a layer (unset: the crossfader doesn't touch it)
+export type CrossfadeSide = 'A' | 'B'
+
 // Per-edge feathering (px in frame-local space) for projection blending
 export interface SoftEdge {
   left: number
@@ -101,6 +111,8 @@ export interface MediaFrame {
   layerId?: string // the layer feeding this surface (derived, read-only)
   clipId?: string // the layer's playing clip (derived, read-only)
   layerHasClips?: boolean // the layer has clips, even if none plays (derived, read-only)
+  transition?: Transition // how the playing clip came in / the layer fades out (derived, read-only)
+  crossfade?: CrossfadeSide // the layer's crossfader side (derived, read-only)
   type: MediaType
   url: string
   filename?: string

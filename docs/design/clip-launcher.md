@@ -44,5 +44,5 @@ Cold starts miss R7's 100 ms when several clips load at once — cueing is the a
 ## Next
 
 - ~~2.2 Beat-quantized triggers (launch on the next beat/bar) plug into `deckActions` — the trigger becomes a scheduled action.~~ Done — see [master-clock.md](master-clock.md).
-- 2.3 Transitions: the pending → shown handover in both renderers is where a crossfade goes.
+- ~~2.3 Transitions: the pending → shown handover in both renderers is where a crossfade goes.~~ Done — see [transitions.md](transitions.md).
 - 2.6 MIDI learn maps notes to `pressClip` / `triggerColumn` / `go`; piano clips map naturally to note on/off.

@@ -48,6 +48,8 @@ export interface LiveState {
   // base — the tempo is in the project. Triggers waiting for their beat.
   clockOrigin: number;
   scheduled: ScheduledTrigger[];
+  // A/B crossfader: 0 = side A only, 1 = side B only, both full at 0.5
+  crossfader: number;
   setRenderer: (renderer: RendererKind) => void;
   setMasterOpacity: (value: number) => void;
   setBlackout: (value: boolean | ((prev: boolean) => boolean)) => void;
@@ -58,6 +60,7 @@ export interface LiveState {
   restartLayers: (layerIds: string[]) => void;
   setClockOrigin: (origin: number) => void;
   setScheduled: (scheduled: ScheduledTrigger[]) => void;
+  setCrossfader: (value: number) => void;
 }
 
 export const liveStore = createStore<LiveState>()((set) => ({
@@ -71,6 +74,7 @@ export const liveStore = createStore<LiveState>()((set) => ({
   layerTriggers: {},
   clockOrigin: clockNow(),
   scheduled: [],
+  crossfader: 0.5,
   setRenderer: (renderer) => {
     try {
       localStorage.setItem(RENDERER_KEY, renderer);
@@ -93,6 +97,7 @@ export const liveStore = createStore<LiveState>()((set) => ({
   }),
   setClockOrigin: (clockOrigin) => set({ clockOrigin }),
   setScheduled: (scheduled) => set({ scheduled }),
+  setCrossfader: (value) => set({ crossfader: Math.max(0, Math.min(1, value)) }),
 }));
 
 export function useLiveStore<T>(selector: (state: LiveState) => T): T {

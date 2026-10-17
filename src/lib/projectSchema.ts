@@ -28,9 +28,16 @@ import {
 
 // 5.1: clips have a trigger style (clip launcher)
 // 5.2: master clock (tempo) and beat snap per composition / clip
-export const PROJECT_VERSION = '5.2.0';
+// 5.3: transitions per layer / clip, crossfader side per layer
+export const PROJECT_VERSION = '5.3.0';
 
 const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
+
+// 5.3 — a broken transition falls back to the default (cut / the layer's)
+const TransitionSchema = z.object({
+  duration: z.number().min(0).max(600),
+  beats: z.boolean().optional(),
+}).optional().catch(undefined);
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
 
@@ -130,6 +137,7 @@ const ClipSchema = z.object({
   triggerStyle: z.enum(['normal', 'toggle', 'piano']).optional().catch(undefined),
   // 5.2 — unset: the composition's beat snap
   beatSnap: z.enum(BEAT_SNAPS).optional().catch(undefined),
+  transition: TransitionSchema,
   source: z.object({
     type: z.enum(['video', 'image']),
     url: z.string().default(''),
@@ -161,6 +169,8 @@ const LayerSchema = z.object({
   blendMode: z.enum(BLEND_MODES).default('normal'),
   slots: z.array(z.unknown()).default([]), // clips are validated one by one
   activeClipId: z.string().nullable().default(null),
+  transition: TransitionSchema,
+  crossfade: z.enum(['A', 'B']).optional().catch(undefined),
 });
 
 const ColumnSchema = z.object({ id: z.string().min(1), name: z.string().default('') });

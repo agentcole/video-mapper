@@ -59,6 +59,8 @@ interface MediaFrameComponentProps {
   renderContent?: boolean;
   preload?: PreloadMedia[]; // launcher: clips of this frame's layer to keep ready
   startSeq?: number; // launcher: this frame's layer trigger counter
+  gain?: number; // crossfader gain on the layer's opacity
+  bpm?: number; // master tempo (transitions in beats)
 }
 
 // Number of subdivisions of the warped editing grid (Resolume-style)
@@ -96,6 +98,8 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   viewScale,
   outputGain,
   renderContent = true,
+  gain,
+  bpm,
   preload,
   startSeq,
 }: MediaFrameComponentProps) {
@@ -1139,6 +1143,8 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
           showPlaceholder={!isPresentationMode && !frame.layerHasClips}
           preload={preload}
           startSeq={startSeq}
+          gain={gain}
+          bpm={bpm}
         />
       )}
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}

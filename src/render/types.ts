@@ -10,7 +10,8 @@ import type { LiveState } from '../state/liveStore';
 export type RendererKind = 'css' | 'gpu';
 
 export interface RenderScene {
-  frames: MediaFrame[]; // visible frames, media URLs playable in this window
+  frames: MediaFrame[]; // visible frames (crossfader applied), media URLs playable in this window
+  bpm: number; // master tempo, for transitions measured in beats
   background: BackgroundSettings;
   composition: CompositionSettings;
   masterOpacity: number;

@@ -29,6 +29,7 @@ import type { ClipSource } from '../state/showModel';
 import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions';
 import { resyncBar, tapTempo } from '../state/clockActions';
 import { noticeSurface } from './ui/theme';
+import { applyCrossfader, crossfadeGain } from '../state/transitions';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -182,6 +183,8 @@ export const Canvas: React.FC = () => {
   const playback = useLiveStore(s => s.playback);
   const renderer = useLiveStore(s => s.renderer);
   const layerTriggers = useLiveStore(s => s.layerTriggers);
+  const crossfader = useLiveStore(s => s.crossfader);
+  const bpm = useProjectStore(s => s.tempo.bpm);
   const { preload, forFrame: preloadFor } = usePreload(editorUrlOf);
   const [rendererNotice, setRendererNotice] = useState<string | null>(null);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
@@ -313,7 +316,8 @@ export const Canvas: React.FC = () => {
   // GPU renderer (beta): draws background + frames; falls back to CSS
   const visibleFrames = useMemo(() => frames.filter(f => f.visible !== false), [frames]);
   const gpuScene = useMemo<RenderScene>(() => ({
-    frames: visibleFrames,
+    frames: applyCrossfader(visibleFrames, crossfader),
+    bpm,
     background,
     composition,
     masterOpacity,
@@ -322,7 +326,7 @@ export const Canvas: React.FC = () => {
     showPlaceholders: !isPresentationMode,
     preload,
     layerTriggers,
-  }), [visibleFrames, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
+  }), [visibleFrames, crossfader, bpm, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
 
   // ------------------------------------------------------------------
   // Clip launcher
@@ -1441,6 +1445,8 @@ export const Canvas: React.FC = () => {
                 renderContent={renderer !== 'gpu'}
                 preload={preloadFor(frame)}
                 startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
+                gain={crossfadeGain(frame.crossfade, crossfader)}
+                bpm={bpm}
               />
             ))}
           </div>
