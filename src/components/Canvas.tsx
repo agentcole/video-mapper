@@ -28,6 +28,7 @@ import type { SlotRef } from '../state/deck';
 import type { ClipSource } from '../state/showModel';
 import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions';
 import { resyncBar, tapTempo } from '../state/clockActions';
+import { noticeSurface } from './ui/theme';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -1257,33 +1258,33 @@ export const Canvas: React.FC = () => {
       >
         <UpdatePrompt />
         {session.notice && (
-          <div className="bg-black/85 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+          <div className={noticeSurface}>
             {session.notice}
           </div>
         )}
         {session.loadWarnings.length > 0 && (
-          <div className="flex items-start gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm max-w-xl">
+          <div className={`${noticeSurface} flex items-start gap-3 ring-1 ring-amber-400/60 max-w-xl`}>
             <div>
-              <p>The project was repaired while opening:</p>
-              <ul className="list-disc pl-4 text-xs text-white/80 mt-1">
+              <p className="text-amber-200">The project was repaired while opening:</p>
+              <ul className="list-disc pl-4 text-[11px] text-gray-300 mt-1">
                 {session.loadWarnings.slice(0, 5).map((warning, i) => <li key={i}>{warning}</li>)}
                 {session.loadWarnings.length > 5 && <li>…and {session.loadWarnings.length - 5} more (see console)</li>}
               </ul>
             </div>
-            <button onClick={session.dismissLoadWarnings} className="text-white/70 hover:text-white">Dismiss</button>
+            <button onClick={session.dismissLoadWarnings} className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 whitespace-nowrap">Dismiss</button>
           </div>
         )}
         {rendererNotice && (
-          <div className="flex items-center gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
-            <span>{rendererNotice}</span>
-            <button onClick={() => setRendererNotice(null)} className="text-white/70 hover:text-white">Dismiss</button>
+          <div className={`${noticeSurface} flex items-center gap-3 ring-1 ring-amber-400/60`}>
+            <span className="text-amber-200">{rendererNotice}</span>
+            <button onClick={() => setRendererNotice(null)} className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 whitespace-nowrap">Dismiss</button>
           </div>
         )}
         {session.autosaveError && (
-          <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
-            <span>Autosave failed: {session.autosaveError}</span>
-            <button onClick={exportJson} className="underline whitespace-nowrap">Export project</button>
-            <button onClick={session.dismissAutosaveError} className="text-white/70 hover:text-white">Dismiss</button>
+          <div className={`${noticeSurface} flex items-center gap-3 ring-1 ring-red-500/70`}>
+            <span className="text-red-200">Autosave failed: {session.autosaveError}</span>
+            <button onClick={exportJson} className="px-2 py-0.5 rounded bg-cyan-500 text-black font-semibold hover:bg-cyan-400 whitespace-nowrap">Export project</button>
+            <button onClick={session.dismissAutosaveError} className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 whitespace-nowrap">Dismiss</button>
           </div>
         )}
       </div>
@@ -1549,10 +1550,10 @@ export const Canvas: React.FC = () => {
           <div className="absolute top-4 right-4 z-50 flex gap-2 animate-fade-in">
             <button
               onClick={togglePresentationMode}
-              className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg backdrop-blur-sm transition-colors flex items-center gap-2"
+              className="px-3 py-1.5 bg-black/85 hover:bg-white/20 text-white text-xs rounded-lg backdrop-blur-md shadow-2xl transition-colors flex items-center gap-2"
               title="Exit Presentation Mode (ESC or P)"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
               </svg>
               Edit Mode
@@ -1560,10 +1561,10 @@ export const Canvas: React.FC = () => {
             {!document.fullscreenElement && (
               <button
                 onClick={toggleFullscreen}
-                className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-lg backdrop-blur-sm transition-colors"
+                className="px-2 py-1.5 bg-black/85 hover:bg-white/20 text-white rounded-lg backdrop-blur-md shadow-2xl transition-colors"
                 title="Fullscreen (F)"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                 </svg>
               </button>
@@ -1575,8 +1576,8 @@ export const Canvas: React.FC = () => {
         {frames.length === 0 && !isPresentationMode && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center text-white/50">
-              <p className="text-2xl font-bold mb-2">Video Mapper</p>
-              <p className="text-lg">Draw a frame or drop media files to start</p>
+              <p className="text-base font-bold mb-1">Video Mapper</p>
+              <p className="text-xs">Draw a frame or drop media files to start</p>
             </div>
           </div>
         )}

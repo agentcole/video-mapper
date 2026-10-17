@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ExternalLink, X, ScanSearch } from 'lucide-react';
 import { Button } from './ui/button';
+import { field, option, segment, segmented } from './ui/theme';
 import { useOutputStatus, closeOutputs } from '../output/controlSync';
 import { liveStore, useLiveStore } from '../state/liveStore';
 import { getScreens, openOutputWindow, supportsScreenSelection, type ScreenInfo } from '../output/outputWindow';
@@ -39,13 +40,13 @@ export const OutputWindowControls: React.FC = () => {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-400">Renderer</span>
-        <div className="flex flex-1 rounded-md overflow-hidden border border-gray-600 text-xs">
+        <span className="text-[11px] text-gray-400">Renderer</span>
+        <div className={`flex-1 ${segmented}`}>
           {(['css', 'gpu'] as const).map(kind => (
             <button
               key={kind}
               onClick={() => liveStore.getState().setRenderer(kind)}
-              className={`flex-1 py-1 ${renderer === kind ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}
+              className={segment(renderer === kind)}
               title={kind === 'gpu'
                 ? 'WebGL2 compositor (beta): per-pixel perspective, GPU blend modes'
                 : 'Browser layout (CSS transforms) — the proven path'}
@@ -60,45 +61,45 @@ export const OutputWindowControls: React.FC = () => {
           <select
             value={screenIndex}
             onChange={(e) => setScreenIndex(Number(e.target.value))}
-            className="w-full bg-white/10 rounded px-2 py-1.5 text-xs"
+            className={`w-full ${field}`}
             title="Screen for the output window"
           >
             {screens.map(s => (
-              <option key={s.index} value={s.index} className="bg-gray-900">
+              <option key={s.index} value={s.index} className={option}>
                 {s.label} — {s.width}×{s.height}{s.isCurrent ? ' (this screen)' : ''}
               </option>
             ))}
           </select>
         ) : (
           <Button variant="outline" size="sm" onClick={detectScreens} className="w-full">
-            <ScanSearch className="w-4 h-4 mr-1" />
+            <ScanSearch />
             Detect screens
           </Button>
         )
       )}
       <div className="flex gap-2">
         <Button
-          variant={connected > 0 ? 'outline' : 'default'}
+          variant="outline"
           size="sm"
           onClick={open}
           className="flex-1"
           title="Open the composition in its own window (for the projector)"
         >
-          <ExternalLink className="w-4 h-4 mr-1" />
+          <ExternalLink />
           {connected > 0 ? 'Show output' : 'Output window'}
         </Button>
         {connected > 0 && (
           <Button variant="outline" size="sm" onClick={closeOutputs} title="Close output windows">
-            <X className="w-4 h-4" />
+            <X />
           </Button>
         )}
       </div>
       <p className="text-[11px] text-gray-400">
         {connected > 0
-          ? `● ${connected} output${connected > 1 ? 's' : ''} live — editor audio muted`
+          ? <span className="text-emerald-300">● {connected} output{connected > 1 ? 's' : ''} live — editor audio muted</span>
           : 'No output window. Present (P) shows the output in this window.'}
       </p>
-      {error && <p className="text-[11px] text-red-400">{error}</p>}
+      {error && <p className="text-[11px] text-red-300">{error}</p>}
     </div>
   );
 };

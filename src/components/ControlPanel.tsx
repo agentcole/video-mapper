@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Slider } from './ui/slider';
+import { divider, field, iconButton, option, panelSurface, panelTitle, sectionLabel } from './ui/theme';
 import {
   Download,
   Upload,
@@ -15,8 +16,8 @@ import {
   FolderOpen,
   Palette,
   FolderKanban,
-  ChevronDown,
-  ChevronUp,
+  ChevronsUpDown,
+  Clapperboard,
   Play,
   Pause,
   Grid3X3,
@@ -71,6 +72,40 @@ const COMPOSITION_PRESETS: { label: string; width: number; height: number }[] = 
 ];
 
 const clampDimension = (value: number) => Math.max(320, Math.min(8192, Math.round(value)));
+
+const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent);
+const MOD = isMac ? '⌘' : 'Ctrl+';
+const SHIFT = isMac ? '⇧' : 'Shift+';
+
+// Key combos are separated by " / "
+const SHORTCUTS: [string, string][] = [
+  ['P', 'Present mode'],
+  ['F', 'Fullscreen'],
+  ['B', 'Blackout'],
+  ['1–9', 'Play column'],
+  [`${SHIFT}1–9`, 'Cue column'],
+  ['Space', 'Go (fire the cue)'],
+  ['Alt', '+ trigger: fire now, skip beat snap'],
+  [`T / ${SHIFT}T`, 'Tap tempo / resync bar'],
+  ['L', 'Clip launcher'],
+  [`G / ${SHIFT}G`, 'Grid / snap'],
+  ['Del', 'Delete selection'],
+  ['Arrows', `Nudge (${SHIFT.replace('+', '')} = grid steps)`],
+  [`${MOD}Z / ${SHIFT}${MOD}Z`, 'Undo / redo'],
+  [`${MOD}C / ${MOD}X / ${MOD}V`, 'Copy / cut / paste'],
+  [`${MOD}D`, 'Duplicate'],
+  [`${MOD}A`, 'Select all'],
+  [`${MOD}S`, 'Save a version'],
+  ['Esc', 'Exit mode / cancel / deselect'],
+];
+
+const TIPS = [
+  'Rectangle / circle: click and drag',
+  'Polygon: click vertices, double-click to close',
+  'Drag on empty stage to marquee-select, Shift+click to add',
+  'Yellow handles resize, green rotates, purple edits vertices',
+  'Hover a frame for its controls',
+];
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   onAddUrl,
@@ -130,29 +165,27 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   return (
     <div
-      className={`fixed top-4 left-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] overflow-y-auto transition-all duration-200 ${isMinimized ? 'p-2' : 'p-4 min-w-[280px]'}`}
+      className={`fixed top-4 left-4 ${panelSurface} z-[1000] overflow-y-auto ${isMinimized ? 'w-auto' : 'w-64'}`}
       style={{ maxHeight: 'calc(100vh - 2rem - var(--launcher-height, 0px))' }}
     >
-      <div 
-        className="flex items-center justify-between cursor-pointer"
+      <div
+        className="flex items-center justify-between gap-2 p-3 cursor-pointer"
         onClick={() => setIsMinimized(!isMinimized)}
       >
-        <h2 className={`font-bold ${isMinimized ? 'text-sm' : 'text-lg'}`}>
-          {isMinimized ? 'VM' : 'Video Mapper'}
+        <h2 className={panelTitle}>
+          <Clapperboard className="w-4 h-4" />
+          {!isMinimized && 'Video Mapper'}
         </h2>
-        <button 
-          className="p-1 hover:bg-white/10 rounded transition-colors"
-          title={isMinimized ? 'Expand' : 'Minimize'}
-        >
-          {isMinimized ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
+        <button className={iconButton} title={isMinimized ? 'Expand' : 'Minimize'}>
+          <ChevronsUpDown className="w-4 h-4" />
         </button>
       </div>
-      
+
       {!isMinimized && (
-      <div className="space-y-4 mt-4">
+      <div className="space-y-3 px-3 pb-3">
         {/* Draw Mode */}
         <div className="space-y-2">
-          <p className="text-xs text-gray-400 uppercase font-semibold">Draw Frame</p>
+          <p className={sectionLabel}>Draw Frame</p>
           <div className="flex gap-2">
             <Button
               variant={isDrawMode && drawShape === 'rectangle' ? 'default' : 'outline'}
@@ -183,7 +216,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             </Button>
           </div>
           {isDrawMode && (
-            <p className="text-xs text-blue-400">
+            <p className="text-[11px] text-cyan-300">
               {drawShape === 'polygon' 
                 ? 'Click to add vertices, double-click or click first point to close'
                 : `Click and drag on canvas to create ${drawShape}`
@@ -194,7 +227,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
         {/* Add Media */}
         <div className="space-y-2">
-          <p className="text-xs text-gray-400 uppercase font-semibold">Add Media</p>
+          <p className={sectionLabel}>Add Media</p>
           <Button
             variant="outline"
             size="sm"
@@ -278,16 +311,16 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         </div>
 
         {/* Project Management */}
-        <div className="space-y-2 pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400 uppercase font-semibold">Project</p>
+        <div className={`space-y-2 pt-3 border-t ${divider}`}>
+          <p className={sectionLabel}>Project</p>
           <button
             onClick={onOpenProjects}
-            className="w-full flex items-center gap-2 rounded-md bg-white/10 hover:bg-white/15 px-3 py-2 text-left"
+            className="w-full flex items-center gap-2 rounded bg-white/10 hover:bg-white/20 px-2 py-1.5 text-left text-xs transition-colors"
             title="All projects and versions"
           >
-            <FolderKanban className="w-4 h-4 text-blue-300 shrink-0" />
-            <span className="flex-1 text-sm truncate">{projectName}</span>
-            <span className="text-[11px] text-gray-400">Projects…</span>
+            <FolderKanban className="w-3.5 h-3.5 text-cyan-300 shrink-0" />
+            <span className="flex-1 font-semibold truncate">{projectName}</span>
+            <span className="text-[10px] text-gray-400">Projects…</span>
           </button>
           <div className="grid grid-cols-2 gap-2">
             <Button
@@ -338,8 +371,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
         {/* Playback Controls */}
         {hasVideos && (
-          <div className="space-y-2 pt-4 border-t border-gray-700">
-            <p className="text-xs text-gray-400 uppercase font-semibold">Playback</p>
+          <div className={`space-y-2 pt-3 border-t ${divider}`}>
+            <p className={sectionLabel}>Playback</p>
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -366,8 +399,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         )}
 
         {/* Grid & Snapping */}
-        <div className="space-y-2 pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400 uppercase font-semibold">Grid</p>
+        <div className={`space-y-2 pt-3 border-t ${divider}`}>
+          <p className={sectionLabel}>Grid</p>
           <div className="flex gap-2">
             <Button
               variant={grid.show ? 'default' : 'outline'}
@@ -395,10 +428,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             <select
               value={grid.size}
               onChange={(e) => onUpdateGrid({ size: Number(e.target.value) })}
-              className="flex-1 bg-white/10 rounded px-2 py-1 text-xs"
+              className={`flex-1 ${field}`}
             >
               {GRID_SIZES.map(size => (
-                <option key={size} value={size} className="bg-gray-900">
+                <option key={size} value={size} className={option}>
                   {size} px
                 </option>
               ))}
@@ -409,15 +442,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               type="checkbox"
               checked={grid.showInPresentation}
               onChange={(e) => onUpdateGrid({ showInPresentation: e.target.checked })}
-              className="rounded"
+              className="accent-cyan-400"
             />
             Keep visible in present mode (projector alignment)
           </label>
         </div>
 
         {/* Composition (output resolution) */}
-        <div className="space-y-2 pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400 uppercase font-semibold flex items-center gap-1">
+        <div className={`space-y-2 pt-3 border-t ${divider}`}>
+          <p className={`${sectionLabel} flex items-center gap-1`}>
             <Monitor className="w-3 h-3" />
             Composition
           </p>
@@ -427,15 +460,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               const preset = COMPOSITION_PRESETS.find(p => `${p.width}x${p.height}` === e.target.value);
               if (preset) onUpdateComposition({ width: preset.width, height: preset.height });
             }}
-            className="w-full bg-white/10 rounded px-2 py-1.5 text-xs"
+            className={`w-full ${field}`}
           >
             {!COMPOSITION_PRESETS.some(p => p.width === composition.width && p.height === composition.height) && (
-              <option value={`${composition.width}x${composition.height}`} className="bg-gray-900">
+              <option value={`${composition.width}x${composition.height}`} className={option}>
                 {composition.width} × {composition.height} (custom)
               </option>
             )}
             {COMPOSITION_PRESETS.map(p => (
-              <option key={p.label} value={`${p.width}x${p.height}`} className="bg-gray-900">
+              <option key={p.label} value={`${p.width}x${p.height}`} className={option}>
                 {p.label}
               </option>
             ))}
@@ -450,7 +483,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 const n = parseInt(e.target.value, 10);
                 if (!Number.isNaN(n)) onUpdateComposition({ width: clampDimension(n) });
               }}
-              className="w-full min-w-0 bg-white/10 rounded px-2 py-1 text-xs"
+              className={`w-full min-w-0 tabular-nums ${field}`}
               title="Composition width (px)"
             />
             <span className="text-xs text-gray-500">×</span>
@@ -463,18 +496,18 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 const n = parseInt(e.target.value, 10);
                 if (!Number.isNaN(n)) onUpdateComposition({ height: clampDimension(n) });
               }}
-              className="w-full min-w-0 bg-white/10 rounded px-2 py-1 text-xs"
+              className={`w-full min-w-0 tabular-nums ${field}`}
               title="Composition height (px)"
             />
           </div>
         </div>
 
         {/* Output (live controls) */}
-        <div className="space-y-2 pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400 uppercase font-semibold">Output</p>
+        <div className={`space-y-2 pt-3 border-t ${divider}`}>
+          <p className={sectionLabel}>Output</p>
           <div>
-            <label className="text-xs text-gray-400 mb-1 block">
-              Master — {Math.round(masterOpacity * 100)}%
+            <label className="text-[11px] text-gray-400 mb-1.5 flex justify-between">
+              Master <span className="tabular-nums text-white">{Math.round(masterOpacity * 100)}%</span>
             </label>
             <Slider
               value={[masterOpacity * 100]}
@@ -510,8 +543,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         </div>
 
         {/* View & Background */}
-        <div className="space-y-2 pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400 uppercase font-semibold">View</p>
+        <div className={`space-y-2 pt-3 border-t ${divider}`}>
+          <p className={sectionLabel}>View</p>
           <Button
             variant="outline"
             size="sm"
@@ -522,7 +555,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             Background
           </Button>
           <Button
-            variant="default"
+            variant="outline"
             size="sm"
             onClick={onPresentationMode}
             className="w-full"
@@ -536,44 +569,35 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             href="?benchmark"
             target="_blank"
             rel="noopener"
-            className="block text-center text-xs text-gray-400 hover:text-white underline"
+            className="block text-center text-[11px] text-gray-400 hover:text-white underline"
             title="How many video layers does this machine play smoothly?"
           >
             Performance benchmark
           </a>
         </div>
 
-        {/* Instructions */}
-        <div className="pt-4 border-t border-gray-700">
-          <p className="text-xs text-gray-400">
-            <strong>Keyboard Shortcuts:</strong><br />
-            • <strong>P</strong> - Present mode<br />
-            • <strong>F</strong> - Fullscreen<br />
-            • <strong>B</strong> - Blackout<br />
-            • <strong>1–9</strong> - Play column · <strong>Shift+1–9</strong> - Cue<br />
-            • <strong>Space</strong> - Go (fire cue) · <strong>L</strong> - Clip launcher<br />
-            • <strong>Alt</strong> + trigger - Fire now (skip beat snap)<br />
-            • <strong>T</strong> - Tap tempo · <strong>Shift+T</strong> - Resync bar<br />
-            • <strong>G</strong> / <strong>Shift+G</strong> - Grid / snap<br />
-            • <strong>Del</strong> - Delete selection<br />
-            • <strong>Arrows</strong> - Nudge (Shift = faster)<br />
-            • <strong>Cmd/Ctrl+Z</strong> - Undo (Shift = redo)<br />
-            • <strong>Cmd/Ctrl+C/X/V</strong> - Copy/cut/paste<br />
-            • <strong>Cmd/Ctrl+D</strong> - Duplicate<br />
-            • <strong>Cmd/Ctrl+A</strong> - Select all<br />
-            • <strong>ESC</strong> - Exit mode/cancel/deselect<br />
-            <br />
-            <strong>Tips:</strong><br />
-            • Rectangle/Circle: Click & drag<br />
-            • Polygon: Click vertices, dbl-click to close<br />
-            • Drag empty canvas to marquee-select<br />
-            • Shift+click for multi-select<br />
-            • Yellow handles to resize<br />
-            • Green handle to rotate<br />
-            • Purple handles to edit polygon vertices<br />
-            • Hover a frame for its controls
-          </p>
-        </div>
+        {/* Keyboard shortcuts and tips */}
+        <details className={`pt-3 border-t ${divider} group`}>
+          <summary className={`${sectionLabel} cursor-pointer select-none list-none flex items-center justify-between hover:text-white`}>
+            Shortcuts & tips
+            <ChevronsUpDown className="w-3 h-3" />
+          </summary>
+          <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[11px] text-gray-400">
+            {SHORTCUTS.map(([keys, label]) => (
+              <React.Fragment key={keys}>
+                <dt className="text-right">
+                  {keys.split(' / ').map(k => (
+                    <kbd key={k} className="ml-0.5 px-1 rounded bg-white/10 text-[10px] text-white font-sans">{k}</kbd>
+                  ))}
+                </dt>
+                <dd>{label}</dd>
+              </React.Fragment>
+            ))}
+          </dl>
+          <ul className="mt-3 space-y-0.5 text-[11px] text-gray-500">
+            {TIPS.map(tip => <li key={tip}>{tip}</li>)}
+          </ul>
+        </details>
       </div>
       )}
     </div>

@@ -33,6 +33,7 @@ import {
   refitFrameToVertices,
   pinFrameToQuadVertices,
 } from '../lib/geometry';
+import { field, menuSurface } from './ui/theme';
 
 // Callbacks take the frame id so the parent can pass stable functions and
 // the component can be memoized (only frames that change re-render)
@@ -647,7 +648,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   setShowSettings(!showSettings);
                   setShowEffects(false);
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Settings"
               >
                 <Layers className="w-4 h-4" />
@@ -659,7 +660,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   setShowEffects(!showEffects);
                   setShowSettings(false);
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Effects"
               >
                 <Sparkles className="w-4 h-4" />
@@ -670,7 +671,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   e.stopPropagation();
                   handleChangeMedia();
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Change Media"
               >
                 <Upload className="w-4 h-4" />
@@ -682,7 +683,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                     e.stopPropagation();
                     setIsEditingShape(!isEditingShape);
                   }}
-                  className={`p-2 text-white rounded backdrop-blur-sm transition-colors ${editingShape ? 'bg-purple-600 hover:bg-purple-500' : 'bg-black/70 hover:bg-black/90'}`}
+                  className={`p-2 text-white rounded backdrop-blur-md shadow-lg transition-colors ${editingShape ? 'bg-purple-600 hover:bg-purple-500' : 'bg-black/85 hover:bg-white/20'}`}
                   title={editingShape ? 'Back to corner pins (double-click shape)' : 'Edit shape vertices (double-click shape)'}
                 >
                   <PenTool className="w-4 h-4" />
@@ -694,7 +695,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   e.stopPropagation();
                   onUpdate({ testPattern: !frame.testPattern });
                 }}
-                className={`p-2 text-white rounded backdrop-blur-sm transition-colors ${frame.testPattern ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-black/70 hover:bg-black/90'}`}
+                className={`p-2 rounded backdrop-blur-md shadow-lg transition-colors ${frame.testPattern ? 'bg-cyan-500 text-black hover:bg-cyan-400' : 'bg-black/85 text-white hover:bg-white/20'}`}
                 title={frame.testPattern ? 'Hide test pattern' : 'Show test pattern (calibrate this surface)'}
               >
                 <LayoutTemplate className="w-4 h-4" />
@@ -706,7 +707,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                     e.stopPropagation();
                     onUpdate({ muted: !frame.muted });
                   }}
-                  className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                  className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                   title={frame.muted ? "Unmute" : "Mute"}
                 >
                   {frame.muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -718,7 +719,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   e.stopPropagation();
                   onDelete();
                 }}
-                className="p-2 bg-red-600/80 hover:bg-red-600 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-red-600 text-red-300 hover:text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Delete"
               >
                 <Trash2 className="w-4 h-4" />
@@ -728,12 +729,12 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
             {/* Settings Panel */}
             {showSettings && (
               <div
-                className="bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[220px] max-h-[400px] overflow-y-auto"
+                className={`${menuSurface} p-3 min-w-[220px] max-h-[400px] overflow-y-auto`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs mb-2 block">Opacity</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Opacity</label>
                     <Slider
                       value={[frame.opacity * 100]}
                       onValueChange={(value) => onUpdate({ opacity: value[0] / 100 })}
@@ -744,8 +745,8 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   {/* Content Scale/Zoom */}
-                  <div className="pt-2 border-t border-white/20">
-                    <label className="text-xs mb-2 block">Content Zoom</label>
+                  <div className="pt-2 border-t border-white/10">
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Content Zoom</label>
                     <Slider
                       value={[contentScale * 100]}
                       onValueChange={(value) => onUpdate({ contentScale: value[0] / 100 })}
@@ -759,7 +760,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   {contentScale > 1 && (
                     <>
                       <div>
-                        <label className="text-xs mb-2 block">Pan X</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Pan X</label>
                         <Slider
                           value={[contentOffsetX]}
                           onValueChange={(value) => onUpdate({ contentOffsetX: value[0] })}
@@ -769,7 +770,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                         />
                       </div>
                       <div>
-                        <label className="text-xs mb-2 block">Pan Y</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Pan Y</label>
                         <Slider
                           value={[contentOffsetY]}
                           onValueChange={(value) => onUpdate({ contentOffsetY: value[0] })}
@@ -790,7 +791,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   {frame.type === 'video' && (
                     <>
                       <div>
-                        <label className="text-xs mb-2 block">Playback Speed</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Playback Speed</label>
                         <Slider
                           value={[frame.playbackRate * 100]}
                           onValueChange={(value) => onUpdate({ playbackRate: value[0] / 100 })}
@@ -816,7 +817,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   )}
 
                   <div>
-                    <label className="text-xs mb-2 block">Shape</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Shape</label>
                     <select
                       value={frame.shape}
                       onChange={(e) => {
@@ -836,7 +837,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                           onUpdate({ shape: newShape });
                         }
                       }}
-                      className="w-full bg-white/10 rounded px-2 py-1 text-xs"
+                      className={`w-full ${field}`}
                     >
                       <option value="rectangle">Rectangle</option>
                       <option value="circle">Circle</option>
@@ -849,7 +850,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                       corner pin so the media stretches onto it. */}
                   {frame.shape === 'polygon' && (
                     <div>
-                      <label className="text-xs mb-2 block">Media Mapping</label>
+                      <label className="text-[11px] text-gray-300 mb-1.5 block">Media Mapping</label>
                       <p className="text-[10px] text-gray-400">
                         The polygon cuts the media; corner pin warps media and shape together.
                       </p>
@@ -873,7 +874,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   )}
 
                   {/* Perspective / Corner Pin */}
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="text-xs mb-2 block font-medium text-orange-400 flex items-center gap-1">
                       <Grid3X3 className="w-3 h-3" />
                       Perspective Mapping
@@ -912,7 +913,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                     )}
                   </div>
 
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="flex items-center gap-2 text-xs cursor-pointer">
                       <button
                         onClick={() => onUpdate({ lockAspectRatio: !frame.lockAspectRatio })}
@@ -927,14 +928,14 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   <div className="pt-2 flex gap-2">
                     <button
                       onClick={() => onUpdate({ flipHorizontal: !frame.flipHorizontal })}
-                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipHorizontal ? 'bg-blue-600' : 'bg-white/10'}`}
+                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipHorizontal ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
                       title="Flip Horizontal"
                     >
                       <FlipHorizontal className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => onUpdate({ flipVertical: !frame.flipVertical })}
-                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipVertical ? 'bg-blue-600' : 'bg-white/10'}`}
+                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipVertical ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
                       title="Flip Vertical"
                     >
                       <FlipVertical className="w-3 h-3" />
@@ -947,7 +948,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
             {/* Effects Panel */}
             {showEffects && (
               <div
-                className="bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[240px] max-h-[500px] overflow-y-auto"
+                className={`${menuSurface} p-3 min-w-[240px] max-h-[500px] overflow-y-auto`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -956,7 +957,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                 </h3>
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs mb-2 block">Blur</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Blur</label>
                     <Slider
                       value={[frame.blur]}
                       onValueChange={(value) => onUpdate({ blur: value[0] })}
@@ -968,7 +969,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Brightness</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Brightness</label>
                     <Slider
                       value={[frame.brightness]}
                       onValueChange={(value) => onUpdate({ brightness: value[0] })}
@@ -980,7 +981,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Contrast</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Contrast</label>
                     <Slider
                       value={[frame.contrast]}
                       onValueChange={(value) => onUpdate({ contrast: value[0] })}
@@ -992,7 +993,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Saturation</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Saturation</label>
                     <Slider
                       value={[frame.saturate]}
                       onValueChange={(value) => onUpdate({ saturate: value[0] })}
@@ -1004,7 +1005,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Grayscale</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Grayscale</label>
                     <Slider
                       value={[frame.grayscale]}
                       onValueChange={(value) => onUpdate({ grayscale: value[0] })}
@@ -1016,7 +1017,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Hue Rotate</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Hue Rotate</label>
                     <Slider
                       value={[frame.hueRotate]}
                       onValueChange={(value) => onUpdate({ hueRotate: value[0] })}
@@ -1028,7 +1029,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Invert</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Invert</label>
                     <Slider
                       value={[frame.invert]}
                       onValueChange={(value) => onUpdate({ invert: value[0] })}
@@ -1040,7 +1041,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Sepia</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Sepia</label>
                     <Slider
                       value={[frame.sepia]}
                       onValueChange={(value) => onUpdate({ sepia: value[0] })}
@@ -1052,11 +1053,11 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Blend Mode</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Blend Mode</label>
                     <select
                       value={frame.blendMode}
                       onChange={(e) => onUpdate({ blendMode: e.target.value as BlendMode })}
-                      className="w-full bg-white/10 rounded px-2 py-1 text-xs"
+                      className={`w-full ${field}`}
                     >
                       <option value="normal">Normal</option>
                       <option value="multiply">Multiply</option>
@@ -1078,7 +1079,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
                   </div>
 
                   {/* Soft edge feathering for projection blending */}
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="text-xs mb-2 block font-medium text-cyan-400">Soft Edge (blend)</label>
                     {(['left', 'right', 'top', 'bottom'] as const).map(edge => (
                       <div key={edge} className="mb-2">

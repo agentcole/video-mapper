@@ -104,40 +104,40 @@ export const FolderBrowser: React.FC<FolderBrowserProps> = ({ filter, onSelect }
           <button
             key={folder.id}
             onClick={() => setActiveId(folder.id)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-sm ${folder.id === activeId ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition-colors ${folder.id === activeId ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 text-gray-300 hover:bg-white/20 hover:text-white'}`}
           >
             <Folder className="w-3.5 h-3.5" />
             {folder.name}
           </button>
         ))}
         <Button variant="outline" size="sm" onClick={addFolder}>
-          <FolderPlus className="w-4 h-4 mr-1" /> Link folder…
+          <FolderPlus /> Link folder…
         </Button>
         {active && (
           <Button variant="outline" size="sm" onClick={removeFolder} title="Forget this folder">
-            <Unlink className="w-4 h-4" />
+            <Unlink />
           </Button>
         )}
       </div>
 
-      {message && <p className="text-sm text-red-300">{message}</p>}
+      {message && <p className="text-xs text-red-300">{message}</p>}
 
       {folders.length === 0 ? (
-        <p className="text-sm text-slate-400 max-w-lg">
+        <p className="text-xs text-gray-400 max-w-lg">
           Link a folder with your show media to play files straight from disk — nothing is copied into the
           browser, and there is no size limit. Layers keep pointing at the files by their path in the folder.
         </p>
       ) : state === 'needs-permission' ? (
-        <div className="flex items-center gap-3 text-sm text-slate-300">
+        <div className="flex items-center gap-3 text-xs text-gray-300">
           <span>The browser needs your OK to read “{active?.name}” again.</span>
           <Button size="sm" onClick={reconnect}>
-            <RefreshCw className="w-4 h-4 mr-1" /> Reconnect
+            <RefreshCw /> Reconnect
           </Button>
         </div>
       ) : state === 'loading' ? (
-        <p className="text-sm text-slate-400">Scanning “{active?.name}”…</p>
+        <p className="text-xs text-gray-400">Scanning “{active?.name}”…</p>
       ) : visible.length === 0 ? (
-        <p className="text-sm text-slate-400">No {filter === 'all' ? 'video or image' : filter} files in this folder.</p>
+        <p className="text-xs text-gray-400">No {filter === 'all' ? 'video or image' : filter} files in this folder.</p>
       ) : (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
           {visible.map(file => (
@@ -152,13 +152,13 @@ export const FolderBrowser: React.FC<FolderBrowserProps> = ({ filter, onSelect }
                 blob: file.file,
                 dateAdded: file.lastModified,
               })}
-              className="aspect-video bg-slate-800 rounded-lg p-2 flex flex-col items-start justify-between text-left hover:ring-2 hover:ring-blue-500 transition-all"
+              className="aspect-video bg-neutral-800 rounded p-2 flex flex-col items-start justify-between text-left ring-1 ring-white/10 hover:ring-2 hover:ring-cyan-400 transition-shadow"
               title={file.path}
             >
-              {file.type === 'video' ? <Video className="w-6 h-6 text-slate-500" /> : <ImageIcon className="w-6 h-6 text-slate-500" />}
+              {file.type === 'video' ? <Video className="w-6 h-6 text-white/30" /> : <ImageIcon className="w-6 h-6 text-white/30" />}
               <div className="w-full min-w-0">
                 <p className="text-[11px] text-white truncate font-medium">{file.name}</p>
-                <p className="text-[10px] text-slate-400 truncate">
+                <p className="text-[10px] text-gray-400 truncate">
                   {formatBytes(file.size)}{file.path.includes('/') ? ` · ${file.path.slice(0, file.path.lastIndexOf('/'))}` : ''}
                 </p>
               </div>

@@ -274,7 +274,7 @@ The current renderer is DOM/CSS based:
 ```
 src/
 ├── components/
-│   ├── ui/                  # shadcn/ui components
+│   ├── ui/                  # Shared look: theme tokens, button, input, slider, dialog (docs/design/ui-style.md)
 │   ├── Canvas.tsx           # Stage, gestures, editor wiring
 │   ├── MediaFrame.tsx       # Frame editor overlay (handles, outlines, hit area)
 │   ├── FrameContent.tsx     # Frame content for the CSS renderer
