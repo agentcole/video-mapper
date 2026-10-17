@@ -38,6 +38,7 @@ const documentOf = (d: ProjectDocument): ProjectDocument => ({
   tempo: d.tempo,
   effects: d.effects,
   macros: d.macros,
+  screens: d.screens,
 });
 
 const currentDocument = (): ProjectDocument => documentOf(projectStore.getState());
@@ -89,10 +90,15 @@ const EMPTY_DOCUMENT: ProjectDocument = {
   tempo: DEFAULT_TEMPO,
   effects: [],
   macros: DEFAULT_MACROS,
+  screens: [],
 };
 
 // One initial load per page (StrictMode runs effects twice in development)
 let initialProject: Promise<ProjectRecord> | null = null;
+// The project this page has open. An editor that mounts again (hot reload)
+// keeps it — reopening the startup record would bring back the document as
+// it was when the page loaded, and autosave would then store that.
+let openedProject: { id: string; name: string } | null = null;
 
 export interface CurrentProject {
   id: string;
@@ -149,7 +155,8 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     if (
       state.surfaces === prev.surfaces && state.layers === prev.layers && state.columns === prev.columns &&
       state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition &&
-      state.tempo === prev.tempo && state.effects === prev.effects && state.macros === prev.macros
+      state.tempo === prev.tempo && state.effects === prev.effects && state.macros === prev.macros &&
+      state.screens === prev.screens
     ) {
       return;
     }
@@ -194,6 +201,7 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     }
     replaceDocument(parsed ? await resolveDocument(parsed) : EMPTY_DOCUMENT);
     projectIdRef.current = record.id;
+    openedProject = { id: record.id, name: record.name };
     setCurrentProjectId(record.id);
     setProject({ id: record.id, name: record.name });
     projectHistory.reset();
@@ -209,7 +217,14 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     let cancelled = false;
     initialProject ??= openInitialProject();
     initialProject
-      .then(record => (cancelled ? undefined : applyRecord(record)))
+      .then(record => {
+        if (cancelled) return undefined;
+        if (!openedProject) return applyRecord(record);
+        // Mounted again: the store still holds the open project
+        projectIdRef.current = openedProject.id;
+        setProject(openedProject);
+        suspendedRef.current = false;
+      })
       .catch(error => {
         console.error('Failed to open the project repository:', error);
         setAutosaveError(`projects can't be stored in this browser (${describeStorageError(error).message})`);
@@ -237,6 +252,7 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     const id = projectIdRef.current;
     if (!id || !name.trim()) return;
     await renameProject(id, name.trim());
+    if (openedProject?.id === id) openedProject = { id, name: name.trim() };
     setProject({ id, name: name.trim() });
   }, []);
 
