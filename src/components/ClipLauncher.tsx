@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ChevronDown, ChevronUp, Crosshair, Image as ImageIcon, Plus, Play, Timer, X, Video, Zap,
+  ChevronDown, ChevronUp, Crosshair, Image as ImageIcon, Plus, Play, Sparkles, Timer, X, Video, Zap,
 } from 'lucide-react';
 import type { BeatSnap, CrossfadeSide, MediaType, Transition } from '../types';
 import { useProjectStore } from '../state/projectStore';
@@ -16,6 +16,7 @@ import { BEAT_SNAPS } from '../state/clock';
 import { sameTransition, TRANSITION_PRESETS, transitionLabel } from '../state/transitions';
 import type { Clip, Layer, TriggerStyle } from '../state/showModel';
 import { TempoBar } from './TempoBar';
+import type { EffectTarget } from '../state/effectActions';
 import { useLastClipStart } from '../render/startStats';
 import { generateThumbnail, getMedia, getMediaFile, getMediaObjectUrl, storeMedia } from '../lib/mediaStorage';
 import { isFolderMediaId } from '../lib/mediaFolders';
@@ -203,12 +204,18 @@ const ClipCell = React.memo(function ClipCell({
           >
             {!thumbnail && (
               <span className="absolute inset-0 flex items-center justify-center text-white/40">
-                {clip.source.type === 'video' ? <Video className="w-5 h-5" /> : <ImageIcon className="w-5 h-5" />}
+                {clip.generator ? <Sparkles className="w-5 h-5 text-cyan-300/70" />
+                  : clip.source.type === 'video' ? <Video className="w-5 h-5" /> : <ImageIcon className="w-5 h-5" />}
               </span>
             )}
             {isActive && (
               <span className="absolute top-1 left-1 bg-emerald-500 rounded-sm p-0.5">
                 <Play className="w-2.5 h-2.5 text-black fill-black" />
+              </span>
+            )}
+            {(clip.effects?.length ?? 0) > 0 && (
+              <span className="absolute bottom-5 right-1 bg-black/70 rounded-sm px-1 text-[9px] font-semibold text-cyan-300" title="Effects on this clip">
+                fx{clip.effects!.length > 1 ? ` ${clip.effects!.length}` : ''}
               </span>
             )}
             {((clip.triggerStyle && clip.triggerStyle !== 'normal') || clip.beatSnap) && (
@@ -333,9 +340,9 @@ const Chip: React.FC<{
   </button>
 );
 
-const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slot: SlotRef) => void }> = ({
-  menu, onClose, onReplace,
-}) => {
+const ClipMenu: React.FC<{
+  menu: MenuState; onClose: () => void; onReplace: (slot: SlotRef) => void; onEffects: (target: EffectTarget) => void;
+}> = ({ menu, onClose, onReplace, onEffects }) => {
   const compositionSnap = useProjectStore(s => s.tempo.beatSnap);
   const layerTransition = useProjectStore(s => s.layers.find(l => l.id === menu.slot.layerId)?.transition);
 
@@ -403,6 +410,17 @@ const ClipMenu: React.FC<{ menu: MenuState; onClose: () => void; onReplace: (slo
       </div>
       <div className="my-1 border-t border-white/10" />
       <button
+        className={`${item} flex items-center gap-2`}
+        onClick={() => {
+          onEffects({ kind: 'clip', clipId: menu.clip.id });
+          onClose();
+        }}
+      >
+        <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+        {menu.clip.generator ? 'Generator & effects…' : 'Effects…'}
+        {(menu.clip.effects?.length ?? 0) > 0 && <span className="ml-auto text-gray-500">{menu.clip.effects!.length}</span>}
+      </button>
+      <button
         className={item}
         onClick={() => {
           const name = prompt('Clip name', clipLabel(menu.clip));
@@ -448,7 +466,9 @@ const CROSSFADE_SIDES: { side: CrossfadeSide | null; label: string }[] = [
   { side: 'B', label: 'B' },
 ];
 
-const LayerMenu: React.FC<{ menu: LayerMenuState; onClose: () => void }> = ({ menu, onClose }) => {
+const LayerMenu: React.FC<{
+  menu: LayerMenuState; onClose: () => void; onEffects: (target: EffectTarget) => void;
+}> = ({ menu, onClose, onEffects }) => {
   const layer = useProjectStore(s => s.layers.find(l => l.id === menu.layerId));
   if (!layer) return null;
   const pick = (transition: Transition) => {
@@ -458,6 +478,18 @@ const LayerMenu: React.FC<{ menu: LayerMenuState; onClose: () => void }> = ({ me
   return (
     <MenuShell x={menu.x} y={menu.y} onClose={onClose}>
       <p className={`px-3 py-1 truncate ${sectionLabel}`}>{layer.name}</p>
+      <button
+        className="w-full text-left px-3 py-1.5 hover:bg-white/10 text-xs flex items-center gap-2"
+        onClick={() => {
+          onEffects({ kind: 'layer', layerId: layer.id });
+          onClose();
+        }}
+      >
+        <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+        Layer effects…
+        {(layer.effects?.length ?? 0) > 0 && <span className="ml-auto text-gray-500">{layer.effects!.length}</span>}
+      </button>
+      <div className="my-1 border-t border-white/10" />
       <p className={`px-3 pt-1 ${sectionLabel}`}>Transition</p>
       <p className="px-3 text-[10px] text-gray-500">Dissolve when a clip starts or the layer is cleared</p>
       <div className="flex flex-wrap gap-1 px-3 py-1.5">
@@ -534,6 +566,7 @@ interface ClipLauncherProps {
   onSelectLayer: (layerId: string) => void;
   onLayerAdded: (surfaceId: string) => void;
   onClose: () => void;
+  onOpenEffects: (target: EffectTarget) => void;
 }
 
 const nextSide = (side: CrossfadeSide | undefined): CrossfadeSide | null =>
@@ -543,7 +576,8 @@ const LayerHeader: React.FC<{
   layer: Layer;
   onSelect: (layerId: string) => void;
   onMenu: (e: React.MouseEvent, layerId: string) => void;
-}> = ({ layer, onSelect, onMenu }) => (
+  onEffects: (target: EffectTarget) => void;
+}> = ({ layer, onSelect, onMenu, onEffects }) => (
   <div
     className="shrink-0 flex flex-col justify-center gap-1 pr-2"
     style={{ width: HEADER_W, height: CELL_H }}
@@ -584,6 +618,13 @@ const LayerHeader: React.FC<{
         ⇢ {transitionLabel(layer.transition)}
       </button>
       <button
+        onClick={() => onEffects({ kind: 'layer', layerId: layer.id })}
+        className={`px-1 rounded font-semibold ${layer.effects?.length ? 'bg-cyan-500 text-black' : 'bg-white/10 text-gray-500 hover:bg-white/20'}`}
+        title="Layer effects"
+      >
+        fx{layer.effects && layer.effects.length > 1 ? ` ${layer.effects.length}` : ''}
+      </button>
+      <button
         onClick={() => setLayerCrossfade(layer.id, nextSide(layer.crossfade))}
         className={`w-5 rounded font-semibold ${layer.crossfade ? 'bg-cyan-500 text-black' : 'bg-white/10 text-gray-500 hover:bg-white/20'}`}
         title={`Crossfader side: ${layer.crossfade ?? 'off'} (click: off → A → B)`}
@@ -619,7 +660,10 @@ const Crossfader: React.FC = () => {
   );
 };
 
-export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelectLayer, onLayerAdded, onClose }) => {
+export const ClipLauncher: React.FC<ClipLauncherProps> = ({
+  onPickMedia, onSelectLayer, onLayerAdded, onClose, onOpenEffects,
+}) => {
+  const compositionFx = useProjectStore(s => s.effects.length);
   const surfaces = useProjectStore(s => s.surfaces);
   const layers = useProjectStore(s => s.layers);
   const columns = useProjectStore(s => s.columns);
@@ -674,6 +718,13 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
         </h2>
         <TempoBar />
         <Crossfader />
+        <button
+          onClick={() => onOpenEffects({ kind: 'composition' })}
+          className={`flex items-center gap-1 px-2 py-1 rounded ${compositionFx > 0 ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
+          title="Composition effects (on the whole output)"
+        >
+          <Sparkles className="w-3 h-3" /> FX{compositionFx > 0 ? ` ${compositionFx}` : ''}
+        </button>
         <button
           onClick={(e) => go({ now: e.altKey })}
           disabled={cuedColumn === null}
@@ -760,7 +811,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
           <div className="flex flex-col gap-1.5">
             {ordered.map(layer => (
               <div key={layer.id} className="flex gap-1.5 items-center">
-                <LayerHeader layer={layer} onSelect={onSelectLayer} onMenu={openLayerMenu} />
+                <LayerHeader layer={layer} onSelect={onSelectLayer} onMenu={openLayerMenu} onEffects={onOpenEffects} />
                 {columns.map((column, index) => {
                   const clip = layer.slots[index] ?? null;
                   return (
@@ -784,8 +835,8 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({ onPickMedia, onSelec
         </div>
       )}
 
-      {menu && <ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} />}
-      {layerMenu && <LayerMenu menu={layerMenu} onClose={closeLayerMenu} />}
+      {menu && <ClipMenu menu={menu} onClose={closeMenu} onReplace={onPickMedia} onEffects={onOpenEffects} />}
+      {layerMenu && <LayerMenu menu={layerMenu} onClose={closeLayerMenu} onEffects={onOpenEffects} />}
     </div>
   );
 };

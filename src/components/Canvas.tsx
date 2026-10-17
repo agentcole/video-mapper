@@ -30,6 +30,9 @@ import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions'
 import { resyncBar, tapTempo } from '../state/clockActions';
 import { noticeSurface } from './ui/theme';
 import { applyCrossfader, crossfadeGain } from '../state/transitions';
+import { assignGenerator, type EffectTarget } from '../state/effectActions';
+import { loadUserEffects } from '../effects/library';
+import { EffectsPanel } from './EffectsPanel';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -184,7 +187,10 @@ export const Canvas: React.FC = () => {
   const renderer = useLiveStore(s => s.renderer);
   const layerTriggers = useLiveStore(s => s.layerTriggers);
   const crossfader = useLiveStore(s => s.crossfader);
+  const clockOrigin = useLiveStore(s => s.clockOrigin);
+  const timeOrigin = useLiveStore(s => s.timeOrigin);
   const bpm = useProjectStore(s => s.tempo.bpm);
+  const compositionEffects = useProjectStore(s => s.effects);
   const { preload, forFrame: preloadFor } = usePreload(editorUrlOf);
   const [rendererNotice, setRendererNotice] = useState<string | null>(null);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
@@ -306,6 +312,11 @@ export const Canvas: React.FC = () => {
 
   // Mirror the project + live state to output windows
   useEffect(() => startControlSync(), []);
+  // Imported ISF shaders (bundled ones are always there)
+  useEffect(() => {
+    void loadUserEffects();
+  }, []);
+  const [effectsTarget, setEffectsTarget] = useState<EffectTarget | null>(null);
   const outputsConnected = useOutputStatus(s => s.connected) > 0;
 
   // Master fader and blackout apply to audio as well as pixels. While an
@@ -318,6 +329,9 @@ export const Canvas: React.FC = () => {
   const gpuScene = useMemo<RenderScene>(() => ({
     frames: applyCrossfader(visibleFrames, crossfader),
     bpm,
+    clockOrigin,
+    timeOrigin,
+    effects: compositionEffects,
     background,
     composition,
     masterOpacity,
@@ -326,7 +340,7 @@ export const Canvas: React.FC = () => {
     showPlaceholders: !isPresentationMode,
     preload,
     layerTriggers,
-  }), [visibleFrames, crossfader, bpm, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
+  }), [visibleFrames, crossfader, bpm, clockOrigin, timeOrigin, compositionEffects, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
 
   // ------------------------------------------------------------------
   // Clip launcher
@@ -1345,7 +1359,11 @@ export const Canvas: React.FC = () => {
           onSelectLayer={selectLayerSurfaces}
           onLayerAdded={(surfaceId) => setSelectedFrameIds([surfaceId])}
           onClose={toggleLauncher}
+          onOpenEffects={setEffectsTarget}
         />
+      )}
+      {effectsTarget && !isPresentationMode && (
+        <EffectsPanel target={effectsTarget} onClose={() => setEffectsTarget(null)} />
       )}
 
       {/* Media Library Modal */}
@@ -1359,6 +1377,12 @@ export const Canvas: React.FC = () => {
         }}
         onSelectMedia={handleSelectMedia}
         getMediaUsage={getMediaUsage}
+        onSelectGenerator={mediaLibraryTargetSlot ? (effectId) => {
+          const clipId = assignGenerator(mediaLibraryTargetSlot, effectId);
+          setMediaLibraryTargetSlot(null);
+          setIsMediaLibraryOpen(false);
+          setEffectsTarget({ kind: 'clip', clipId });
+        } : undefined}
       />
 
       <ProjectsPanel isOpen={isProjectsOpen} onClose={() => setIsProjectsOpen(false)} session={session} />

@@ -1,4 +1,5 @@
 import type { LiveState } from '../../state/liveStore';
+import type { GeneratorSettings } from '../../types';
 import { reportFirstFrame } from '../startStats';
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,8 @@ export interface MediaItem {
   active: boolean; // playing; false = preloaded and parked at the start
   startSeq: number; // a change restarts an active clip from the top
   layerId?: string; // for start latency stats
+  // An ISF generator instead of a media file (rendered by the compositor, not loaded here)
+  generator?: GeneratorSettings;
 }
 
 export interface MediaTexture {

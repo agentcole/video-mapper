@@ -3,6 +3,7 @@ import { projectStore, useProjectStore } from '../state/projectStore';
 import { allClips, type ClipSource } from '../state/showModel';
 import { usePreload } from '../render/preload';
 import { applyCrossfader, crossfadeGain } from '../state/transitions';
+import { loadUserEffects } from '../effects/library';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { getCurrentProjectId, getProject } from '../lib/projectRepository';
 import { parseProjectData } from '../lib/projectSchema';
@@ -25,6 +26,7 @@ const HINT_MS = 5000;
 
 const useOutputSync = () => {
   useEffect(() => {
+    void loadUserEffects();
     // Live state from the editor always wins over the saved project
     let receivedLiveState = false;
     const projectId = getCurrentProjectId();
@@ -32,8 +34,8 @@ const useOutputSync = () => {
       getProject(projectId)
         .then(record => {
           if (receivedLiveState || record?.data == null) return;
-          const { surfaces, layers, columns, background, grid, composition, tempo } = parseProjectData(record.data);
-          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo });
+          const { surfaces, layers, columns, background, grid, composition, tempo, effects } = parseProjectData(record.data);
+          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo, effects });
         })
         .catch(error => console.warn('Could not load the saved project for the output:', error));
     }
@@ -125,7 +127,10 @@ export const OutputApp: React.FC = () => {
   const renderer = useLiveStore(s => s.renderer);
   const layerTriggers = useLiveStore(s => s.layerTriggers);
   const crossfader = useLiveStore(s => s.crossfader);
+  const clockOrigin = useLiveStore(s => s.clockOrigin);
+  const timeOrigin = useLiveStore(s => s.timeOrigin);
   const bpm = useProjectStore(s => s.tempo.bpm);
+  const compositionEffects = useProjectStore(s => s.effects);
   const [gpuFailed, setGpuFailed] = useState(false);
   const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
@@ -227,6 +232,9 @@ export const OutputApp: React.FC = () => {
             scene={{
               frames: applyCrossfader(frames.filter(f => f.visible !== false), crossfader).map(f => ({ ...f, url: urlOf(f) })),
               bpm,
+              clockOrigin,
+              timeOrigin,
+              effects: compositionEffects,
               background: { ...background, url: urlOf(background) },
               composition,
               masterOpacity,

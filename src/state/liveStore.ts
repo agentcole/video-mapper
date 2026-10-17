@@ -48,6 +48,9 @@ export interface LiveState {
   // base — the tempo is in the project. Triggers waiting for their beat.
   clockOrigin: number;
   scheduled: ScheduledTrigger[];
+  // When this show session started (clock time base): TIME of effects and
+  // generators, so editor and outputs animate in step
+  timeOrigin: number;
   // A/B crossfader: 0 = side A only, 1 = side B only, both full at 0.5
   crossfader: number;
   setRenderer: (renderer: RendererKind) => void;
@@ -74,6 +77,7 @@ export const liveStore = createStore<LiveState>()((set) => ({
   layerTriggers: {},
   clockOrigin: clockNow(),
   scheduled: [],
+  timeOrigin: clockNow(),
   crossfader: 0.5,
   setRenderer: (renderer) => {
     try {

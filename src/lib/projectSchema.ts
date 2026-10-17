@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type {
   MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord, TempoSettings,
+  EffectInstance,
 } from '../types';
 import {
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_PERSPECTIVE_CORNERS, DEFAULT_SOFT_EDGE,
@@ -29,7 +30,8 @@ import {
 // 5.1: clips have a trigger style (clip launcher)
 // 5.2: master clock (tempo) and beat snap per composition / clip
 // 5.3: transitions per layer / clip, crossfader side per layer
-export const PROJECT_VERSION = '5.3.0';
+// 5.4: ISF effect stacks (clip, layer, composition) and generator clips
+export const PROJECT_VERSION = '5.4.0';
 
 const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 
@@ -37,6 +39,24 @@ const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 const TransitionSchema = z.object({
   duration: z.number().min(0).max(600),
   beats: z.boolean().optional(),
+}).optional().catch(undefined);
+
+// 5.4 — effects: a broken entry is dropped, the rest of the stack stays
+const ParamValueSchema = z.union([z.number(), z.boolean(), z.array(z.number())]);
+const ParamsSchema = z.record(z.string(), ParamValueSchema).catch({});
+const EffectSchema = z.object({
+  id: z.string().min(1),
+  effectId: z.string().min(1),
+  enabled: z.boolean().default(true),
+  params: ParamsSchema.default({}),
+});
+const EffectsSchema = z.array(z.unknown()).transform(items => items.flatMap(item => {
+  const result = EffectSchema.safeParse(item);
+  return result.success ? [result.data] : [];
+})).optional().catch(undefined);
+const GeneratorSchema = z.object({
+  effectId: z.string().min(1),
+  params: ParamsSchema.default({}),
 }).optional().catch(undefined);
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
@@ -138,6 +158,8 @@ const ClipSchema = z.object({
   // 5.2 — unset: the composition's beat snap
   beatSnap: z.enum(BEAT_SNAPS).optional().catch(undefined),
   transition: TransitionSchema,
+  effects: EffectsSchema,
+  generator: GeneratorSchema,
   source: z.object({
     type: z.enum(['video', 'image']),
     url: z.string().default(''),
@@ -171,6 +193,7 @@ const LayerSchema = z.object({
   activeClipId: z.string().nullable().default(null),
   transition: TransitionSchema,
   crossfade: z.enum(['A', 'B']).optional().catch(undefined),
+  effects: EffectsSchema,
 });
 
 const ColumnSchema = z.object({ id: z.string().min(1), name: z.string().default('') });
@@ -228,6 +251,8 @@ export interface ParsedProject extends ShowDocument {
   grid: GridSettings;
   composition: CompositionSettings;
   tempo: TempoSettings;
+  effects: EffectInstance[]; // composition effect stack
+  shaders: { id: string; name: string; source: string }[]; // imported ISF shaders the project uses
   media?: ExportedMediaRecord[]; // legacy: base64-embedded media
   mediaFiles?: PackageMediaEntry[]; // project packages: media files in the zip
   name?: string; // project name stored in exported files
@@ -393,6 +418,12 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
   }
 
   const tempo = isRecord(raw.tempo) ? TempoSchema.parse(raw.tempo) : DEFAULT_TEMPO;
+  const effects = EffectsSchema.parse(raw.effects) ?? [];
+  const shaders = Array.isArray(raw.shaders)
+    ? raw.shaders.flatMap(s => (isRecord(s) && typeof s.id === 'string' && typeof s.source === 'string'
+      ? [{ id: s.id, name: typeof s.name === 'string' ? s.name : s.id, source: s.source }]
+      : []))
+    : [];
 
   let media: ExportedMediaRecord[] | undefined;
   if (Array.isArray(raw.media)) {
@@ -416,5 +447,5 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
 
-  return { ...show, frames, background, grid, composition, tempo, media, mediaFiles, name, warnings };
+  return { ...show, frames, background, grid, composition, tempo, effects, shaders, media, mediaFiles, name, warnings };
 };

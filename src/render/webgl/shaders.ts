@@ -92,6 +92,7 @@ struct Look {
   float hueRotate;             // radians
   float invert;
   float sepia;
+  bool yUp;                    // the texture is bottom-up (rendered by effects / generators)
 };
 
 // Content: the clip on screen, and during a dissolve the clip it replaces
@@ -247,6 +248,7 @@ vec4 content(vec2 box, sampler2D media, Look look) {
     if (look.mediaAspect > boxAspect) uv.x = 0.5 + (uv.x - 0.5) * (boxAspect / look.mediaAspect);
     else uv.y = 0.5 + (uv.y - 0.5) * (look.mediaAspect / boxAspect);
   }
+  if (look.yUp) uv.y = 1.0 - uv.y;
   vec4 c = sampleMedia(media, uv, look);
   return vec4(applyFilters(c.rgb, look) * c.a, c.a);
 }

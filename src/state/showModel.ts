@@ -1,6 +1,6 @@
 import type {
-  BeatSnap, BlendMode, CrossfadeSide, MediaFrame, MediaType, PerspectiveCorners, Point, ShapeType, SoftEdge,
-  Transition,
+  BeatSnap, BlendMode, CrossfadeSide, EffectInstance, GeneratorSettings, MediaFrame, MediaType, PerspectiveCorners,
+  Point, ShapeType, SoftEdge, Transition,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +29,8 @@ export interface Clip {
   triggerStyle?: TriggerStyle; // default 'normal'
   beatSnap?: BeatSnap; // default: the composition's beat snap
   transition?: Transition; // default: the layer's transition
+  effects?: EffectInstance[]; // ISF effect stack on this clip
+  generator?: GeneratorSettings; // an ISF generator instead of media (source: empty image)
   source: ClipSource;
   loop: boolean;
   playbackRate: number;
@@ -57,6 +59,7 @@ export interface Layer {
   activeClipId: string | null;
   transition?: Transition; // clip changes and clearing dissolve; unset = cut
   crossfade?: CrossfadeSide; // crossfader side; unset = not on the crossfader
+  effects?: EffectInstance[]; // ISF effect stack on whatever the layer plays
 }
 
 export interface Column {
@@ -99,7 +102,7 @@ export const emptyShow = (): ShowDocument => ({ surfaces: [], layers: [], column
 
 const randomId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
-export type IdFactory = (kind: 'layer' | 'clip' | 'surface' | 'column') => string;
+export type IdFactory = (kind: 'layer' | 'clip' | 'surface' | 'column' | 'effect') => string;
 export const defaultIds: IdFactory = kind => randomId(kind);
 
 export const findClip = (layer: Layer | undefined, clipId: string | null): Clip | null => {
@@ -139,8 +142,8 @@ const surfaceFromFrame = (frame: MediaFrame, layerId: string): Surface => ({
   softEdge: frame.softEdge,
 });
 
-// Identity and launcher settings of a clip — frames don't carry them
-type LaunchField = 'id' | 'name' | 'triggerStyle' | 'beatSnap' | 'transition';
+// Identity, launcher and effect settings of a clip — frames don't write them back
+type LaunchField = 'id' | 'name' | 'triggerStyle' | 'beatSnap' | 'transition' | 'effects' | 'generator';
 
 const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, LaunchField> => ({
   source: { type: frame.type, url: frame.url, mediaId: frame.mediaId, filename: frame.filename },
@@ -195,6 +198,9 @@ const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null
     layerHasClips: layer ? layer.slots.some(c => c !== null) : false,
     transition: clip?.transition ?? layer?.transition,
     crossfade: layer?.crossfade,
+    clipEffects: clip?.effects,
+    layerEffects: layer?.effects,
+    generator: clip?.generator,
     visible: surface.visible,
     testPattern: surface.testPattern,
     zIndex: surface.zIndex,
