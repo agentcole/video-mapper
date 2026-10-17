@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addTap, barPosition, beatAt, clampBpm, retime, snapBeats, snapTime, timeOfBeat, type Tap,
+  addTap, alignClock, barPosition, beatAt, beatError, clampBpm, retime, snapBeats, snapTime, timeOfBeat, type Tap,
 } from './clock';
 
 const clock = { bpm: 120, origin: 1000 }; // a beat every 500 ms, bar starts at 1000
@@ -105,5 +105,29 @@ describe('tap tempo', () => {
     expect(last.index).toBe(5);
     // The last tap still lands on its beat
     expect(beatAt({ bpm: result.bpm!, origin: result.origin }, 3300)).toBeCloseTo(5, 6);
+  });
+});
+
+describe('alignClock', () => {
+  it('moves the beat grid onto a beat time, keeping the bar count', () => {
+    const clock = { bpm: 120, origin: 0 };
+    // A beat heard at 10 020 ms: beat 20 of the old grid, 20 ms later
+    expect(alignClock(clock, 120, 10_020, 10_100)).toEqual({ bpm: 120, origin: 20 });
+    // Earlier than the grid: the shift goes the other way, never more than half a beat
+    expect(alignClock(clock, 120, 9_760, 10_100).origin).toBe(-240);
+  });
+
+  it('takes the new tempo from now on', () => {
+    const aligned = alignClock({ bpm: 120, origin: 0 }, 128, 10_000, 10_000);
+    expect(aligned.bpm).toBe(128);
+    expect(beatError(aligned, 10_000)).toBeCloseTo(0);
+    expect(beatError(aligned, 10_000 + 60_000 / 128 * 7)).toBeCloseTo(0);
+    // Same beat number as before (beat 20 at 120 BPM)
+    expect(beatAt(aligned, 10_000)).toBeCloseTo(20);
+  });
+
+  it('measures the distance to the nearest beat', () => {
+    expect(beatError({ bpm: 120, origin: 0 }, 1_030)).toBeCloseTo(30);
+    expect(beatError({ bpm: 120, origin: 0 }, 1_480)).toBeCloseTo(20);
   });
 });

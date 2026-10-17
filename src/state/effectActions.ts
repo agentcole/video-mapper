@@ -1,4 +1,4 @@
-import type { EffectInstance, EffectParamValue } from '../types';
+import type { EffectInstance, EffectParamValue, ModMap, Modulation } from '../types';
 import { projectStore } from './projectStore';
 import { placeClip, updateClip, updateLayer, type SlotRef } from './deck';
 import { createClip, defaultIds, findClip, type IdFactory, type ShowDocument } from './showModel';
@@ -82,9 +82,21 @@ export const toggleEffect = (target: EffectTarget, id: string): void =>
 export const setEffectParam = (target: EffectTarget, id: string, name: string, value: EffectParamValue): void =>
   updateInstance(target, id, e => ({ ...e, params: { ...e.params, [name]: value } }));
 
-/** Back to the shader's defaults. */
+/** Back to the shader's defaults, without modulation. */
 export const resetEffect = (target: EffectTarget, id: string): void =>
-  updateInstance(target, id, e => ({ ...e, params: {} }));
+  updateInstance(target, id, e => ({ ...e, params: {}, mods: undefined }));
+
+/** Set (or with null remove) one modulation in a map; an empty map is stored as none. */
+export const withMod = (mods: ModMap | undefined, key: string, mod: Modulation | null): ModMap | undefined => {
+  const next = { ...mods };
+  if (mod) next[key] = mod;
+  else delete next[key];
+  return Object.keys(next).length > 0 ? next : undefined;
+};
+
+/** Modulate an effect parameter (key: input name, or `name.0` / `name.1` for a point axis). */
+export const setEffectMod = (target: EffectTarget, id: string, key: string, mod: Modulation | null): void =>
+  updateInstance(target, id, e => ({ ...e, mods: withMod(e.mods, key, mod) }));
 
 // ---- Generator clips --------------------------------------------------------------
 
@@ -109,5 +121,12 @@ export const setGeneratorParam = (clipId: string, name: string, value: EffectPar
 export const resetGenerator = (clipId: string): void =>
   projectStore.getState().setShow(show => {
     const clip = clipIn(show, clipId);
-    return clip?.generator ? updateClip(show, clipId, { generator: { ...clip.generator, params: {} } }) : show;
+    return clip?.generator ? updateClip(show, clipId, { generator: { effectId: clip.generator.effectId, params: {} } }) : show;
+  });
+
+export const setGeneratorMod = (clipId: string, key: string, mod: Modulation | null): void =>
+  projectStore.getState().setShow(show => {
+    const clip = clipIn(show, clipId);
+    if (!clip?.generator) return show;
+    return updateClip(show, clipId, { generator: { ...clip.generator, mods: withMod(clip.generator.mods, key, mod) } });
   });

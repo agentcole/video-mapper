@@ -53,6 +53,7 @@ export const serializeProject = (doc: ProjectDocument, name?: string) => ({
   grid: doc.grid,
   tempo: doc.tempo,
   effects: doc.effects,
+  macros: doc.macros,
   background: stripBackgroundUrl(doc.background),
   surfaces: doc.surfaces,
   columns: doc.columns,

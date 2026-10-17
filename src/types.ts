@@ -62,11 +62,49 @@ export interface EffectInstance {
   effectId: string
   enabled: boolean
   params: Record<string, EffectParamValue>
+  mods?: ModMap // parameter modulation
 }
 
 export interface GeneratorSettings {
   effectId: string
   params: Record<string, EffectParamValue>
+  mods?: ModMap
+}
+
+// ---- Modulation (see state/modulation.ts) ----
+
+export type LfoShape = 'sine' | 'triangle' | 'saw' | 'ramp' | 'square' | 'pulse' | 'random'
+
+// The audio input's analysis: overall level, three bands and kick onsets
+export type AudioBand = 'level' | 'bass' | 'mid' | 'high' | 'kick'
+
+// What moves a parameter. Every source gives 0..1.
+//   lfo:   a wave over `period` seconds — or beats of the master clock when
+//          `beats` is set; `phase` shifts it (0..1), `width` is the duty
+//          cycle of square and the decay of pulse
+//   audio: a band of the audio input
+//   macro: one of the composition's macro faders
+export type ModSource =
+  | { kind: 'lfo'; shape: LfoShape; period: number; beats?: boolean; phase?: number; width?: number }
+  | { kind: 'audio'; band: AudioBand }
+  | { kind: 'macro'; index: number }
+
+// A parameter's modulation: the source pushes the value up from where it
+// is set, by `amount` (-1..1) of the parameter's range at full source
+export interface Modulation {
+  source: ModSource
+  amount: number
+}
+
+// Modulations by parameter: an ISF input name, a point's axis as
+// `name.0` / `name.1`, or a layer property ('opacity')
+export type ModMap = Record<string, Modulation>
+
+// A macro fader of the composition (Resolume's dashboard): one value that
+// can drive many parameters
+export interface Macro {
+  name: string
+  value: number // 0..1
 }
 
 // Per-edge feathering (px in frame-local space) for projection blending
@@ -132,6 +170,7 @@ export interface MediaFrame {
   crossfade?: CrossfadeSide // the layer's crossfader side (derived, read-only)
   clipEffects?: EffectInstance[] // the playing clip's effect stack (derived, read-only)
   layerEffects?: EffectInstance[] // the layer's effect stack (derived, read-only)
+  layerMods?: ModMap // the layer's modulations, e.g. of its opacity (derived, read-only)
   generator?: GeneratorSettings // the playing clip is a generator (derived, read-only)
   type: MediaType
   url: string

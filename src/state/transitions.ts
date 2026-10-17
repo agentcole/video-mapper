@@ -1,4 +1,4 @@
-import type { CrossfadeSide, MediaFrame, Transition } from '../types';
+import type { CrossfadeSide, Transition } from '../types';
 import { msPerBeat } from './clock';
 
 // ---------------------------------------------------------------------------
@@ -57,12 +57,3 @@ export const crossfadeGain = (side: CrossfadeSide | undefined, x: number): numbe
   if (side === 'B') return Math.min(1, 2 * position);
   return 1;
 };
-
-/** Frames as the crossfader shows them (opacity × gain); untouched frames keep their object. */
-export const applyCrossfader = (frames: MediaFrame[], x: number): MediaFrame[] =>
-  frames.some(f => f.crossfade)
-    ? frames.map(f => {
-        const gain = crossfadeGain(f.crossfade, x);
-        return gain === 1 ? f : { ...f, opacity: f.opacity * gain };
-      })
-    : frames;

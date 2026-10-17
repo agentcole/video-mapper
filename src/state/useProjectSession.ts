@@ -12,6 +12,7 @@ import {
   duplicateProject, listProjects, addVersion, getVersion, setCurrentProjectId, type ProjectRecord,
 } from '../lib/projectRepository';
 import { resolveMediaUrls } from '../lib/mediaStorage';
+import { DEFAULT_MACROS } from '../lib/defaults';
 import { getEffectDef, importIsf } from '../effects/library';
 import { describeStorageError } from '../lib/idb';
 
@@ -36,6 +37,7 @@ const documentOf = (d: ProjectDocument): ProjectDocument => ({
   composition: d.composition,
   tempo: d.tempo,
   effects: d.effects,
+  macros: d.macros,
 });
 
 const currentDocument = (): ProjectDocument => documentOf(projectStore.getState());
@@ -86,6 +88,7 @@ const EMPTY_DOCUMENT: ProjectDocument = {
   composition: DEFAULT_COMPOSITION,
   tempo: DEFAULT_TEMPO,
   effects: [],
+  macros: DEFAULT_MACROS,
 };
 
 // One initial load per page (StrictMode runs effects twice in development)
@@ -146,7 +149,7 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     if (
       state.surfaces === prev.surfaces && state.layers === prev.layers && state.columns === prev.columns &&
       state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition &&
-      state.tempo === prev.tempo && state.effects === prev.effects
+      state.tempo === prev.tempo && state.effects === prev.effects && state.macros === prev.macros
     ) {
       return;
     }

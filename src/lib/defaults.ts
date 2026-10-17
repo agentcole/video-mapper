@@ -1,5 +1,5 @@
 import type {
-  BackgroundSettings, GridSettings, CompositionSettings, PerspectiveCorners, SoftEdge, TempoSettings,
+  BackgroundSettings, GridSettings, CompositionSettings, Macro, PerspectiveCorners, SoftEdge, TempoSettings,
 } from '../types';
 
 export const DEFAULT_BACKGROUND: BackgroundSettings = {
@@ -24,6 +24,10 @@ export const DEFAULT_TEMPO: TempoSettings = {
   beatsPerBar: 4,
   beatSnap: 'off',
 };
+
+export const MACRO_COUNT = 8;
+
+export const DEFAULT_MACROS: Macro[] = Array.from({ length: MACRO_COUNT }, (_, i) => ({ name: `Macro ${i + 1}`, value: 0 }));
 
 export const DEFAULT_PERSPECTIVE_CORNERS: PerspectiveCorners = {
   tl: { x: 0, y: 0 },

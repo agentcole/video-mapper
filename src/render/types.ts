@@ -10,11 +10,13 @@ import type { LiveState } from '../state/liveStore';
 export type RendererKind = 'css' | 'gpu';
 
 export interface RenderScene {
-  frames: MediaFrame[]; // visible frames (crossfader applied), media URLs playable in this window
+  frames: MediaFrame[]; // visible frames, media URLs playable in this window
   bpm: number; // master tempo, for transitions measured in beats
   clockOrigin: number; // master clock phase (beat 0), clock time base
   timeOrigin: number; // session start, clock time base: TIME of effects and generators
   effects: EffectInstance[]; // composition effect stack
+  crossfader: number; // A/B crossfader position (the renderer applies it, after modulation)
+  macros: number[]; // macro fader values, for modulation
   background: BackgroundSettings;
   composition: CompositionSettings;
   masterOpacity: number;

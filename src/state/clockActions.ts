@@ -1,7 +1,7 @@
 import type { BeatSnap } from '../types';
 import { projectStore } from './projectStore';
 import { liveStore } from './liveStore';
-import { addTap, clampBpm, clockNow, retime, type Clock, type Tap } from './clock';
+import { addTap, alignClock, beatError, clampBpm, clockNow, retime, type Clock, type Tap } from './clock';
 import { currentClock, retargetScheduled } from './deckActions';
 
 // ---------------------------------------------------------------------------
@@ -24,6 +24,30 @@ const applyClock = (clock: Clock) => {
 export const setBpm = (bpm: number): void => {
   taps = [];
   applyClock(retime(currentClock(), clampBpm(bpm), clockNow()));
+};
+
+/** A tempo and a beat time from outside (the audio input): beats land on it. */
+export const syncToBeat = (bpm: number, beatTime: number): void => {
+  taps = [];
+  applyClock(alignClock(currentClock(), clampBpm(bpm), beatTime, clockNow()));
+};
+
+// Follow mode: adopt the detected tempo when it is this sure and differs
+const FOLLOW_CONFIDENCE = 0.5;
+const FOLLOW_BPM = 0.2;
+const FOLLOW_PHASE_MS = 25;
+const FOLLOW_INTERVAL_MS = 2000;
+let lastFollow = 0;
+
+/** Follow a detected tempo: when stable and off by enough, take it (at most every 2 s). */
+export const followTempo = (estimate: { bpm: number; beatTime: number; stable: boolean; confidence: number }): void => {
+  if (!estimate.stable || estimate.confidence < FOLLOW_CONFIDENCE) return;
+  const now = clockNow();
+  if (now - lastFollow < FOLLOW_INTERVAL_MS) return;
+  const clock = currentClock();
+  if (Math.abs(estimate.bpm - clock.bpm) < FOLLOW_BPM && beatError(clock, estimate.beatTime) < FOLLOW_PHASE_MS) return;
+  lastFollow = now;
+  syncToBeat(estimate.bpm, estimate.beatTime);
 };
 
 /** Double / halve the tempo. */

@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import type {
   MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord, TempoSettings,
-  EffectInstance,
+  EffectInstance, Macro, ModMap,
 } from '../types';
 import {
-  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_PERSPECTIVE_CORNERS, DEFAULT_SOFT_EDGE,
-  DEFAULT_TEMPO,
+  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_PERSPECTIVE_CORNERS,
+  DEFAULT_SOFT_EDGE, DEFAULT_TEMPO,
 } from './defaults';
 import { MAX_BPM, MIN_BPM } from '../state/clock';
 import { pinFrameToQuadVertices } from './geometry';
@@ -31,7 +31,8 @@ import {
 // 5.2: master clock (tempo) and beat snap per composition / clip
 // 5.3: transitions per layer / clip, crossfader side per layer
 // 5.4: ISF effect stacks (clip, layer, composition) and generator clips
-export const PROJECT_VERSION = '5.4.0';
+// 5.5: parameter modulation (LFO, audio, macros) and macro faders
+export const PROJECT_VERSION = '5.5.0';
 
 const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 
@@ -39,6 +40,32 @@ const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 const TransitionSchema = z.object({
   duration: z.number().min(0).max(600),
   beats: z.boolean().optional(),
+}).optional().catch(undefined);
+
+// 5.5 — modulations: a broken (or newer) one is dropped, the others stay
+const ModSourceSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('lfo'),
+    shape: z.enum(['sine', 'triangle', 'saw', 'ramp', 'square', 'pulse', 'random']),
+    period: z.number().positive().max(3600),
+    beats: z.boolean().optional(),
+    phase: z.number().min(0).max(1).optional(),
+    width: z.number().min(0).max(1).optional(),
+  }),
+  z.object({ kind: z.literal('audio'), band: z.enum(['level', 'bass', 'mid', 'high', 'kick']) }),
+  z.object({ kind: z.literal('macro'), index: z.number().int().min(0).max(63) }),
+]);
+const ModulationSchema = z.object({
+  source: ModSourceSchema,
+  amount: z.number().min(-1).max(1),
+});
+const ModsSchema = z.record(z.string(), z.unknown()).transform((entries): ModMap | undefined => {
+  const mods: ModMap = {};
+  for (const [key, value] of Object.entries(entries)) {
+    const result = ModulationSchema.safeParse(value);
+    if (result.success) mods[key] = result.data;
+  }
+  return Object.keys(mods).length > 0 ? mods : undefined;
 }).optional().catch(undefined);
 
 // 5.4 — effects: a broken entry is dropped, the rest of the stack stays
@@ -49,6 +76,7 @@ const EffectSchema = z.object({
   effectId: z.string().min(1),
   enabled: z.boolean().default(true),
   params: ParamsSchema.default({}),
+  mods: ModsSchema,
 });
 const EffectsSchema = z.array(z.unknown()).transform(items => items.flatMap(item => {
   const result = EffectSchema.safeParse(item);
@@ -57,6 +85,7 @@ const EffectsSchema = z.array(z.unknown()).transform(items => items.flatMap(item
 const GeneratorSchema = z.object({
   effectId: z.string().min(1),
   params: ParamsSchema.default({}),
+  mods: ModsSchema,
 }).optional().catch(undefined);
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
@@ -194,6 +223,7 @@ const LayerSchema = z.object({
   transition: TransitionSchema,
   crossfade: z.enum(['A', 'B']).optional().catch(undefined),
   effects: EffectsSchema,
+  mods: ModsSchema,
 });
 
 const ColumnSchema = z.object({ id: z.string().min(1), name: z.string().default('') });
@@ -220,6 +250,17 @@ const TempoSchema = z.object({
   beatsPerBar: z.number().int().min(1).max(16).catch(DEFAULT_TEMPO.beatsPerBar),
   beatSnap: z.enum(BEAT_SNAPS).catch(DEFAULT_TEMPO.beatSnap),
 });
+
+// 5.5 — macro faders: always all of them; a bad one gets its default
+const MacroSchema = z.object({
+  name: z.string().max(40),
+  value: z.number().min(0).max(1),
+});
+const parseMacros = (raw: unknown): Macro[] =>
+  DEFAULT_MACROS.map((fallback, i) => {
+    const result = MacroSchema.safeParse(Array.isArray(raw) ? raw[i] : undefined);
+    return result.success ? result.data : fallback;
+  });
 
 const CompositionSchema = z.object({
   width: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.width),
@@ -252,6 +293,7 @@ export interface ParsedProject extends ShowDocument {
   composition: CompositionSettings;
   tempo: TempoSettings;
   effects: EffectInstance[]; // composition effect stack
+  macros: Macro[];
   shaders: { id: string; name: string; source: string }[]; // imported ISF shaders the project uses
   media?: ExportedMediaRecord[]; // legacy: base64-embedded media
   mediaFiles?: PackageMediaEntry[]; // project packages: media files in the zip
@@ -419,6 +461,7 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const tempo = isRecord(raw.tempo) ? TempoSchema.parse(raw.tempo) : DEFAULT_TEMPO;
   const effects = EffectsSchema.parse(raw.effects) ?? [];
+  const macros = parseMacros(raw.macros);
   const shaders = Array.isArray(raw.shaders)
     ? raw.shaders.flatMap(s => (isRecord(s) && typeof s.id === 'string' && typeof s.source === 'string'
       ? [{ id: s.id, name: typeof s.name === 'string' ? s.name : s.id, source: s.source }]
@@ -447,5 +490,5 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
 
-  return { ...show, frames, background, grid, composition, tempo, effects, shaders, media, mediaFiles, name, warnings };
+  return { ...show, frames, background, grid, composition, tempo, effects, macros, shaders, media, mediaFiles, name, warnings };
 };

@@ -212,6 +212,36 @@ describe('format 5', () => {
     expect(parseProjectData({ surfaces, layers, columns }).effects).toEqual([]);
   });
 
+  it('reads modulations, dropping broken ones, and always all macro faders', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const lfo = { source: { kind: 'lfo', shape: 'sine', period: 4, beats: true }, amount: 0.5 };
+    const bass = { source: { kind: 'audio', band: 'bass' }, amount: -1 };
+    const effect = {
+      id: 'e1', effectId: 'builtin:invert', enabled: true, params: {},
+      mods: { amount: lfo, 'center.0': bass, broken: { source: { kind: 'midi' }, amount: 1 }, loud: { ...bass, amount: 3 } },
+    };
+    const layer = {
+      ...layers[0],
+      mods: { opacity: { source: { kind: 'macro', index: 2 }, amount: 1 } },
+      slots: layers[0].slots.map(c => (c ? { ...c, generator: { effectId: 'builtin:plasma', mods: 'nope' } } : c)),
+    };
+    const project = parseProjectData({
+      version: PROJECT_VERSION, surfaces, columns, layers: [layer], effects: [effect],
+      macros: [{ name: 'Strobe', value: 0.25 }, { name: 'Bad', value: 7 }],
+    });
+    expect(project.effects[0].mods).toEqual({ amount: lfo, 'center.0': bass });
+    expect(project.layers[0].mods).toEqual({ opacity: { source: { kind: 'macro', index: 2 }, amount: 1 } });
+    expect(project.frames[0].layerMods).toEqual(project.layers[0].mods);
+    expect(project.layers[0].slots[0]?.generator?.mods).toBeUndefined();
+    expect(project.macros).toHaveLength(8);
+    expect(project.macros[0]).toEqual({ name: 'Strobe', value: 0.25 });
+    expect(project.macros[1]).toEqual({ name: 'Macro 2', value: 0 });
+    // Before 5.5: default macros, no modulations
+    const old = parseProjectData({ surfaces, layers, columns });
+    expect(old.macros.map(m => m.name)).toEqual(Array.from({ length: 8 }, (_, i) => `Macro ${i + 1}`));
+    expect(old.layers[0].mods).toBeUndefined();
+  });
+
   it('skips broken clips and surfaces individually and repairs references', () => {
     const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
     const project = parseProjectData({
