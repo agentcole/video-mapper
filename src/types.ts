@@ -87,6 +87,8 @@ export interface MediaLibraryStats {
 export interface MediaFrame {
   id: string // = surface id
   layerId?: string // the layer feeding this surface (derived, read-only)
+  clipId?: string // the layer's playing clip (derived, read-only)
+  layerHasClips?: boolean // the layer has clips, even if none plays (derived, read-only)
   type: MediaType
   url: string
   filename?: string

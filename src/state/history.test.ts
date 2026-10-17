@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MediaFrame } from '../types';
 import { createProjectStore } from './projectStore';
 import { createHistory } from './history';
+import { placeClip, setActiveClip } from './deck';
+import { createClip } from './showModel';
 
 const frame = (id: string, x = 0): MediaFrame => ({ id, x } as MediaFrame);
 
@@ -58,6 +60,39 @@ describe('project history', () => {
     store.getState().setGrid(prev => ({ ...prev, show: !prev.show }));
     vi.advanceTimersByTime(400);
     expect(history.canUndo()).toBe(false);
+  });
+
+  it('never undoes what is playing (triggers are not edits)', () => {
+    const store = createProjectStore({ frames: [frame('a')] });
+    const history = createHistory(store, { debounceMs: 400 });
+    const layerId = store.getState().layers[0].id;
+    const first = store.getState().layers[0].activeClipId!;
+    store.getState().setShow(show => placeClip(show, { layerId, column: 1 }, createClip('clip-2', { type: 'image', url: 'b.png' })));
+    history.reset();
+
+    store.getState().setShow(show => setActiveClip(show, layerId, 'clip-2'));
+    vi.advanceTimersByTime(400);
+    expect(history.canUndo()).toBe(false);
+
+    store.getState().updateFrame('a', { x: 9 });
+    vi.advanceTimersByTime(400);
+    store.getState().setShow(show => setActiveClip(show, layerId, first));
+    history.undo(); // the move, not the trigger
+    expect(store.getState().frames[0].x).toBe(0);
+    expect(store.getState().layers[0].activeClipId).toBe(first);
+    history.redo();
+    expect(store.getState().frames[0].x).toBe(9);
+    expect(store.getState().layers[0].activeClipId).toBe(first);
+  });
+
+  it('undoes deck edits like any other edit', () => {
+    const store = createProjectStore({ frames: [frame('a')] });
+    const history = createHistory(store, { debounceMs: 400 });
+    history.reset();
+    const layerId = store.getState().layers[0].id;
+    store.getState().setShow(show => placeClip(show, { layerId, column: 3 }, createClip('clip-x', { type: 'image', url: 'x.png' })));
+    history.undo();
+    expect(store.getState().layers[0].slots[3]).toBeNull();
   });
 
   it('respects the history limit', () => {

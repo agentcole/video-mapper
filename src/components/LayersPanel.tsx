@@ -92,7 +92,11 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
   };
 
   return (
-    <div className={`fixed top-4 right-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] w-64 flex flex-col transition-all duration-200 ${isCollapsed ? '' : 'bottom-4'}`}>
+    <div
+      className="fixed top-4 right-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] w-64 flex flex-col transition-all duration-200"
+      // Ends above the clip launcher when it is open
+      style={isCollapsed ? undefined : { bottom: 'calc(1rem + var(--launcher-height, 0px))' }}
+    >
       {/* Header */}
       <div
         className="flex items-center justify-between p-3 cursor-pointer shrink-0"

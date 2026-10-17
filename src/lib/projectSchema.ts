@@ -24,7 +24,8 @@ import {
 // frames and are converted (one layer + clip per frame).
 // ---------------------------------------------------------------------------
 
-export const PROJECT_VERSION = '5.0.0';
+// 5.1: clips have a trigger style (clip launcher)
+export const PROJECT_VERSION = '5.1.0';
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
 
@@ -120,6 +121,8 @@ const SurfaceSchema = z.object({
 const ClipSchema = z.object({
   id: z.string().min(1),
   name: z.string().optional(),
+  // 5.1 — an unknown style (newer file) falls back to normal instead of losing the clip
+  triggerStyle: z.enum(['normal', 'toggle', 'piano']).optional().catch(undefined),
   source: z.object({
     type: z.enum(['video', 'image']),
     url: z.string().default(''),

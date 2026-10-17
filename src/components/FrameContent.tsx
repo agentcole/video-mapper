@@ -1,7 +1,9 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Upload } from 'lucide-react';
-import type { MediaFrame, Point } from '../types';
+import type { MediaFrame, MediaType, Point } from '../types';
 import type { LiveState } from '../state/liveStore';
+import type { PreloadMedia } from '../render/types';
+import { reportFirstFrame } from '../render/startStats';
 import { TestCard } from './TestCard';
 import { applyHomography, getFrameHomography, getShapeVertices, homographyToCSS } from '../lib/geometry';
 
@@ -12,13 +14,206 @@ const verticesToClipPath = (vertices: Point[] | undefined): string => {
   return `polygon(${points})`;
 };
 
+// ---- Media elements --------------------------------------------------------------
+
+// shown: on screen. pending: a triggered clip loading behind the shown one.
+// preload: loaded and parked on its first frame, invisible, until triggered.
+type MediaRole = 'shown' | 'pending' | 'preload';
+
+interface MediaDesc {
+  key: string; // clip + url: the same element survives preload → pending → shown
+  url: string;
+  type: MediaType;
+  loop: boolean;
+  muted: boolean;
+  playbackRate: number;
+}
+
+const playMuted = (video: HTMLVideoElement, muted: boolean) => {
+  video.muted = true; // autoplay policy: start muted, then restore
+  video.play()
+    .then(() => {
+      video.muted = muted;
+    })
+    .catch(error => console.warn('Autoplay failed, will play on user interaction:', error));
+};
+
+const supportsFrameCallback = (video: HTMLVideoElement): boolean =>
+  typeof (video as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback === 'function';
+
+interface MediaElementProps {
+  media: MediaDesc;
+  role: MediaRole;
+  startSeq?: number; // layer trigger counter: a change restarts the clip (undefined: never)
+  layerId?: string;
+  playback: LiveState['playback'];
+  outputGain: number;
+  style: React.CSSProperties;
+  onReady?: () => void; // pending media has a frame to show
+}
+
+const MediaElement: React.FC<MediaElementProps> = ({
+  media, role, startSeq, layerId, playback, outputGain, style, onReady,
+}) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const active = role !== 'preload';
+  const stateRef = useRef({ role, seq: startSeq });
+  // Started by a trigger and waiting for its first frame (latency stats)
+  const startRef = useRef({ awaiting: active, preloaded: false });
+
+  // Playback settings
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.playbackRate = media.playbackRate;
+    video.volume = Math.max(0, Math.min(1, outputGain));
+    if (active && !video.paused) video.muted = media.muted;
+  }, [media.playbackRate, media.muted, outputGain, active]);
+
+  // Autoplay once loaded (playing roles only; preloads stay parked)
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !active) return;
+    const start = () => playMuted(video, media.muted);
+    if (video.readyState >= 2) {
+      if (video.paused) start();
+      return;
+    }
+    video.addEventListener('loadeddata', start, { once: true });
+    return () => video.removeEventListener('loadeddata', start);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- (re)start on load and role changes only
+  }, [media.url, active]);
+
+  // Role changes and retriggers
+  useEffect(() => {
+    const video = videoRef.current;
+    const prev = stateRef.current;
+    stateRef.current = { role, seq: startSeq ?? prev.seq };
+    if (!video) return;
+    const wasActive = prev.role !== 'preload';
+    if (!active) {
+      if (wasActive) {
+        video.pause();
+        if (video.currentTime > 0) video.currentTime = 0;
+      }
+      return;
+    }
+    const retriggered = startSeq !== undefined && prev.seq !== undefined && startSeq !== prev.seq;
+    if (!wasActive || retriggered) {
+      startRef.current = { awaiting: true, preloaded: video.readyState >= 2 };
+      if (video.currentTime > 0) video.currentTime = 0;
+      playMuted(video, media.muted);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to role / trigger changes only
+  }, [role, startSeq]);
+
+  // Report the first frame after a (re)start
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    let cancelled = false;
+    const report = (at?: number) => {
+      if (!startRef.current.awaiting || stateRef.current.role === 'preload') return;
+      startRef.current.awaiting = false;
+      reportFirstFrame(layerId, startRef.current.preloaded, at);
+    };
+    if (supportsFrameCallback(video)) {
+      const onFrame = (now: number) => {
+        if (cancelled) return;
+        if (!video.paused) report(now);
+        video.requestVideoFrameCallback(onFrame);
+      };
+      const handle = video.requestVideoFrameCallback(onFrame);
+      return () => {
+        cancelled = true;
+        video.cancelVideoFrameCallback(handle);
+      };
+    }
+    const onPlaying = () => report();
+    video.addEventListener('playing', onPlaying);
+    return () => video.removeEventListener('playing', onPlaying);
+  }, [layerId]);
+
+  // Pending media hands over as soon as it has a frame
+  useEffect(() => {
+    if (role !== 'pending' || !onReady) return;
+    const video = videoRef.current;
+    const image = imageRef.current;
+    if (video) {
+      if (video.readyState >= 2 && !video.seeking) {
+        onReady();
+        return;
+      }
+      video.addEventListener('loadeddata', onReady, { once: true });
+      return () => video.removeEventListener('loadeddata', onReady);
+    }
+    if (image) {
+      if (image.complete && image.naturalWidth > 0) {
+        onReady();
+        return;
+      }
+      image.addEventListener('load', onReady, { once: true });
+      return () => image.removeEventListener('load', onReady);
+    }
+  }, [role, onReady]);
+
+  // Play all / pause all: only commands sent after mounting, only playing media
+  const lastPlaybackSeqRef = useRef(playback.seq);
+  useEffect(() => {
+    if (playback.seq === lastPlaybackSeqRef.current) return;
+    lastPlaybackSeqRef.current = playback.seq;
+    const video = videoRef.current;
+    if (!video || !active || !playback.command) return;
+    if (playback.command === 'play') playMuted(video, media.muted);
+    else video.pause();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- commands are events
+  }, [playback]);
+
+  const elementStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    ...style,
+    ...(role === 'shown' ? {} : { opacity: 0, pointerEvents: 'none' }),
+  };
+
+  return media.type === 'video' ? (
+    <video
+      ref={videoRef}
+      src={media.url}
+      loop={media.loop}
+      muted // Always muted for initial autoplay (browser requirement)
+      autoPlay={active}
+      preload="auto"
+      playsInline
+      style={elementStyle}
+    />
+  ) : (
+    <img
+      ref={imageRef}
+      src={media.url}
+      alt=""
+      style={elementStyle}
+      draggable={false}
+    />
+  );
+};
+
 interface FrameContentProps {
   frame: MediaFrame;
   url?: string; // media URL override (the output window resolves its own)
   playback: LiveState['playback']; // Global transport (play / pause all)
   outputGain: number; // master fader × blackout, applied to audio volume
   showPlaceholder: boolean; // editor only: "add media" on empty frames
+  preload?: PreloadMedia[]; // clips of this frame's layer to keep ready
+  startSeq?: number; // this frame's layer trigger counter
 }
+
+const NO_PRELOAD: PreloadMedia[] = [];
 
 // The visual output of one frame: media through the shape clip and the
 // corner-pin homography, blended into the stage. No editor UI and no
@@ -29,89 +224,48 @@ export const FrameContent = React.memo(function FrameContent({
   playback,
   outputGain,
   showPlaceholder,
+  preload = NO_PRELOAD,
+  startSeq,
 }: FrameContentProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  // Handle video playback settings
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.playbackRate = frame.playbackRate;
-    }
-  }, [frame.playbackRate, frame.type]);
-
-  // Handle video muted state separately to avoid autoplay issues
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.muted = frame.muted;
-    }
-  }, [frame.muted, frame.type]);
-
-  // Master fader / blackout also apply to audio, not just pixels
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.volume = Math.max(0, Math.min(1, outputGain));
-    }
-  }, [outputGain, frame.type, url]);
-
-  // Auto-play video when URL changes or on mount
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !url) return;
-
-    const attemptPlay = async () => {
-      try {
-        // Ensure video is muted for autoplay (browser policy)
-        video.muted = true;
-        await video.play();
-        // Restore muted state after successful autoplay
-        video.muted = frame.muted;
-      } catch (error) {
-        console.warn('Autoplay failed, will play on user interaction:', error);
-        // Try again with muted if unmuted failed
-        if (!video.muted) {
-          video.muted = true;
-          video.play().catch(() => {});
-        }
+  // What this frame plays now
+  const current: MediaDesc | null = url && !frame.testPattern
+    ? {
+        key: `${frame.clipId ?? frame.id}|${url}`,
+        url,
+        type: frame.type,
+        loop: frame.loop,
+        muted: frame.muted,
+        playbackRate: frame.playbackRate,
       }
-    };
+    : null;
 
-    // Try to play when video data is loaded
-    const handleLoadedData = () => {
-      attemptPlay();
-    };
+  // After a trigger the previous media stays on screen until the new one has
+  // a frame (no black gap); clearing a layer takes effect at once
+  const [previous, setPrevious] = useState<MediaDesc | null>(current);
+  const [held, setHeld] = useState<MediaDesc | null>(null);
+  if (current?.key !== previous?.key) {
+    setPrevious(current);
+    const keep = current && previous ? held ?? previous : null;
+    setHeld(keep && keep.key !== current?.key ? keep : null);
+  }
+  const handover = React.useCallback(() => setHeld(null), []);
 
-    // If video is already loaded, play immediately
-    if (video.readyState >= 2) {
-      attemptPlay();
-    } else {
-      video.addEventListener('loadeddata', handleLoadedData);
+  const mediaElements: { media: MediaDesc; role: MediaRole; startSeq?: number; onReady?: () => void }[] = [];
+  if (!frame.testPattern) {
+    if (held) mediaElements.push({ media: held, role: 'shown' });
+    if (current) {
+      mediaElements.push({ media: current, role: held ? 'pending' : 'shown', startSeq, onReady: held ? handover : undefined });
     }
-
-    return () => {
-      video.removeEventListener('loadeddata', handleLoadedData);
-    };
-  }, [url, frame.type, frame.muted]);
-
-  // Handle global playback commands (Play All / Pause All). Only commands
-  // sent after this frame mounted apply — a new frame keeps autoplaying.
-  const lastPlaybackSeqRef = useRef(playback.seq);
-  useEffect(() => {
-    if (playback.seq === lastPlaybackSeqRef.current) return;
-    lastPlaybackSeqRef.current = playback.seq;
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !playback.command) return;
-
-    if (playback.command === 'play') {
-      video.play().catch((error) => {
-        console.warn('Play failed:', error);
-        // Try muted play as fallback
-        video.muted = true;
-        video.play().catch(() => {});
+    // Clips this layer may start next, parked on their first frame
+    for (const p of preload) {
+      const key = `${p.clipId}|${p.url}`;
+      if (key === current?.key || key === held?.key) continue;
+      mediaElements.push({
+        media: { key, url: p.url, type: p.type, loop: p.loop, muted: p.muted, playbackRate: p.playbackRate },
+        role: 'preload',
       });
-    } else if (playback.command === 'pause') {
-      video.pause();
     }
-  }, [playback, frame.type]);
+  }
 
   // Unified warp model: one homography H per frame (see MediaFrame.tsx)
   const w = frame.width;
@@ -244,28 +398,7 @@ export const FrameContent = React.memo(function FrameContent({
               label={frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`}
             />
           </div>
-        ) : url ? (
-          frame.type === 'video' ? (
-            <video
-              ref={videoRef}
-              src={url}
-              loop={frame.loop}
-              muted // Always muted for initial autoplay (browser requirement)
-              autoPlay
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              playsInline
-            />
-          ) : (
-            <img
-              src={url}
-              alt="Media"
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              draggable={false}
-            />
-          )
-        ) : showPlaceholder ? (
+        ) : !current && showPlaceholder ? (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300">
             <div className="text-center text-gray-500">
               <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
@@ -274,6 +407,21 @@ export const FrameContent = React.memo(function FrameContent({
             </div>
           </div>
         ) : null}
+        {/* One keyed list, so an element keeps its loaded video when it
+            moves from preload to pending to shown */}
+        {mediaElements.map(m => (
+          <MediaElement
+            key={m.media.key}
+            media={m.media}
+            role={m.role}
+            startSeq={m.startSeq}
+            layerId={frame.layerId}
+            playback={playback}
+            outputGain={outputGain}
+            style={contentStyle}
+            onReady={m.onReady}
+          />
+        ))}
       </div>
     </div>
   );

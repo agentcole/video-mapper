@@ -22,10 +22,27 @@ import { useProjectSession } from '../state/useProjectSession';
 import { ProjectsPanel } from './ProjectsPanel';
 import { GpuStage } from '../render/GpuStage';
 import type { RenderScene } from '../render/types';
+import { usePreload } from '../render/preload';
+import { ClipLauncher } from './ClipLauncher';
+import type { SlotRef } from '../state/deck';
+import type { ClipSource } from '../state/showModel';
+import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
 const { setMasterOpacity, setBlackout, setShowTestCard, sendPlayback, setRenderer } = liveStore.getState();
+
+// Clips in the editor carry playable URLs already
+const editorUrlOf = (source: ClipSource) => source.url;
+
+const LAUNCHER_KEY = 'video-mapper-launcher-open';
+const storedLauncherOpen = (): boolean => {
+  try {
+    return localStorage.getItem(LAUNCHER_KEY) !== 'false';
+  } catch {
+    return true;
+  }
+};
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -152,6 +169,8 @@ export const Canvas: React.FC = () => {
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
   const [mediaLibraryTargetBackground, setMediaLibraryTargetBackground] = useState(false); // Is media library for background?
+  const [mediaLibraryTargetSlot, setMediaLibraryTargetSlot] = useState<SlotRef | null>(null); // Launcher slot to fill
+  const [isLauncherOpen, setIsLauncherOpen] = useState(storedLauncherOpen);
   const [isBackgroundSettingsOpen, setIsBackgroundSettingsOpen] = useState(false);
   const [showPresentationControls, setShowPresentationControls] = useState(false);
   // Live output controls (not persisted) — shared with the output window
@@ -160,6 +179,8 @@ export const Canvas: React.FC = () => {
   const showTestCard = useLiveStore(s => s.showTestCard);
   const playback = useLiveStore(s => s.playback);
   const renderer = useLiveStore(s => s.renderer);
+  const layerTriggers = useLiveStore(s => s.layerTriggers);
+  const { preload, forFrame: preloadFor } = usePreload(editorUrlOf);
   const [rendererNotice, setRendererNotice] = useState<string | null>(null);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
   // Open project, autosave, versions, import/export (see useProjectSession)
@@ -297,7 +318,34 @@ export const Canvas: React.FC = () => {
     outputGain: editorGain,
     playback,
     showPlaceholders: !isPresentationMode,
-  }), [visibleFrames, background, composition, masterOpacity, editorGain, playback, isPresentationMode]);
+    preload,
+    layerTriggers,
+  }), [visibleFrames, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
+
+  // ------------------------------------------------------------------
+  // Clip launcher
+  // ------------------------------------------------------------------
+  const toggleLauncher = useCallback(() => {
+    setIsLauncherOpen(open => {
+      try {
+        localStorage.setItem(LAUNCHER_KEY, String(!open));
+      } catch {
+        // per-session only
+      }
+      return !open;
+    });
+  }, []);
+
+  const pickMediaForSlot = useCallback((slot: SlotRef) => {
+    setMediaLibraryTargetSlot(slot);
+    setMediaLibraryTargetFrameId(null);
+    setMediaLibraryTargetBackground(false);
+    setIsMediaLibraryOpen(true);
+  }, []);
+
+  const selectLayerSurfaces = useCallback((layerId: string) => {
+    setSelectedFrameIds(projectStore.getState().frames.filter(f => f.layerId === layerId).map(f => f.id));
+  }, []);
   const handleGpuUnavailable = useCallback((reason: string) => {
     console.error(reason);
     setRenderer('css');
@@ -422,7 +470,9 @@ export const Canvas: React.FC = () => {
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      const isTyping = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+      // A focused slider or checkbox doesn't take text — shortcuts still work
+      const isToggleInput = target instanceof HTMLInputElement && ['range', 'checkbox', 'radio'].includes(target.type);
+      const isTyping = (target.tagName === 'INPUT' && !isToggleInput) || target.tagName === 'TEXTAREA'
         || target.tagName === 'SELECT' || target.isContentEditable;
 
       // ESC works even while typing: exit mode, cancel draw, or deselect
@@ -448,6 +498,27 @@ export const Canvas: React.FC = () => {
       }
 
       if (isTyping || isMediaLibraryOpen) return;
+
+      // Clip launcher: 1–9 play a column, Shift+1–9 cue it, Space fires the cue
+      if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+        const digit = /^Digit([1-9])$/.exec(e.code);
+        if (digit) {
+          e.preventDefault();
+          const column = Number(digit[1]) - 1;
+          if (e.shiftKey) cueColumn(liveStore.getState().cuedColumn === column ? null : column);
+          else triggerColumn(column);
+          return;
+        }
+        if (e.code === 'Space') {
+          e.preventDefault();
+          if (!e.repeat) go();
+          return;
+        }
+        if (e.key === 'l' || e.key === 'L') {
+          toggleLauncher();
+          return;
+        }
+      }
 
       const hasSelection = selectedFrameIds.length > 0;
 
@@ -511,7 +582,7 @@ export const Canvas: React.FC = () => {
       }
 
       // Arrow keys nudge the selection (Shift = bigger steps)
-      if (hasSelection && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+      if (hasSelection && !isToggleInput && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
         e.preventDefault();
         const step = e.shiftKey ? (grid.snap ? grid.size : 10) : 1;
         const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
@@ -549,7 +620,7 @@ export const Canvas: React.FC = () => {
     isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen,
     selectedFrameIds, frames, grid.snap, grid.size,
     deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo, saveVersion,
-    togglePresentationMode, toggleFullscreen,
+    togglePresentationMode, toggleFullscreen, toggleLauncher,
   ]);
 
   // ------------------------------------------------------------------
@@ -1054,8 +1125,13 @@ export const Canvas: React.FC = () => {
   const handleSelectMedia = useCallback(async (media: StoredMedia) => {
     const url = getMediaObjectUrl(media);
 
+    // A launcher slot
+    if (mediaLibraryTargetSlot) {
+      assignMedia(mediaLibraryTargetSlot, { type: media.type, url, mediaId: media.id, filename: media.name });
+      setMediaLibraryTargetSlot(null);
+    }
     // Check if selecting for background
-    if (mediaLibraryTargetBackground) {
+    else if (mediaLibraryTargetBackground) {
       setBackground(prev => ({
         ...prev,
         url,
@@ -1079,12 +1155,13 @@ export const Canvas: React.FC = () => {
       setIsDrawMode(true);
       setDrawShape('rectangle');
     }
-  }, [mediaLibraryTargetFrameId, mediaLibraryTargetBackground]);
+  }, [mediaLibraryTargetFrameId, mediaLibraryTargetBackground, mediaLibraryTargetSlot]);
 
   // Handle opening media library for a specific frame (to change its media)
   const handleOpenMediaLibraryForFrame = useCallback((frameId: string) => {
     setMediaLibraryTargetFrameId(frameId);
     setMediaLibraryTargetBackground(false);
+    setMediaLibraryTargetSlot(null);
     setIsMediaLibraryOpen(true);
   }, []);
 
@@ -1092,6 +1169,7 @@ export const Canvas: React.FC = () => {
   const handleOpenMediaLibrary = useCallback(() => {
     setMediaLibraryTargetFrameId(null);
     setMediaLibraryTargetBackground(false);
+    setMediaLibraryTargetSlot(null);
     setIsMediaLibraryOpen(true);
   }, []);
 
@@ -1099,6 +1177,7 @@ export const Canvas: React.FC = () => {
   const handleOpenMediaLibraryForBackground = useCallback(() => {
     setMediaLibraryTargetFrameId(null);
     setMediaLibraryTargetBackground(true);
+    setMediaLibraryTargetSlot(null);
     setIsMediaLibraryOpen(true);
   }, []);
 
@@ -1225,6 +1304,8 @@ export const Canvas: React.FC = () => {
           onToggleBlackout={() => setBlackout(prev => !prev)}
           showTestCard={showTestCard}
           onToggleTestCard={() => setShowTestCard(prev => !prev)}
+          isLauncherOpen={isLauncherOpen}
+          onToggleLauncher={toggleLauncher}
         />
       )}
 
@@ -1241,6 +1322,15 @@ export const Canvas: React.FC = () => {
         />
       )}
 
+      {!isPresentationMode && isLauncherOpen && (
+        <ClipLauncher
+          onPickMedia={pickMediaForSlot}
+          onSelectLayer={selectLayerSurfaces}
+          onLayerAdded={(surfaceId) => setSelectedFrameIds([surfaceId])}
+          onClose={toggleLauncher}
+        />
+      )}
+
       {/* Media Library Modal */}
       <MediaLibrary
         isOpen={isMediaLibraryOpen}
@@ -1248,6 +1338,7 @@ export const Canvas: React.FC = () => {
           setIsMediaLibraryOpen(false);
           setMediaLibraryTargetFrameId(null);
           setMediaLibraryTargetBackground(false);
+          setMediaLibraryTargetSlot(null);
         }}
         onSelectMedia={handleSelectMedia}
         getMediaUsage={getMediaUsage}
@@ -1267,6 +1358,8 @@ export const Canvas: React.FC = () => {
       <div
         ref={canvasRef}
         className={`w-full h-full relative overflow-hidden bg-[#0a0a0a] ${isDrawMode ? 'cursor-crosshair' : ''}`}
+        // The stage makes room for the clip launcher (presentation mode hides it)
+        style={isPresentationMode ? undefined : { height: 'calc(100% - var(--launcher-height, 0px))' }}
         onMouseDown={handleCanvasMouseDown}
         onDoubleClick={handleCanvasDoubleClick}
         onDrop={handleDrop}
@@ -1333,6 +1426,8 @@ export const Canvas: React.FC = () => {
                 viewScale={viewScale}
                 outputGain={editorGain}
                 renderContent={renderer !== 'gpu'}
+                preload={preloadFor(frame)}
+                startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
               />
             ))}
           </div>

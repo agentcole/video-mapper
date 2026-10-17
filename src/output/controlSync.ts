@@ -1,6 +1,7 @@
 import { createStore, useStore } from 'zustand';
 import { projectStore } from '../state/projectStore';
 import { liveStore } from '../state/liveStore';
+import { mapClips } from '../state/showModel';
 import {
   OUTPUT_CHANNEL, HEARTBEAT_TIMEOUT_MS,
   type OutputMessage, type OutputSnapshot,
@@ -25,11 +26,14 @@ const stripUrl = <T extends { mediaId?: string; url?: string }>(item: T): T =>
   item.mediaId ? { ...item, url: '' } : item;
 
 export const createSnapshot = (): OutputSnapshot => {
-  const { frames, background, grid, composition } = projectStore.getState();
-  const { masterOpacity, blackout, showTestCard, playback, renderer } = liveStore.getState();
+  const { surfaces, layers, columns, background, grid, composition } = projectStore.getState();
+  const {
+    masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
+  } = liveStore.getState();
+  const show = mapClips({ surfaces, layers, columns }, clip => ({ ...clip, source: stripUrl(clip.source) }));
   return {
-    doc: { frames: frames.map(stripUrl), background: stripUrl(background), grid, composition },
-    live: { masterOpacity, blackout, showTestCard, playback, renderer },
+    doc: { ...show, background: stripUrl(background), grid, composition },
+    live: { masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers },
   };
 };
 

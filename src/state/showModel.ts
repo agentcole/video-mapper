@@ -17,9 +17,15 @@ export interface ClipSource {
   filename?: string;
 }
 
+// How a clip reacts to the launcher: normal (start, again = restart), toggle
+// (again = clear the layer) or piano (plays while held, then the previous
+// clip comes back)
+export type TriggerStyle = 'normal' | 'toggle' | 'piano';
+
 export interface Clip {
   id: string;
   name?: string;
+  triggerStyle?: TriggerStyle; // default 'normal'
   source: ClipSource;
   loop: boolean;
   playbackRate: number;
@@ -88,8 +94,8 @@ export const emptyShow = (): ShowDocument => ({ surfaces: [], layers: [], column
 
 const randomId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 
-export type IdFactory = (kind: 'layer' | 'clip') => string;
-const defaultIds: IdFactory = kind => randomId(kind);
+export type IdFactory = (kind: 'layer' | 'clip' | 'surface' | 'column') => string;
+export const defaultIds: IdFactory = kind => randomId(kind);
 
 export const findClip = (layer: Layer | undefined, clipId: string | null): Clip | null => {
   if (!layer || !clipId) return null;
@@ -128,7 +134,7 @@ const surfaceFromFrame = (frame: MediaFrame, layerId: string): Surface => ({
   softEdge: frame.softEdge,
 });
 
-const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, 'id' | 'name'> => ({
+const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, 'id' | 'name' | 'triggerStyle'> => ({
   source: { type: frame.type, url: frame.url, mediaId: frame.mediaId, filename: frame.filename },
   loop: frame.loop,
   playbackRate: frame.playbackRate,
@@ -148,7 +154,7 @@ const clipFieldsFromFrame = (frame: MediaFrame): Omit<Clip, 'id' | 'name'> => ({
   sepia: frame.sepia,
 });
 
-const EMPTY_CLIP_FIELDS: Omit<Clip, 'id' | 'name'> = {
+const EMPTY_CLIP_FIELDS: Omit<Clip, 'id' | 'name' | 'triggerStyle'> = {
   source: { type: 'image', url: '' },
   loop: true,
   playbackRate: 1,
@@ -168,12 +174,17 @@ const EMPTY_CLIP_FIELDS: Omit<Clip, 'id' | 'name'> = {
   sepia: 0,
 };
 
+/** A new clip playing a media source, with neutral settings. */
+export const createClip = (id: string, source: ClipSource): Clip => ({ ...EMPTY_CLIP_FIELDS, id, source });
+
 const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null): MediaFrame => {
   const c = clip ?? { ...EMPTY_CLIP_FIELDS, id: '' };
   return {
     id: surface.id,
     name: surface.name,
     layerId: surface.layerId,
+    clipId: clip?.id,
+    layerHasClips: layer ? layer.slots.some(c => c !== null) : false,
     visible: surface.visible,
     testPattern: surface.testPattern,
     zIndex: surface.zIndex,
@@ -221,12 +232,13 @@ const shallowEqual = (a: object, b: object): boolean => {
   return ka.every(k => a[k] === b[k]);
 };
 
-const sameClipFields = (clip: Clip, fields: Omit<Clip, 'id' | 'name'>): boolean => {
+// Only the fields a frame carries — clip-only settings (name, trigger style)
+// don't make a clip "changed"
+const sameClipFields = (clip: Clip, fields: ReturnType<typeof clipFieldsFromFrame>): boolean => {
   const { source, ...rest } = fields;
-  const { source: clipSource, id, name, ...clipRest } = clip;
-  void id;
-  void name;
-  return shallowEqual(clipSource, source) && shallowEqual(clipRest, rest);
+  return clip.source.type === source.type && clip.source.url === source.url &&
+    clip.source.mediaId === source.mediaId && clip.source.filename === source.filename &&
+    (Object.keys(rest) as (keyof typeof rest)[]).every(k => clip[k] === rest[k]);
 };
 
 // ---- The lens ------------------------------------------------------------------

@@ -28,11 +28,20 @@ export interface LiveState {
   playback: { command: PlaybackCommand | null; seq: number };
   // Content renderer: DOM/CSS or the WebGL2 compositor (beta) — per machine
   renderer: RendererKind;
+  // Clip launcher: the cued column (preloaded, fired by Go), a clip to
+  // preload because it's about to be triggered (under the pointer), and a
+  // counter per layer that renderers watch to (re)start its clip from the top
+  cuedColumn: number | null;
+  preloadClipId: string | null;
+  layerTriggers: Record<string, number>;
   setRenderer: (renderer: RendererKind) => void;
   setMasterOpacity: (value: number) => void;
   setBlackout: (value: boolean | ((prev: boolean) => boolean)) => void;
   setShowTestCard: (value: boolean | ((prev: boolean) => boolean)) => void;
   sendPlayback: (command: PlaybackCommand) => void;
+  setCuedColumn: (column: number | null) => void;
+  setPreloadClipId: (clipId: string | null) => void;
+  restartLayers: (layerIds: string[]) => void;
 }
 
 export const liveStore = createStore<LiveState>()((set) => ({
@@ -41,6 +50,9 @@ export const liveStore = createStore<LiveState>()((set) => ({
   showTestCard: false,
   playback: { command: null, seq: 0 },
   renderer: storedRenderer(),
+  cuedColumn: null,
+  preloadClipId: null,
+  layerTriggers: {},
   setRenderer: (renderer) => {
     try {
       localStorage.setItem(RENDERER_KEY, renderer);
@@ -53,6 +65,14 @@ export const liveStore = createStore<LiveState>()((set) => ({
   setBlackout: (value) => set(s => ({ blackout: typeof value === 'function' ? value(s.blackout) : value })),
   setShowTestCard: (value) => set(s => ({ showTestCard: typeof value === 'function' ? value(s.showTestCard) : value })),
   sendPlayback: (command) => set(s => ({ playback: { command, seq: s.playback.seq + 1 } })),
+  setCuedColumn: (cuedColumn) => set({ cuedColumn }),
+  setPreloadClipId: (preloadClipId) => set(s => (s.preloadClipId === preloadClipId ? s : { preloadClipId })),
+  restartLayers: (layerIds) => set(s => {
+    if (layerIds.length === 0) return s;
+    const layerTriggers = { ...s.layerTriggers };
+    for (const id of layerIds) layerTriggers[id] = (layerTriggers[id] ?? 0) + 1;
+    return { layerTriggers };
+  }),
 }));
 
 export function useLiveStore<T>(selector: (state: LiveState) => T): T {

@@ -24,14 +24,6 @@ export interface ProjectDocument extends ShowDocument {
   composition: CompositionSettings;
 }
 
-/** What renderers and output windows need: frames instead of the model. */
-export interface RenderDocument {
-  frames: MediaFrame[];
-  background: BackgroundSettings;
-  grid: GridSettings;
-  composition: CompositionSettings;
-}
-
 // A document given either as the model or (output windows, tests) as frames
 export type DocumentInput = Partial<ProjectDocument> & { frames?: MediaFrame[] };
 
@@ -40,6 +32,8 @@ export interface ProjectState extends ProjectDocument {
   // Setters accept a value or an updater, like React's setState
   setFrames: (updater: Updater<MediaFrame[]>) => void;
   updateFrame: (id: string, updates: Partial<MediaFrame>) => void;
+  // Edit the show model directly (clip launcher: slots, triggers, columns)
+  setShow: (updater: (show: ShowDocument) => ShowDocument) => void;
   setBackground: (updater: Updater<BackgroundSettings>) => void;
   setGrid: (updater: Updater<GridSettings>) => void;
   setComposition: (updater: Updater<CompositionSettings>) => void;
@@ -77,6 +71,13 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
         const next = s.frames.map(f => (f.id === id ? { ...f, ...updates } : f));
         const nextShow = showFromFrames(showOf(s), next);
         return { ...nextShow, frames: framesFromShow(nextShow, next) };
+      }),
+      setShow: (updater) => set(s => {
+        const current = showOf(s);
+        const nextShow = updater(current);
+        // Returning the same state object skips the update entirely
+        if (nextShow.surfaces === s.surfaces && nextShow.layers === s.layers && nextShow.columns === s.columns) return s;
+        return { ...showOf(nextShow), frames: framesFromShow(nextShow, s.frames) };
       }),
       setBackground: (updater) => set(s => ({ background: apply(updater, s.background) })),
       setGrid: (updater) => set(s => ({ grid: apply(updater, s.grid) })),

@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { projectStore, useProjectStore } from '../state/projectStore';
+import { allClips, type ClipSource } from '../state/showModel';
+import { usePreload } from '../render/preload';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { getCurrentProjectId, getProject } from '../lib/projectRepository';
 import { parseProjectData } from '../lib/projectSchema';
@@ -111,6 +113,7 @@ export const OutputApp: React.FC = () => {
   useWakeLock();
 
   const frames = useProjectStore(s => s.frames);
+  const layers = useProjectStore(s => s.layers);
   const background = useProjectStore(s => s.background);
   const grid = useProjectStore(s => s.grid);
   const composition = useProjectStore(s => s.composition);
@@ -119,15 +122,23 @@ export const OutputApp: React.FC = () => {
   const showTestCard = useLiveStore(s => s.showTestCard);
   const playback = useLiveStore(s => s.playback);
   const renderer = useLiveStore(s => s.renderer);
+  const layerTriggers = useLiveStore(s => s.layerTriggers);
   const [gpuFailed, setGpuFailed] = useState(false);
   const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
 
-  const mediaIds = [...frames.map(f => f.mediaId), background.mediaId]
+  // Every clip's media, not only the playing ones: a trigger must not wait
+  // for IndexedDB
+  const mediaIds = [...allClips({ layers }).map(c => c.source.mediaId), background.mediaId]
     .filter((id): id is string => Boolean(id));
   const mediaUrls = useResolvedMediaUrls(mediaIds);
   const urlOf = (item: { mediaId?: string; url?: string }) =>
     item.mediaId ? mediaUrls[item.mediaId] ?? '' : item.url ?? '';
+  const clipUrlOf = useCallback(
+    (source: ClipSource) => (source.mediaId ? mediaUrls[source.mediaId] ?? '' : source.url),
+    [mediaUrls],
+  );
+  const { preload, forFrame: preloadFor } = usePreload(clipUrlOf);
 
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
   const [isFullscreen, setIsFullscreen] = useState(Boolean(document.fullscreenElement));
@@ -218,6 +229,8 @@ export const OutputApp: React.FC = () => {
               outputGain,
               playback,
               showPlaceholders: false,
+              preload,
+              layerTriggers,
             }}
             pixelsPerUnit={scale * window.devicePixelRatio}
             onUnavailable={(reason) => {
@@ -242,6 +255,8 @@ export const OutputApp: React.FC = () => {
                 playback={playback}
                 outputGain={outputGain}
                 showPlaceholder={false}
+                preload={preloadFor(frame)}
+                startSeq={frame.layerId ? layerTriggers[frame.layerId] ?? 0 : undefined}
               />
             ))}
           </div>

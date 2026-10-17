@@ -50,6 +50,14 @@ A high-performance web-based video mapping application built with React, TypeScr
 
 Projects (format 5) separate **mapping** from **content**, like Resolume: *surfaces* hold the mapping (geometry, shape, corner pin, soft edge); *layers* hold the mix (opacity, blend mode) and a row of *clip slots* across 8 columns; *clips* hold media, transport and look. A surface shows its layer's active clip. Older projects are converted on open. Details: [docs/design/data-model.md](docs/design/data-model.md).
 
+### ⚡ Clip Launcher
+- **Layers × columns** of clips docked under the stage (**L** shows/hides it): press a clip to play it on its layer, press a column header (or **1–9**) to play the whole column — layers with an empty cell there are cleared, like Resolume
+- **Cue and Go**: cue a column (**Shift+1–9** or its crosshair) to preload it, fire it with **Go** (**Space**); the next column is cued automatically, so Space steps through a show
+- **Instant starts**: cued clips and the clip under the pointer are loaded and parked on their first frame, so a trigger only has to press play (measured 11–18 ms on the GPU renderer, 12–60 ms on CSS; a cold start takes ~75–240 ms). The previous clip stays on screen until the new one has a frame — no black flash. The toolbar shows how long the last start took.
+- **Trigger styles** per clip (right-click): *Normal* (again = restart), *Toggle* (again = clear the layer), *Piano* (plays while held, then the previous clip returns)
+- **Editing**: click an empty slot to pick media, drop files onto a slot (several files fill the slots to the right), drag a clip by its label to move it (Alt = copy), right-click to rename, replace or remove; per-layer opacity fader and clear button; **+ Layer** adds a full-composition layer, **+ Column** a column
+- Triggers are performance actions: undo/redo never changes what is playing, while slot edits are undoable. What plays is saved with the project, so an installation starts where it left off. Output windows mirror triggers and preload the same clips.
+
 ### 💾 Project Management
 - **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
 - **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
@@ -165,6 +173,7 @@ npm run preview
 - **Cmd/Ctrl+D**: Duplicate selection
 - **Cmd/Ctrl+A**: Select all frames
 - **ESC**: Exit presentation mode, cancel draw mode, or deselect
+- **1–9**: Play a launcher column · **Shift+1–9**: cue (preload) a column · **Space**: Go (fire the cue) · **L**: show/hide the clip launcher
 
 ### Composition & Output (Resolume-style)
 
@@ -265,16 +274,19 @@ src/
 │   ├── FrameContent.tsx     # Frame content for the CSS renderer
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
+│   ├── ClipLauncher.tsx     # Layers × columns clip launcher (bottom dock)
 │   ├── ProjectsPanel.tsx    # Projects + versions dialog
 │   ├── MediaLibrary.tsx     # Media library (IndexedDB) + linked folders
 │   ├── OutputWindowControls.tsx
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
-├── state/                   # zustand stores, show model (surfaces/layers/clips), undo, project session
+├── state/                   # zustand stores, show model (surfaces/layers/clips), launcher ops (deck), undo, project session
 ├── output/                  # Output window app + editor ⇄ output sync
 ├── render/
 │   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)
+│   ├── preload.ts           # Which clips each window keeps ready for the launcher
+│   ├── startStats.ts        # Trigger → first frame latency readout
 │   ├── GpuStage.tsx         # React host for the compositor
 │   └── webgl/               # WebGL2 compositor, shaders, media pool
 ├── benchmark/               # Video layer benchmark (?benchmark)
@@ -299,6 +311,7 @@ src/
 - [x] Multi-select frames (shift+click, marquee)
 - [x] Copy/paste frames
 - [x] Undo/redo functionality
+- [x] Clip launcher with column triggers, cue/Go and preloading
 - [x] Fixed composition resolution with letterboxed editing
 - [x] Unified corner pin for all shapes + warped editing grid
 - [x] Layers panel with numeric transform properties
