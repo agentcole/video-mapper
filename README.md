@@ -171,6 +171,14 @@ npm run preview
 - **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
 - **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
 
+### Renderer: CSS or GPU (beta)
+
+The *Renderer* switch in the Output section chooses how the composition's content is drawn — in the editor and in output windows (remembered per machine):
+
+- **CSS** — browser layout with `matrix3d` corner pins and `clip-path` shapes (the proven path)
+- **GPU (beta)** — a WebGL2 compositor: every pixel is mapped back through the frame's inverse homography (exact perspective), antialiased shapes, all 16 blend modes per the W3C compositing spec, the CSS filter set, soft edges, master fader; recovers automatically from a lost GPU context and falls back to CSS if WebGL2 isn't available. Editor handles stay DOM on top, so editing works the same.
+- Known differences in GPU mode: soft edges stay at the frame's edges when content is zoomed; blur is a 12-tap approximation; remote media URLs need CORS headers to be drawn (library and folder media always work)
+
 ### Warping (unified corner pin)
 
 - Corner pin works the same on **every shape** (Photoshop-style): the four pins sit on the frame's box and define one homography; the media, the shape outline, the editing grid, vertex and resize handles, the selection outline and the click area all go through it — polygons/triangles keep straight edges, circles warp as conics
@@ -248,15 +256,24 @@ The current renderer is DOM/CSS based:
 src/
 ├── components/
 │   ├── ui/                  # shadcn/ui components
-│   ├── Canvas.tsx           # Stage, gestures, history, persistence
-│   ├── MediaFrame.tsx       # Frame content + editor overlay (handles, outlines, hit area)
+│   ├── Canvas.tsx           # Stage, gestures, editor wiring
+│   ├── MediaFrame.tsx       # Frame editor overlay (handles, outlines, hit area)
+│   ├── FrameContent.tsx     # Frame content for the CSS renderer
 │   ├── ControlPanel.tsx     # Left control panel
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
-│   ├── MediaLibrary.tsx     # IndexedDB media library modal
-│   ├── BackgroundSettings.tsx
+│   ├── ProjectsPanel.tsx    # Projects + versions dialog
+│   ├── MediaLibrary.tsx     # Media library (IndexedDB) + linked folders
+│   ├── OutputWindowControls.tsx
 │   ├── TestCard.tsx         # Calibration test pattern
 │   ├── UpdatePrompt.tsx     # Service worker registration + update notice
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
+├── state/                   # zustand stores, undo history, project session
+├── output/                  # Output window app + editor ⇄ output sync
+├── render/
+│   ├── frameMath.ts         # Per-pixel mapping the GPU shader implements (+ tests)
+│   ├── GpuStage.tsx         # React host for the compositor
+│   └── webgl/               # WebGL2 compositor, shaders, media pool
+├── benchmark/               # Video layer benchmark (?benchmark)
 ├── lib/
 │   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
 │   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
@@ -266,8 +283,8 @@ src/
 │   ├── mediaFolders.ts      # Linked media folders (File System Access)
 │   └── utils.ts
 ├── types.ts                 # TypeScript type definitions
-├── App.tsx                  # Root component
-├── main.tsx                 # Entry point
+├── App.tsx                  # Editor root
+├── main.tsx                 # Entry point (editor, ?output, ?benchmark)
 └── index.css                # Global styles
 ```
 

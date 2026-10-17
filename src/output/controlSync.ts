@@ -26,10 +26,10 @@ const stripUrl = <T extends { mediaId?: string; url?: string }>(item: T): T =>
 
 export const createSnapshot = (): OutputSnapshot => {
   const { frames, background, grid, composition } = projectStore.getState();
-  const { masterOpacity, blackout, showTestCard, playback } = liveStore.getState();
+  const { masterOpacity, blackout, showTestCard, playback, renderer } = liveStore.getState();
   return {
     doc: { frames: frames.map(stripUrl), background: stripUrl(background), grid, composition },
-    live: { masterOpacity, blackout, showTestCard, playback },
+    live: { masterOpacity, blackout, showTestCard, playback, renderer },
   };
 };
 

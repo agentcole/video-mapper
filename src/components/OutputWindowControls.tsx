@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ExternalLink, X, ScanSearch } from 'lucide-react';
 import { Button } from './ui/button';
 import { useOutputStatus, closeOutputs } from '../output/controlSync';
+import { liveStore, useLiveStore } from '../state/liveStore';
 import { getScreens, openOutputWindow, supportsScreenSelection, type ScreenInfo } from '../output/outputWindow';
 
 // Output window controls: pick a screen (Chromium), open/move the output,
@@ -12,6 +13,7 @@ export const OutputWindowControls: React.FC = () => {
   const [screenIndex, setScreenIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const canSelectScreen = supportsScreenSelection();
+  const renderer = useLiveStore(s => s.renderer);
 
   const detectScreens = async () => {
     setError(null);
@@ -36,6 +38,23 @@ export const OutputWindowControls: React.FC = () => {
 
   return (
     <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-gray-400">Renderer</span>
+        <div className="flex flex-1 rounded-md overflow-hidden border border-gray-600 text-xs">
+          {(['css', 'gpu'] as const).map(kind => (
+            <button
+              key={kind}
+              onClick={() => liveStore.getState().setRenderer(kind)}
+              className={`flex-1 py-1 ${renderer === kind ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-white/10'}`}
+              title={kind === 'gpu'
+                ? 'WebGL2 compositor (beta): per-pixel perspective, GPU blend modes'
+                : 'Browser layout (CSS transforms) — the proven path'}
+            >
+              {kind === 'css' ? 'CSS' : 'GPU (beta)'}
+            </button>
+          ))}
+        </div>
+      </div>
       {canSelectScreen && (
         screens ? (
           <select

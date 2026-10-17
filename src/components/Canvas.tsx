@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import type {
   MediaFrame, DragState, ResizeState, RotateState, DrawState, MarqueeState,
   ShapeType, Point, StoredMedia,
@@ -20,10 +20,12 @@ import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { startControlSync, useOutputStatus } from '../output/controlSync';
 import { useProjectSession } from '../state/useProjectSession';
 import { ProjectsPanel } from './ProjectsPanel';
+import { GpuStage } from '../render/GpuStage';
+import type { RenderScene } from '../render/types';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
-const { setMasterOpacity, setBlackout, setShowTestCard, sendPlayback } = liveStore.getState();
+const { setMasterOpacity, setBlackout, setShowTestCard, sendPlayback, setRenderer } = liveStore.getState();
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -157,6 +159,8 @@ export const Canvas: React.FC = () => {
   const blackout = useLiveStore(s => s.blackout);
   const showTestCard = useLiveStore(s => s.showTestCard);
   const playback = useLiveStore(s => s.playback);
+  const renderer = useLiveStore(s => s.renderer);
+  const [rendererNotice, setRendererNotice] = useState<string | null>(null);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
   // Open project, autosave, versions, import/export (see useProjectSession)
   const clearSelection = useCallback(() => setSelectedFrameIds([]), []);
@@ -282,6 +286,23 @@ export const Canvas: React.FC = () => {
   // output window is live it carries the sound, so the editor stays silent.
   const outputGain = outputGainOf({ masterOpacity, blackout });
   const editorGain = outputsConnected ? 0 : outputGain;
+
+  // GPU renderer (beta): draws background + frames; falls back to CSS
+  const visibleFrames = useMemo(() => frames.filter(f => f.visible !== false), [frames]);
+  const gpuScene = useMemo<RenderScene>(() => ({
+    frames: visibleFrames,
+    background,
+    composition,
+    masterOpacity,
+    outputGain: editorGain,
+    playback,
+    showPlaceholders: !isPresentationMode,
+  }), [visibleFrames, background, composition, masterOpacity, editorGain, playback, isPresentationMode]);
+  const handleGpuUnavailable = useCallback((reason: string) => {
+    console.error(reason);
+    setRenderer('css');
+    setRendererNotice(`${reason} — switched back to the CSS renderer.`);
+  }, []);
 
   // Names of the layers using a stored media (for the library's delete warning)
   const getMediaUsage = useCallback((mediaId: string): string[] => {
@@ -1156,6 +1177,12 @@ export const Canvas: React.FC = () => {
             <button onClick={session.dismissLoadWarnings} className="text-white/70 hover:text-white">Dismiss</button>
           </div>
         )}
+        {rendererNotice && (
+          <div className="flex items-center gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+            <span>{rendererNotice}</span>
+            <button onClick={() => setRendererNotice(null)} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
         {session.autosaveError && (
           <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
             <span>Autosave failed: {session.autosaveError}</span>
@@ -1263,12 +1290,26 @@ export const Canvas: React.FC = () => {
             transformOrigin: '0 0',
           }}
         >
-          {/* Master-faded output (background + frames) */}
-          <div data-canvas-bg="true" className="absolute inset-0" style={{ opacity: masterOpacity }}>
-            <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
+          {/* Content: GPU canvas or master-faded DOM (background + frames).
+              Frames always provide their editor overlay. */}
+          {renderer === 'gpu' && (
+            <GpuStage
+              scene={gpuScene}
+              pixelsPerUnit={viewScale * window.devicePixelRatio}
+              onUnavailable={handleGpuUnavailable}
+            />
+          )}
+          <div
+            data-canvas-bg="true"
+            className="absolute inset-0"
+            style={{ opacity: masterOpacity, pointerEvents: renderer === 'gpu' ? 'none' : undefined }}
+          >
+            {renderer !== 'gpu' && (
+              <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
+            )}
 
             {/* Frames */}
-            {frames.filter(f => f.visible !== false).map(frame => (
+            {visibleFrames.map(frame => (
               <MediaFrameComponent
                 key={frame.id}
                 frame={frame}
@@ -1286,6 +1327,7 @@ export const Canvas: React.FC = () => {
                 overlayContainer={overlayEl}
                 viewScale={viewScale}
                 outputGain={editorGain}
+                renderContent={renderer !== 'gpu'}
               />
             ))}
           </div>

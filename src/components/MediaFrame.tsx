@@ -53,6 +53,8 @@ interface MediaFrameComponentProps {
   overlayContainer: HTMLElement | null;
   viewScale: number; // composition → screen scale; keeps handles a constant screen size
   outputGain: number; // master fader × blackout, applied to audio volume
+  // false when the GPU renderer draws the content — only the editor UI remains
+  renderContent?: boolean;
 }
 
 // Number of subdivisions of the warped editing grid (Resolume-style)
@@ -89,6 +91,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   overlayContainer,
   viewScale,
   outputGain,
+  renderContent = true,
 }: MediaFrameComponentProps) {
   const frameId = frame.id;
   const onUpdate = useCallback(
@@ -1121,12 +1124,14 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
 
   return (
     <>
-      <FrameContent
-        frame={frame}
-        playback={playback}
-        outputGain={outputGain}
-        showPlaceholder={!isPresentationMode}
-      />
+      {renderContent && (
+        <FrameContent
+          frame={frame}
+          playback={playback}
+          outputGain={outputGain}
+          showPlaceholder={!isPresentationMode}
+        />
+      )}
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}
       {overlayContainer && uiLayer && createPortal(uiLayer, overlayContainer)}
     </>
