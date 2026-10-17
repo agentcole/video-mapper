@@ -1,23 +1,27 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
-  ChevronDown, ChevronUp, Plus, RotateCcw, Sparkles, Trash2, Upload, X,
+  Activity, ChevronDown, ChevronUp, Plus, RotateCcw, Sparkles, Trash2, Upload, X,
 } from 'lucide-react';
-import type { EffectInstance, EffectParamValue } from '../types';
+import type { EffectInstance, EffectParamValue, ModMap, Modulation } from '../types';
 import { useProjectStore } from '../state/projectStore';
 import { liveStore, useLiveStore } from '../state/liveStore';
 import { findClip } from '../state/showModel';
 import {
-  addEffect, moveEffect, removeEffect, resetEffect, resetGenerator, setEffectParam, setGeneratorParam, stackOf,
-  toggleEffect, type EffectTarget,
+  addEffect, moveEffect, removeEffect, resetEffect, resetGenerator, setEffectMod, setEffectParam, setGeneratorMod,
+  setGeneratorParam, stackOf, toggleEffect, type EffectTarget,
 } from '../state/effectActions';
+import { defaultModulation, hasMods, modKey } from '../state/modulation';
 import { effectsOfKind, importIsf, useEffectLibrary, type EffectDef } from '../effects/library';
-import { paramValue, type IsfInput } from '../effects/isf';
+import { inputRange, paramValue, type IsfInput } from '../effects/isf';
+import { LiveMarker, ModButton, ModEditor } from './ModControls';
+import { liveValue } from '../state/liveModulation';
 import { dialogSurface, field, iconButton, option, panelTitle, sectionLabel } from './ui/theme';
 
 // ---------------------------------------------------------------------------
 // Effect editor: the ISF effect stack of a clip, a layer or the composition
-// (top to bottom = first to last), and a generator clip's parameters.
-// Effects and generators render with the GPU renderer.
+// (top to bottom = first to last), and a generator clip's parameters. Number
+// parameters can be modulated (∿). Effects, generators and modulation render
+// with the GPU renderer.
 // ---------------------------------------------------------------------------
 
 // ---- Parameter controls ------------------------------------------------------------
@@ -30,49 +34,79 @@ const fromHex = (hex: string, alpha: number): number[] => {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, alpha];
 };
 
-const rangeOf = (input: IsfInput, axis = 0): [number, number] => {
-  const pick = (v: number | number[] | undefined, fallback: number) =>
-    typeof v === 'number' ? v : Array.isArray(v) ? v[axis] ?? fallback : fallback;
-  const min = pick(input.min, 0);
-  const max = pick(input.max, input.type === 'float' ? 1 : 1);
-  return max > min ? [min, max] : [min, min + 1];
-};
-
 const formatNumber = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
 
-const Slider: React.FC<{ value: number; min: number; max: number; onChange: (v: number) => void; label: string }> = ({
-  value, min, max, onChange, label,
-}) => (
-  <div className="flex items-center gap-2">
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={(max - min) / 500}
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      className="flex-1 h-1 accent-cyan-400"
-      aria-label={label}
-    />
-    <span className="w-10 text-right tabular-nums text-[10px] text-gray-300">{formatNumber(value)}</span>
-  </div>
-);
+// Modulation of the parameters of one effect / generator
+interface ModProps {
+  mods: ModMap | undefined;
+  onMod: (key: string, mod: Modulation | null) => void;
+  seedKey: string; // as the renderer seeds random LFOs (effect instance id, `gen:<clip id>`)
+}
 
-const ParamControl: React.FC<{
+/** A number slider with its modulation: ∿ button, live marker and editor. */
+const Slider: React.FC<ModProps & {
+  value: number; min: number; max: number; onChange: (v: number) => void; label: string; paramKey: string;
+}> = ({ value, min, max, onChange, label, paramKey, mods, onMod, seedKey }) => {
+  const [open, setOpen] = useState(false);
+  const mod = mods?.[paramKey];
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1 flex items-center">
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={(max - min) / 500}
+            value={value}
+            onChange={(e) => onChange(Number(e.target.value))}
+            className="w-full h-1 accent-cyan-400"
+            aria-label={label}
+          />
+          {mod && <LiveMarker value={() => (liveValue(value, mod, min, max, `${seedKey}|${paramKey}`) - min) / (max - min)} />}
+        </div>
+        <span className="w-10 text-right tabular-nums text-[10px] text-gray-300">{formatNumber(value)}</span>
+        <ModButton
+          active={!!mod}
+          open={open}
+          onClick={() => {
+            if (!mod) {
+              onMod(paramKey, defaultModulation(value, min, max));
+              setOpen(true);
+            } else {
+              setOpen(o => !o);
+            }
+          }}
+        />
+      </div>
+      {mod && open && (
+        <ModEditor
+          mod={mod}
+          onChange={(next) => {
+            onMod(paramKey, next);
+            if (!next) setOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+const ParamControl: React.FC<ModProps & {
   input: IsfInput;
   value: EffectParamValue | undefined;
   onChange: (value: EffectParamValue) => void;
-}> = ({ input, value, onChange }) => {
+}> = ({ input, value, onChange, ...modProps }) => {
   const v = paramValue(input, value);
   const label = input.label || input.name;
   switch (input.type) {
     case 'float': {
-      const [min, max] = rangeOf(input);
+      const [min, max] = inputRange(input);
       return (
-        <label className="block">
+        <div>
           <span className="text-[11px] text-gray-400">{label}</span>
-          <Slider value={v as number} min={min} max={max} onChange={onChange} label={label} />
-        </label>
+          <Slider value={v as number} min={min} max={max} onChange={onChange} label={label} paramKey={modKey(input.name)} {...modProps} />
+        </div>
       );
     }
     case 'long': {
@@ -127,7 +161,7 @@ const ParamControl: React.FC<{
         <div>
           <span className="text-[11px] text-gray-400">{label}</span>
           {[0, 1].map(axis => {
-            const [min, max] = rangeOf(input, axis);
+            const [min, max] = inputRange(input, axis);
             return (
               <Slider
                 key={axis}
@@ -135,7 +169,9 @@ const ParamControl: React.FC<{
                 min={min}
                 max={max}
                 label={`${label} ${axis === 0 ? 'x' : 'y'}`}
+                paramKey={modKey(input.name, axis)}
                 onChange={(n) => onChange(axis === 0 ? [n, point[1]] : [point[0], n])}
+                {...modProps}
               />
             );
           })}
@@ -147,17 +183,19 @@ const ParamControl: React.FC<{
   }
 };
 
-const Params: React.FC<{
+const Params: React.FC<ModProps & {
   def: EffectDef;
   params: Record<string, EffectParamValue>;
   onChange: (name: string, value: EffectParamValue) => void;
-}> = ({ def, params, onChange }) => {
+}> = ({ def, params, onChange, ...modProps }) => {
   const inputs = def.shader?.inputs.filter(i => i.type !== 'image' && i.type !== 'audio' && i.type !== 'audioFFT') ?? [];
-  if (inputs.length === 0) return <p className="text-[11px] text-gray-500">No parameters</p>;
+  const listens = def.shader?.inputs.some(i => i.type === 'audio' || i.type === 'audioFFT');
   return (
     <div className="space-y-2">
+      {listens && <p className="text-[10px] text-gray-500">Listens to the audio input.</p>}
+      {inputs.length === 0 && <p className="text-[11px] text-gray-500">No parameters</p>}
       {inputs.map(input => (
-        <ParamControl key={input.name} input={input} value={params[input.name]} onChange={(v) => onChange(input.name, v)} />
+        <ParamControl key={input.name} input={input} value={params[input.name]} onChange={(v) => onChange(input.name, v)} {...modProps} />
       ))}
     </div>
   );
@@ -184,8 +222,9 @@ const EffectItem: React.FC<{
           className="accent-cyan-400"
           title={instance.enabled ? 'Bypass' : 'Turn on'}
         />
-        <button className="flex-1 min-w-0 text-left text-xs font-semibold truncate" onClick={() => setOpen(o => !o)}>
-          {def?.name ?? instance.effectId}
+        <button className="flex-1 min-w-0 text-left text-xs font-semibold truncate flex items-center gap-1" onClick={() => setOpen(o => !o)}>
+          <span className="truncate">{def?.name ?? instance.effectId}</span>
+          {hasMods(instance.mods) && <Activity className="w-3 h-3 shrink-0 text-cyan-300" aria-label="Modulated" />}
         </button>
         <button className={iconButton} disabled={first} onClick={() => moveEffect(target, instance.id, -1)} title="Earlier in the stack">
           <ChevronUp className="w-3.5 h-3.5" />
@@ -207,7 +246,14 @@ const EffectItem: React.FC<{
           ) : def.error || error ? (
             <p className="text-[11px] text-red-300 whitespace-pre-wrap break-words">{def.error ?? error}</p>
           ) : (
-            <Params def={def} params={instance.params} onChange={(name, v) => setEffectParam(target, instance.id, name, v)} />
+            <Params
+              def={def}
+              params={instance.params}
+              onChange={(name, v) => setEffectParam(target, instance.id, name, v)}
+              mods={instance.mods}
+              onMod={(key, mod) => setEffectMod(target, instance.id, key, mod)}
+              seedKey={instance.id}
+            />
           )}
         </div>
       )}
@@ -344,7 +390,7 @@ export const EffectsPanel: React.FC<EffectsPanelProps> = ({ target, onClose }) =
       <div className="overflow-y-auto p-3 space-y-3">
         {renderer !== 'gpu' && (
           <div className="rounded bg-amber-500/15 ring-1 ring-amber-400/50 px-2 py-1.5 text-[11px] text-amber-100 flex items-center gap-2">
-            <span className="flex-1">Effects and generators show with the GPU renderer.</span>
+            <span className="flex-1">Effects, generators and modulation show with the GPU renderer.</span>
             <button
               className="px-2 py-0.5 rounded bg-cyan-500 text-black font-semibold hover:bg-cyan-400"
               onClick={() => liveStore.getState().setRenderer('gpu')}
@@ -366,7 +412,14 @@ export const EffectsPanel: React.FC<EffectsPanelProps> = ({ target, onClose }) =
               compileErrors[generatorDef.id] ? (
                 <p className="text-[11px] text-red-300 whitespace-pre-wrap">{compileErrors[generatorDef.id]}</p>
               ) : (
-                <Params def={generatorDef} params={generator.params} onChange={(name, v) => setGeneratorParam(target.clipId, name, v)} />
+                <Params
+                  def={generatorDef}
+                  params={generator.params}
+                  onChange={(name, v) => setGeneratorParam(target.clipId, name, v)}
+                  mods={generator.mods}
+                  onMod={(key, mod) => setGeneratorMod(target.clipId, key, mod)}
+                  seedKey={`gen:${target.clipId}`}
+                />
               )
             ) : (
               <p className="text-[11px] text-amber-300">Shader not in this browser's library.</p>

@@ -1,5 +1,6 @@
 import type { ProjectDocument } from '../state/projectStore';
 import type { LiveState } from '../state/liveStore';
+import type { AudioSnapshot } from '../audio/audioBus';
 
 // ---------------------------------------------------------------------------
 // Editor ⇄ output window protocol (BroadcastChannel, same origin + browser).
@@ -34,6 +35,7 @@ export type OutputMessage =
   | { type: 'state'; snapshot: OutputSnapshot }
   | { type: 'control-ready' }
   | { type: 'close-outputs' }
+  | { type: 'audio'; snapshot: AudioSnapshot } // the editor's audio analysis, ~94 per second
   // outputs → editor
   | { type: 'hello'; outputId: string }
   | { type: 'heartbeat'; outputId: string }

@@ -1,5 +1,9 @@
 import type { EffectInstance, EffectParamValue } from '../../types';
-import { buildFragmentShader, evalExpression, ISF_VERTEX, paramValue, type IsfShader } from '../../effects/isf';
+import {
+  buildFragmentShader, evalExpression, ISF_VERTEX, paramValue, type IsfInput, type IsfShader,
+} from '../../effects/isf';
+import type { AudioSnapshot } from '../../audio/audioBus';
+import { SPECTRUM_SIZE, WAVEFORM_SIZE } from '../../audio/analysis';
 
 // ---------------------------------------------------------------------------
 // Runs ISF effect stacks and generators on the GPU. A stack takes a texture
@@ -10,6 +14,10 @@ import { buildFragmentShader, evalExpression, ISF_VERTEX, paramValue, type IsfSh
 // top row first, so the first pass reads them flipped (`_inputImage_flip`);
 // everything the runner renders is bottom-up ("yUp"), which the frame shader
 // and the final present account for.
+//
+// Audio inputs get the analysis of the audio input as one-row images:
+// `audio` the waveform (0.5 = silence), `audioFFT` the spectrum (0..1,
+// 0 Hz … Nyquist), resampled to the input's MAX columns when it has one.
 // ---------------------------------------------------------------------------
 
 export interface RunnerTexture {
@@ -51,6 +59,37 @@ interface Buffer {
 // Buffers not used for this many frames are released
 const BUFFER_TTL_FRAMES = 120;
 
+interface AudioTexture {
+  texture: WebGLTexture;
+  width: number;
+  audio: AudioSnapshot | null | undefined; // what it shows (undefined: nothing yet)
+}
+
+const SILENT_SPECTRUM = new Uint8Array(SPECTRUM_SIZE);
+const SILENT_WAVE = new Uint8Array(WAVEFORM_SIZE).fill(128);
+
+/** `width` columns from `source`: the loudest value of each group (or interpolated when growing). */
+export const resampleAudio = (source: Uint8Array, width: number, peak: boolean): Uint8Array => {
+  if (width === source.length) return source;
+  const out = new Uint8Array(width);
+  for (let i = 0; i < width; i++) {
+    const from = (i * source.length) / width;
+    const to = ((i + 1) * source.length) / width;
+    if (to - from <= 1) {
+      out[i] = source[Math.min(source.length - 1, Math.floor(from))];
+      continue;
+    }
+    let acc = 0;
+    let count = 0;
+    for (let j = Math.floor(from); j < Math.ceil(to); j++) {
+      acc = peak ? Math.max(acc, source[j]) : acc + source[j];
+      count++;
+    }
+    out[i] = peak ? acc : Math.round(acc / count);
+  }
+  return out;
+};
+
 export class EffectRunner {
   private gl: WebGL2RenderingContext;
   private programs = new Map<string, Program | { error: string }>();
@@ -60,6 +99,8 @@ export class EffectRunner {
   private floatTargets: boolean;
   private frame = 0;
   private timing: EffectTiming = { time: 0, delta: 0, frame: 0, bpm: 120, beat: 0 };
+  private audio: AudioSnapshot | null = null;
+  private audioTextures = new Map<string, AudioTexture>();
   // A shader failed to compile (effect id, message) — shown in the effect editor
   private onError: (effectId: string, message: string) => void;
 
@@ -75,14 +116,16 @@ export class EffectRunner {
   reset(): void {
     this.programs.clear();
     this.buffers.clear();
+    this.audioTextures.clear();
     this.vao = this.gl.createVertexArray()!;
     this.black = this.createBlack();
     this.floatTargets = !!this.gl.getExtension('EXT_color_buffer_float');
   }
 
-  beginFrame(timing: EffectTiming): void {
+  beginFrame(timing: EffectTiming, audio: AudioSnapshot | null = null): void {
     this.frame++;
     this.timing = timing;
+    this.audio = audio;
   }
 
   /** Free render targets nobody used lately (removed effects, cleared layers). */
@@ -100,6 +143,8 @@ export class EffectRunner {
     this.buffers.clear();
     for (const p of this.programs.values()) if ('program' in p) this.gl.deleteProgram(p.program);
     this.programs.clear();
+    for (const a of this.audioTextures.values()) this.gl.deleteTexture(a.texture);
+    this.audioTextures.clear();
   }
 
   /** Compile a shader now (the ?isf-check page); returns the error, if any. */
@@ -203,7 +248,8 @@ export class EffectRunner {
           case 'color': gl.uniform4fv(loc, v as number[]); break;
           case 'point2D': gl.uniform2fv(loc, v as number[]); break;
           case 'image': bindImage(i.name, i.name === 'inputImage' || i.name === 'startImage' ? input : null); break;
-          default: bindImage(i.name, null); // audio: silence
+          case 'audio':
+          case 'audioFFT': bindImage(i.name, this.audioImage(i)); break;
         }
       }
       // Pass targets read their last result — never the side being written
@@ -310,6 +356,43 @@ export class EffectRunner {
     const gl = this.gl;
     buffer.textures.forEach(t => gl.deleteTexture(t));
     buffer.framebuffers.forEach(f => gl.deleteFramebuffer(f));
+  }
+
+  /** The audio input as an image for an `audio` / `audioFFT` input (one row, top = bottom). */
+  private audioImage(input: IsfInput): RunnerTexture {
+    const fft = input.type === 'audioFFT';
+    const native = fft ? SPECTRUM_SIZE : WAVEFORM_SIZE;
+    const max = typeof input.max === 'number' && input.max >= 1 ? Math.round(input.max) : native;
+    const width = Math.min(native, max);
+    const key = `${input.type}:${width}`;
+    const gl = this.gl;
+    let entry = this.audioTextures.get(key);
+    if (!entry) {
+      const texture = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      entry = { texture, width, audio: undefined };
+      this.audioTextures.set(key, entry);
+    }
+    if (entry.audio !== this.audio) {
+      const source = fft ? this.audio?.spectrum ?? SILENT_SPECTRUM : this.audio?.waveform ?? SILENT_WAVE;
+      const values = resampleAudio(source, width, fft);
+      const rgba = new Uint8Array(width * 4);
+      for (let i = 0; i < width; i++) {
+        rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = values[i];
+        rgba[i * 4 + 3] = 255;
+      }
+      gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      entry.audio = this.audio;
+    }
+    // One row: the same either way up
+    return { texture: entry.texture, width, height: 1, yUp: true };
   }
 
   private createBlack(): WebGLTexture {

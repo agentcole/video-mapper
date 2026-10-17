@@ -2,8 +2,9 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { projectStore, useProjectStore } from '../state/projectStore';
 import { allClips, type ClipSource } from '../state/showModel';
 import { usePreload } from '../render/preload';
-import { applyCrossfader, crossfadeGain } from '../state/transitions';
+import { crossfadeGain } from '../state/transitions';
 import { loadUserEffects } from '../effects/library';
+import { publishAudio } from '../audio/audioBus';
 import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
 import { getCurrentProjectId, getProject } from '../lib/projectRepository';
 import { parseProjectData } from '../lib/projectSchema';
@@ -34,8 +35,8 @@ const useOutputSync = () => {
       getProject(projectId)
         .then(record => {
           if (receivedLiveState || record?.data == null) return;
-          const { surfaces, layers, columns, background, grid, composition, tempo, effects } = parseProjectData(record.data);
-          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo, effects });
+          const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros } = parseProjectData(record.data);
+          projectStore.getState().replaceDocument({ surfaces, layers, columns, background, grid, composition, tempo, effects, macros });
         })
         .catch(error => console.warn('Could not load the saved project for the output:', error));
     }
@@ -51,6 +52,8 @@ const useOutputSync = () => {
         receivedLiveState = true;
         projectStore.getState().replaceDocument(message.snapshot.doc);
         liveStore.setState(message.snapshot.live);
+      } else if (message.type === 'audio') {
+        publishAudio(message.snapshot);
       } else if (message.type === 'control-ready') {
         send({ type: 'hello', outputId });
       } else if (message.type === 'close-outputs') {
@@ -131,6 +134,7 @@ export const OutputApp: React.FC = () => {
   const timeOrigin = useLiveStore(s => s.timeOrigin);
   const bpm = useProjectStore(s => s.tempo.bpm);
   const compositionEffects = useProjectStore(s => s.effects);
+  const macros = useProjectStore(s => s.macros);
   const [gpuFailed, setGpuFailed] = useState(false);
   const useGpu = renderer === 'gpu' && !gpuFailed;
   const outputGain = outputGainOf({ masterOpacity, blackout });
@@ -230,11 +234,13 @@ export const OutputApp: React.FC = () => {
         {useGpu ? (
           <GpuStage
             scene={{
-              frames: applyCrossfader(frames.filter(f => f.visible !== false), crossfader).map(f => ({ ...f, url: urlOf(f) })),
+              frames: frames.filter(f => f.visible !== false).map(f => ({ ...f, url: urlOf(f) })),
               bpm,
               clockOrigin,
               timeOrigin,
               effects: compositionEffects,
+              crossfader,
+              macros: macros.map(m => m.value),
               background: { ...background, url: urlOf(background) },
               composition,
               masterOpacity,

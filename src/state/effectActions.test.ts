@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { projectStore } from './projectStore';
 import { createClip, createColumns, type IdFactory } from './showModel';
 import {
-  addEffect, assignGenerator, moveEffect, removeEffect, resetEffect, setEffectParam, setGeneratorParam, stackOf,
-  toggleEffect, type EffectTarget,
+  addEffect, assignGenerator, moveEffect, removeEffect, resetEffect, resetGenerator, setEffectMod, setEffectParam,
+  setGeneratorMod, setGeneratorParam, stackOf, toggleEffect, type EffectTarget,
 } from './effectActions';
+import { renameMacro, setLayerMod, setMacroValue } from './modActions';
+import type { Modulation } from '../types';
 
 const counterIds = (): IdFactory => {
   let n = 0;
@@ -66,5 +68,63 @@ describe('effect stacks', () => {
     const clip = projectStore.getState().layers[0].slots[1]!;
     expect(clip).toMatchObject({ id: clipId, name: 'Plasma', generator: { effectId: 'builtin:plasma', params: { speed: 2 } } });
     expect(clip.source).toEqual({ type: 'image', url: '' });
+  });
+});
+
+describe('modulation', () => {
+  const lfo: Modulation = { source: { kind: 'lfo', shape: 'sine', period: 4, beats: true }, amount: 0.5 };
+  const kick: Modulation = { source: { kind: 'audio', band: 'kick' }, amount: 1 };
+
+  beforeEach(() => {
+    const clip = createClip('c1', { type: 'video', url: 'blob:c1' });
+    projectStore.getState().replaceDocument({
+      columns: createColumns(),
+      layers: [{ id: 'L', name: 'L', opacity: 1, blendMode: 'normal', slots: [clip, ...Array(7).fill(null)], activeClipId: 'c1' }],
+      surfaces: [],
+      effects: [],
+    });
+  });
+
+  it.each([{ kind: 'clip', clipId: 'c1' }, { kind: 'layer', layerId: 'L' }, { kind: 'composition' }] as EffectTarget[])(
+    'sets and removes effect parameter modulations on a $kind', (target) => {
+      const id = addEffect(target, 'builtin:invert');
+      setEffectMod(target, id, 'amount', lfo);
+      setEffectMod(target, id, 'center.1', kick);
+      expect(stackOf(target)[0].mods).toEqual({ amount: lfo, 'center.1': kick });
+      setEffectMod(target, id, 'amount', null);
+      expect(stackOf(target)[0].mods).toEqual({ 'center.1': kick });
+      setEffectMod(target, id, 'center.1', null);
+      expect(stackOf(target)[0].mods).toBeUndefined();
+      setEffectMod(target, id, 'amount', lfo);
+      resetEffect(target, id);
+      expect(stackOf(target)[0].mods).toBeUndefined();
+    },
+  );
+
+  it('modulates generator parameters and layer properties', () => {
+    const clipId = assignGenerator({ layerId: 'L', column: 1 }, 'builtin:plasma');
+    setGeneratorMod(clipId, 'speed', kick);
+    expect(projectStore.getState().layers[0].slots[1]?.generator?.mods).toEqual({ speed: kick });
+    resetGenerator(clipId);
+    expect(projectStore.getState().layers[0].slots[1]?.generator?.mods).toBeUndefined();
+
+    setLayerMod('L', 'opacity', lfo);
+    expect(projectStore.getState().layers[0].mods).toEqual({ opacity: lfo });
+    setLayerMod('L', 'opacity', null);
+    expect(projectStore.getState().layers[0].mods).toBeUndefined();
+  });
+
+  it('moves and names macro faders', () => {
+    setMacroValue(2, 0.75);
+    setMacroValue(3, 4);
+    renameMacro(2, '  Strobe  ');
+    const macros = projectStore.getState().macros;
+    expect(macros[2]).toEqual({ name: 'Strobe', value: 0.75 });
+    expect(macros[3].value).toBe(1);
+    renameMacro(2, '');
+    expect(projectStore.getState().macros[2].name).toBe('Macro 3');
+    const before = projectStore.getState().macros;
+    setMacroValue(2, 0.75); // no change, no update
+    expect(projectStore.getState().macros).toBe(before);
   });
 });

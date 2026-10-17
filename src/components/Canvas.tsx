@@ -29,10 +29,12 @@ import type { ClipSource } from '../state/showModel';
 import { assignMedia, cueColumn, go, triggerColumn } from '../state/deckActions';
 import { resyncBar, tapTempo } from '../state/clockActions';
 import { noticeSurface } from './ui/theme';
-import { applyCrossfader, crossfadeGain } from '../state/transitions';
+import { crossfadeGain } from '../state/transitions';
 import { assignGenerator, type EffectTarget } from '../state/effectActions';
 import { loadUserEffects } from '../effects/library';
 import { EffectsPanel } from './EffectsPanel';
+import { DashboardPanel } from './DashboardPanel';
+import { resumeAudioInput } from '../audio/audioInput';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -191,6 +193,8 @@ export const Canvas: React.FC = () => {
   const timeOrigin = useLiveStore(s => s.timeOrigin);
   const bpm = useProjectStore(s => s.tempo.bpm);
   const compositionEffects = useProjectStore(s => s.effects);
+  const macros = useProjectStore(s => s.macros);
+  const macroValues = useMemo(() => macros.map(m => m.value), [macros]);
   const { preload, forFrame: preloadFor } = usePreload(editorUrlOf);
   const [rendererNotice, setRendererNotice] = useState<string | null>(null);
   const [isProjectsOpen, setIsProjectsOpen] = useState(false);
@@ -317,6 +321,9 @@ export const Canvas: React.FC = () => {
     void loadUserEffects();
   }, []);
   const [effectsTarget, setEffectsTarget] = useState<EffectTarget | null>(null);
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  // The audio input comes back on if it was on (the permission is remembered)
+  useEffect(() => resumeAudioInput(), []);
   const outputsConnected = useOutputStatus(s => s.connected) > 0;
 
   // Master fader and blackout apply to audio as well as pixels. While an
@@ -327,11 +334,13 @@ export const Canvas: React.FC = () => {
   // GPU renderer (beta): draws background + frames; falls back to CSS
   const visibleFrames = useMemo(() => frames.filter(f => f.visible !== false), [frames]);
   const gpuScene = useMemo<RenderScene>(() => ({
-    frames: applyCrossfader(visibleFrames, crossfader),
+    frames: visibleFrames,
     bpm,
     clockOrigin,
     timeOrigin,
     effects: compositionEffects,
+    crossfader,
+    macros: macroValues,
     background,
     composition,
     masterOpacity,
@@ -340,7 +349,7 @@ export const Canvas: React.FC = () => {
     showPlaceholders: !isPresentationMode,
     preload,
     layerTriggers,
-  }), [visibleFrames, crossfader, bpm, clockOrigin, timeOrigin, compositionEffects, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
+  }), [visibleFrames, crossfader, macroValues, bpm, clockOrigin, timeOrigin, compositionEffects, background, composition, masterOpacity, editorGain, playback, isPresentationMode, preload, layerTriggers]);
 
   // ------------------------------------------------------------------
   // Clip launcher
@@ -1360,11 +1369,14 @@ export const Canvas: React.FC = () => {
           onLayerAdded={(surfaceId) => setSelectedFrameIds([surfaceId])}
           onClose={toggleLauncher}
           onOpenEffects={setEffectsTarget}
+          dashboardOpen={isDashboardOpen}
+          onToggleDashboard={() => setIsDashboardOpen(open => !open)}
         />
       )}
       {effectsTarget && !isPresentationMode && (
         <EffectsPanel target={effectsTarget} onClose={() => setEffectsTarget(null)} />
       )}
+      {isDashboardOpen && !isPresentationMode && <DashboardPanel onClose={() => setIsDashboardOpen(false)} />}
 
       {/* Media Library Modal */}
       <MediaLibrary

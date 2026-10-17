@@ -2,6 +2,7 @@ import { createStore, useStore } from 'zustand';
 import { projectStore } from '../state/projectStore';
 import { liveStore } from '../state/liveStore';
 import { mapClips } from '../state/showModel';
+import type { AudioSnapshot } from '../audio/audioBus';
 import {
   OUTPUT_CHANNEL, HEARTBEAT_TIMEOUT_MS,
   type OutputMessage, type OutputSnapshot,
@@ -26,14 +27,14 @@ const stripUrl = <T extends { mediaId?: string; url?: string }>(item: T): T =>
   item.mediaId ? { ...item, url: '' } : item;
 
 export const createSnapshot = (): OutputSnapshot => {
-  const { surfaces, layers, columns, background, grid, composition, tempo, effects } = projectStore.getState();
+  const { surfaces, layers, columns, background, grid, composition, tempo, effects, macros } = projectStore.getState();
   const {
     masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
     clockOrigin, scheduled, crossfader, timeOrigin,
   } = liveStore.getState();
   const show = mapClips({ surfaces, layers, columns }, clip => ({ ...clip, source: stripUrl(clip.source) }));
   return {
-    doc: { ...show, background: stripUrl(background), grid, composition, tempo, effects },
+    doc: { ...show, background: stripUrl(background), grid, composition, tempo, effects, macros },
     live: {
       masterOpacity, blackout, showTestCard, playback, renderer, cuedColumn, preloadClipId, layerTriggers,
       clockOrigin, scheduled, crossfader, timeOrigin,
@@ -42,6 +43,11 @@ export const createSnapshot = (): OutputSnapshot => {
 };
 
 let channel: BroadcastChannel | null = null;
+
+/** Forward the audio analysis to the output windows (only while there are some). */
+export const postAudio = (snapshot: AudioSnapshot) => {
+  if (outputStatusStore.getState().connected > 0) channel?.postMessage({ type: 'audio', snapshot } satisfies OutputMessage);
+};
 
 /** Ask all output windows to close (they were opened by script, so they can). */
 export const closeOutputs = () => {

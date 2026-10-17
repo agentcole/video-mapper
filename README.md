@@ -65,8 +65,13 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 ### ✨ Effects & Generators (ISF, GPU renderer)
 - **Effect stacks** on clips, layers and the whole composition — *Effects…* in the clip menu, *Layer effects…* / the `fx` chip on a layer, *FX* in the launcher toolbar. Bypass, reorder, reset; parameters from the shader's inputs.
 - **Generators** as clips: pick one under *Generators* in the media picker of a launcher slot (plasma, noise, gradients, stripes, rings, sweep, checkerboard, colour bars, alignment grid …).
-- **42 bundled ISF shaders** (MIT): colour, keying, distortion, kaleidoscope, blur, glow, edge detect, halftone, feedback trails, and beat-synced strobe / zoom / shake driven by the master clock. **Import your own ISF files** (`.fs`) from the effect picker; projects carry the imported shaders they use. `?isf-check` compiles every shader in your browser.
+- **44 bundled ISF shaders** (MIT): colour, keying, distortion, kaleidoscope, blur, glow, edge detect, halftone, feedback trails, beat-synced strobe / zoom / shake driven by the master clock, and audio-driven Spectrum / Waveform generators. **Import your own ISF files** (`.fs`) from the effect picker; projects carry the imported shaders they use. `?isf-check` compiles every shader in your browser.
 - Effects need the GPU renderer; the effect panel offers to switch. Details: [docs/design/effects.md](docs/design/effects.md).
+
+### 🔊 Audio, Modulation & Macros (GPU renderer)
+- **Audio input** — microphone, line in or a loopback device (BlackHole, VB-Cable): the **Audio** chip in the launcher opens *Audio & Macros* with the input, level / bass / mid / high / kick meters, a spectrum, auto gain (default) or manual gain, and smoothing. The analysis runs in an AudioWorklet and reaches every output window.
+- **Tempo from audio:** the detected BPM shows next to the chip; **Sync** takes it and puts the beat on the kick, **Follow** keeps the master clock on it while it is steady.
+- **Modulation:** the **∿** button next to any effect or generator parameter — and *Opacity modulation* in the layer menu — moves it with an **LFO** (7 shapes, synced to beats or in seconds), an **audio band** or a **macro**; a marker on the slider shows the live value. **8 macro faders** (renamable) drive as many parameters as you like and are saved with the project. Details: [docs/design/modulation.md](docs/design/modulation.md).
 
 ### 🥁 Master Clock & Beat Snap
 - **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.

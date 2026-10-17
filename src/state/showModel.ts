@@ -1,6 +1,6 @@
 import type {
-  BeatSnap, BlendMode, CrossfadeSide, EffectInstance, GeneratorSettings, MediaFrame, MediaType, PerspectiveCorners,
-  Point, ShapeType, SoftEdge, Transition,
+  BeatSnap, BlendMode, CrossfadeSide, EffectInstance, GeneratorSettings, MediaFrame, MediaType, ModMap,
+  PerspectiveCorners, Point, ShapeType, SoftEdge, Transition,
 } from '../types';
 
 // ---------------------------------------------------------------------------
@@ -60,6 +60,7 @@ export interface Layer {
   transition?: Transition; // clip changes and clearing dissolve; unset = cut
   crossfade?: CrossfadeSide; // crossfader side; unset = not on the crossfader
   effects?: EffectInstance[]; // ISF effect stack on whatever the layer plays
+  mods?: ModMap; // modulation of layer properties ('opacity')
 }
 
 export interface Column {
@@ -200,6 +201,7 @@ const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null
     crossfade: layer?.crossfade,
     clipEffects: clip?.effects,
     layerEffects: layer?.effects,
+    layerMods: layer?.mods,
     generator: clip?.generator,
     visible: surface.visible,
     testPattern: surface.testPattern,

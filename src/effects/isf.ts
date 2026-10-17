@@ -3,11 +3,11 @@
 // header of an ISF fragment shader and translate its GLSL into GLSL ES 3.00
 // with the ISF built-ins (IMG_PIXEL & co., RENDERSIZE, TIME, PASSINDEX …).
 //
-// Supported: inputs float / bool / long / color / point2D / event / image,
-// multi-pass rendering with named and persistent buffers and size
-// expressions. Not supported: custom vertex shaders, audio inputs (bound to
-// silence), IMPORTED images. Extension: BPM and BEAT (beats of the master
-// clock) for beat-synced shaders.
+// Supported: inputs float / bool / long / color / point2D / event / image /
+// audio / audioFFT (the audio input's analysis), multi-pass rendering with
+// named and persistent buffers and size expressions. Not supported: custom
+// vertex shaders, IMPORTED images. Extension: BPM and BEAT (beats of the
+// master clock) for beat-synced shaders.
 // ---------------------------------------------------------------------------
 
 export type IsfInputType = 'float' | 'bool' | 'long' | 'color' | 'point2D' | 'image' | 'event' | 'audio' | 'audioFFT';
@@ -265,6 +265,15 @@ export const defaultValue = (input: IsfInput): ParamValue => {
     case 'point2D': return Array.isArray(input.default) && input.default.length >= 2 ? input.default.slice(0, 2) : [0, 0];
     default: return 0;
   }
+};
+
+/** The slider range of a float input or one axis of a point (MIN/MAX, else 0..1). */
+export const inputRange = (input: IsfInput, axis = 0): [number, number] => {
+  const pick = (v: number | number[] | undefined, fallback: number) =>
+    typeof v === 'number' ? v : Array.isArray(v) ? v[axis] ?? fallback : fallback;
+  const min = pick(input.min, 0);
+  const max = pick(input.max, 1);
+  return max > min ? [min, max] : [min, min + 1];
 };
 
 /** A stored parameter value if it fits the input, else the default. */

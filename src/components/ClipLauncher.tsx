@@ -16,6 +16,11 @@ import { BEAT_SNAPS } from '../state/clock';
 import { sameTransition, TRANSITION_PRESETS, transitionLabel } from '../state/transitions';
 import type { Clip, Layer, TriggerStyle } from '../state/showModel';
 import { TempoBar } from './TempoBar';
+import { AudioChip } from './DashboardPanel';
+import { LiveMarker, ModButton, ModEditor } from './ModControls';
+import { liveValue } from '../state/liveModulation';
+import { setLayerMod } from '../state/modActions';
+import { defaultModulation } from '../state/modulation';
 import type { EffectTarget } from '../state/effectActions';
 import { useLastClipStart } from '../render/startStats';
 import { generateThumbnail, getMedia, getMediaFile, getMediaObjectUrl, storeMedia } from '../lib/mediaStorage';
@@ -470,7 +475,9 @@ const LayerMenu: React.FC<{
   menu: LayerMenuState; onClose: () => void; onEffects: (target: EffectTarget) => void;
 }> = ({ menu, onClose, onEffects }) => {
   const layer = useProjectStore(s => s.layers.find(l => l.id === menu.layerId));
+  const renderer = useLiveStore(s => s.renderer);
   if (!layer) return null;
+  const opacityMod = layer.mods?.opacity;
   const pick = (transition: Transition) => {
     setLayerTransition(layer.id, transition);
     onClose();
@@ -499,6 +506,24 @@ const LayerMenu: React.FC<{
           </Chip>
         ))}
       </div>
+      <div className="my-1 border-t border-white/10" />
+      <div className="flex items-center px-3 pt-1">
+        <p className={`flex-1 ${sectionLabel}`}>Opacity modulation</p>
+        <ModButton
+          active={!!opacityMod}
+          open={!!opacityMod}
+          onClick={() => setLayerMod(layer.id, 'opacity', opacityMod ? null : defaultModulation(layer.opacity, 0, 1))}
+          title={opacityMod ? 'Remove the opacity modulation' : 'Modulate the opacity (LFO, audio, macro)'}
+        />
+      </div>
+      {opacityMod ? (
+        <div className="px-3 pb-1.5">
+          <ModEditor mod={opacityMod} onChange={(mod) => setLayerMod(layer.id, 'opacity', mod)} />
+          {renderer !== 'gpu' && <p className="mt-1 text-[10px] text-amber-300">Shows with the GPU renderer.</p>}
+        </div>
+      ) : (
+        <p className="px-3 pb-1.5 text-[10px] text-gray-500">Pulse the layer with an LFO, the kick or a macro</p>
+      )}
       <div className="my-1 border-t border-white/10" />
       <p className={`px-3 pt-1 ${sectionLabel}`}>Crossfader side</p>
       <div className="flex gap-1 px-3 py-1.5">
@@ -567,6 +592,8 @@ interface ClipLauncherProps {
   onLayerAdded: (surfaceId: string) => void;
   onClose: () => void;
   onOpenEffects: (target: EffectTarget) => void;
+  dashboardOpen: boolean;
+  onToggleDashboard: () => void;
 }
 
 const nextSide = (side: CrossfadeSide | undefined): CrossfadeSide | null =>
@@ -600,15 +627,20 @@ const LayerHeader: React.FC<{
         <X className="w-3.5 h-3.5" />
       </button>
     </div>
-    <input
-      type="range"
-      min={0}
-      max={100}
-      value={Math.round(layer.opacity * 100)}
-      onChange={(e) => updateDeckLayer(layer.id, { opacity: Number(e.target.value) / 100 })}
-      className="w-full h-1 accent-cyan-400"
-      title={`Layer opacity ${Math.round(layer.opacity * 100)}%`}
-    />
+    <div className="relative flex items-center">
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={Math.round(layer.opacity * 100)}
+        onChange={(e) => updateDeckLayer(layer.id, { opacity: Number(e.target.value) / 100 })}
+        className="w-full h-1 accent-cyan-400"
+        title={`Layer opacity ${Math.round(layer.opacity * 100)}%${layer.mods?.opacity ? ' — modulated (right-click the layer)' : ''}`}
+      />
+      {layer.mods?.opacity && (
+        <LiveMarker value={() => liveValue(layer.opacity, layer.mods!.opacity!, 0, 1, `${layer.id}|opacity`)} />
+      )}
+    </div>
     <div className="flex items-center gap-1 text-[10px]">
       <button
         onClick={(e) => onMenu(e, layer.id)}
@@ -661,7 +693,7 @@ const Crossfader: React.FC = () => {
 };
 
 export const ClipLauncher: React.FC<ClipLauncherProps> = ({
-  onPickMedia, onSelectLayer, onLayerAdded, onClose, onOpenEffects,
+  onPickMedia, onSelectLayer, onLayerAdded, onClose, onOpenEffects, dashboardOpen, onToggleDashboard,
 }) => {
   const compositionFx = useProjectStore(s => s.effects.length);
   const surfaces = useProjectStore(s => s.surfaces);
@@ -717,6 +749,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
           Clip Launcher
         </h2>
         <TempoBar />
+        <AudioChip open={dashboardOpen} onClick={onToggleDashboard} />
         <Crossfader />
         <button
           onClick={() => onOpenEffects({ kind: 'composition' })}

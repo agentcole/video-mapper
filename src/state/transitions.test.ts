@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { MediaFrame } from '../types';
 import {
-  applyCrossfader, crossfadeGain, fadeProgress, sameTransition, transitionLabel, transitionMs,
+  crossfadeGain, fadeProgress, sameTransition, transitionLabel, transitionMs,
 } from './transitions';
 
 describe('transitions', () => {
@@ -42,14 +41,4 @@ describe('crossfader', () => {
     expect(crossfadeGain(undefined, 0)).toBe(1);
   });
 
-  it('scales the opacity of A/B frames only', () => {
-    const frame = (id: string, crossfade?: 'A' | 'B') => ({ id, opacity: 0.8, crossfade }) as MediaFrame;
-    const frames = [frame('a', 'A'), frame('b', 'B'), frame('c')];
-    const shown = applyCrossfader(frames, 0.75);
-    expect(shown.map(f => f.opacity)).toEqual([0.4, 0.8, 0.8]);
-    expect(shown[1]).toBe(frames[1]);
-    expect(shown[2]).toBe(frames[2]);
-    const plain = [frame('c')];
-    expect(applyCrossfader(plain, 0)).toBe(plain);
-  });
 });

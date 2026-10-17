@@ -1,8 +1,8 @@
 import { createStore, useStore, type StoreApi } from 'zustand';
 import type {
-  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings, EffectInstance,
+  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, TempoSettings, EffectInstance, Macro,
 } from '../types';
-import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO } from '../lib/defaults';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_TEMPO } from '../lib/defaults';
 import { emptyShow, framesFromShow, showFromFrames, type ShowDocument } from './showModel';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ export interface ProjectDocument extends ShowDocument {
   composition: CompositionSettings;
   tempo: TempoSettings; // master clock (BPM, bar length, beat snap)
   effects: EffectInstance[]; // composition effect stack (on the whole output)
+  macros: Macro[]; // macro faders (saved, not undoable — like the tempo)
 }
 
 // A document given either as the model or (output windows, tests) as frames
@@ -43,6 +44,7 @@ export interface ProjectState extends ProjectDocument {
   setComposition: (updater: Updater<CompositionSettings>) => void;
   setTempo: (updater: Updater<TempoSettings>) => void;
   setEffects: (updater: Updater<EffectInstance[]>) => void;
+  setMacros: (updater: Updater<Macro[]>) => void;
   // Swap in a whole document (load / import / undo) in one update
   replaceDocument: (doc: DocumentInput) => void;
 }
@@ -70,6 +72,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       composition: initial.composition ?? DEFAULT_COMPOSITION,
       tempo: initial.tempo ?? DEFAULT_TEMPO,
       effects: initial.effects ?? NO_EFFECTS,
+      macros: initial.macros ?? DEFAULT_MACROS,
       ...show,
       frames: framesFromShow(show),
       setFrames: (updater) => set(s => {
@@ -94,6 +97,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
       setComposition: (updater) => set(s => ({ composition: apply(updater, s.composition) })),
       setTempo: (updater) => set(s => ({ tempo: apply(updater, s.tempo) })),
       setEffects: (updater) => set(s => ({ effects: apply(updater, s.effects) })),
+      setMacros: (updater) => set(s => ({ macros: apply(updater, s.macros) })),
       replaceDocument: (doc) => set(s => {
         const nextShow = resolveShow(showOf(s), doc);
         return {
@@ -102,6 +106,7 @@ export const createProjectStore = (initial: DocumentInput = {}): StoreApi<Projec
           ...(doc.composition ? { composition: doc.composition } : {}),
           ...(doc.tempo ? { tempo: doc.tempo } : {}),
           ...(doc.effects ? { effects: doc.effects } : {}),
+          ...(doc.macros ? { macros: doc.macros } : {}),
           ...nextShow,
           frames: framesFromShow(nextShow, s.frames),
         };

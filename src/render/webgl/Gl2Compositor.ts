@@ -1,8 +1,10 @@
 import type { EffectInstance, MediaFrame, Point } from '../../types';
 import type { RenderScene, SceneRenderer } from '../types';
 import { frameRenderParams, MAX_POLYGON_VERTICES } from '../frameMath';
-import { fadeProgress, transitionMs } from '../../state/transitions';
+import { crossfadeGain, fadeProgress, transitionMs } from '../../state/transitions';
 import { beatAt, clockNow } from '../../state/clock';
+import { hasMods, modulate, modulatedParams, seedOf, type ModContext } from '../../state/modulation';
+import { currentAudio } from '../../audio/audioBus';
 import { effectKey, getEffectDef, reportCompileError, requestUnknownEffect } from '../../effects/library';
 import { EffectRunner, type ResolvedEffect } from './EffectRunner';
 import { drawTestCard } from '../testCardCanvas';
@@ -94,6 +96,8 @@ export class Gl2Compositor implements SceneRenderer {
   private sources = new Map<string, FrameSource | null>();
   private frameIndex = 0;
   private lastEffectTime = 0;
+  // Modulation sources this render (clock, audio, macros)
+  private mod: ModContext = { now: 0, clock: { bpm: 120, origin: 0 }, audio: null, macros: [] };
 
   /** null when WebGL2 isn't available. */
   static create(canvas: HTMLCanvasElement): Gl2Compositor | null {
@@ -237,13 +241,16 @@ export class Gl2Compositor implements SceneRenderer {
     const gl = this.gl;
     const nowClock = clockNow();
     const time = (nowClock - scene.timeOrigin) / 1000;
+    const clock = { bpm: scene.bpm, origin: scene.clockOrigin };
+    const audio = currentAudio(nowClock);
+    this.mod = { now: nowClock, clock, audio: audio?.levels ?? null, macros: scene.macros };
     this.effects.beginFrame({
       time,
       delta: this.lastEffectTime ? Math.max(0, time - this.lastEffectTime) : 0,
       frame: this.frameIndex++,
       bpm: scene.bpm,
-      beat: beatAt({ bpm: scene.bpm, origin: scene.clockOrigin }, nowClock),
-    });
+      beat: beatAt(clock, nowClock),
+    }, audio);
     this.lastEffectTime = time;
     this.sources.clear();
 
@@ -313,7 +320,14 @@ export class Gl2Compositor implements SceneRenderer {
       gl.deleteTexture(target.texture);
       gl.deleteFramebuffer(target.framebuffer);
     }
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    // Free the GPU context once the canvas is gone. A canvas that stays
+    // (React StrictMode mounts the stage twice) keeps its context for the
+    // next compositor — a lost one would never come back.
+    const lose = gl.getExtension('WEBGL_lose_context');
+    const canvas = this.canvas;
+    setTimeout(() => {
+      if (!canvas.isConnected) lose?.loseContext();
+    }, 0);
   }
 
   // ---- Drawing -------------------------------------------------------------------
@@ -452,7 +466,11 @@ export class Gl2Compositor implements SceneRenderer {
         height: Math.max(1, Math.round(scene.composition.height * scale)),
       };
       const generator: ResolvedEffect = {
-        instance: { id: 'generator', enabled: true, params: item.generator.params },
+        instance: {
+          id: 'generator',
+          enabled: true,
+          params: modulatedParams(def.shader.inputs, item.generator.params, item.generator.mods, this.mod, item.key),
+        },
         shader: def.shader,
         key: effectKey(def),
       };
@@ -488,16 +506,26 @@ export class Gl2Compositor implements SceneRenderer {
         requestUnknownEffect();
         continue;
       }
-      if (def.shader && def.kind === 'effect') resolved.push({ instance, shader: def.shader, key: effectKey(def) });
+      if (def.shader && def.kind === 'effect') {
+        const params = modulatedParams(def.shader.inputs, instance.params, instance.mods, this.mod, instance.id);
+        resolved.push({ instance: params === instance.params ? instance : { ...instance, params }, shader: def.shader, key: effectKey(def) });
+      }
     }
     return resolved;
+  }
+
+  /** A frame's opacity now: its layer's (modulated), through the crossfader. */
+  private opacityOf(scene: RenderScene, frame: MediaFrame): number {
+    const mod = frame.layerMods?.opacity;
+    const base = mod ? modulate(frame.opacity, mod, 0, 1, this.mod, seedOf(`${frame.layerId}|opacity`)) : frame.opacity;
+    return base * crossfadeGain(frame.crossfade, scene.crossfader);
   }
 
   // Animated content needs a redraw every frame
   private isAnimated(scene: RenderScene): boolean {
     const active = (list?: EffectInstance[]) => !!list?.some(e => e.enabled);
     return active(scene.effects) ||
-      scene.frames.some(f => f.generator || active(f.clipEffects) || active(f.layerEffects));
+      scene.frames.some(f => f.generator || active(f.clipEffects) || active(f.layerEffects) || hasMods(f.layerMods));
   }
 
   private testCard(width: number, height: number, label: string, density: number): MediaTexture {
@@ -632,7 +660,7 @@ export class Gl2Compositor implements SceneRenderer {
     gl.uniform1i(u('u_hasMedia'), source ? 1 : 0);
     // A layer fading out to nothing mixes towards transparent, not the placeholder
     gl.uniform4fv(u('u_fill'), source || from || !scene.showPlaceholders ? [0, 0, 0, 0] : PLACEHOLDER_FILL);
-    gl.uniform1f(u('u_opacity'), frame.opacity);
+    gl.uniform1f(u('u_opacity'), this.opacityOf(scene, frame));
     // Unused samplers are unbound — a render target left on a texture unit
     // would form a feedback loop and the draw would be dropped
     gl.activeTexture(gl.TEXTURE0);

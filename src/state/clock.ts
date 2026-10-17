@@ -37,6 +37,23 @@ export const retime = (clock: Clock, bpm: number, now: number): Clock => ({
   origin: now - beatAt(clock, now) * msPerBeat(bpm),
 });
 
+/**
+ * A tempo and a time a beat fell on (e.g. detected from audio): the beat
+ * grid moves onto it, counting bars on from the nearest beat (the shift is
+ * at most half a beat).
+ */
+export const alignClock = (clock: Clock, bpm: number, beatTime: number, now: number): Clock => {
+  const retimed = retime(clock, bpm, now);
+  const beat = Math.round(beatAt(retimed, beatTime));
+  return { bpm, origin: beatTime - beat * msPerBeat(bpm) };
+};
+
+/** How far (ms) a time is from the nearest beat of the clock. */
+export const beatError = (clock: Clock, time: number): number => {
+  const beats = beatAt(clock, time);
+  return Math.abs(beats - Math.round(beats)) * msPerBeat(clock.bpm);
+};
+
 const mod = (n: number, m: number) => ((n % m) + m) % m;
 
 export interface BarPosition {
