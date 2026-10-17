@@ -1,13 +1,23 @@
 import { createStore, useStore } from 'zustand';
 import type { RendererKind } from '../render/types';
+import { clockNow } from './clock';
 
 // ---------------------------------------------------------------------------
 // Live output controls — show state, not part of the project document:
-// master fader, blackout, global test card and transport commands. Shared by
-// the editor and the output window.
+// master fader, blackout, global test card, transport commands, the clock's
+// phase and launcher state. Shared by the editor and the output window.
 // ---------------------------------------------------------------------------
 
 export type PlaybackCommand = 'play' | 'pause';
+
+// A launcher trigger waiting for its beat (beat snap). `at` is on the clock's
+// time base; `beats` is the snap length it waits for, so it can follow the
+// beat when the tempo or phase changes.
+export type ScheduledTrigger = { at: number; beats: number } & (
+  | { kind: 'clip'; layerId: string; clipId: string | null } // null: clear the layer
+  | { kind: 'column'; column: number }
+  | { kind: 'go' }
+);
 
 const RENDERER_KEY = 'video-mapper-renderer';
 
@@ -34,6 +44,10 @@ export interface LiveState {
   cuedColumn: number | null;
   preloadClipId: string | null;
   layerTriggers: Record<string, number>;
+  // Master clock phase: when beat 0 (a bar start) was, on the clock's time
+  // base — the tempo is in the project. Triggers waiting for their beat.
+  clockOrigin: number;
+  scheduled: ScheduledTrigger[];
   setRenderer: (renderer: RendererKind) => void;
   setMasterOpacity: (value: number) => void;
   setBlackout: (value: boolean | ((prev: boolean) => boolean)) => void;
@@ -42,6 +56,8 @@ export interface LiveState {
   setCuedColumn: (column: number | null) => void;
   setPreloadClipId: (clipId: string | null) => void;
   restartLayers: (layerIds: string[]) => void;
+  setClockOrigin: (origin: number) => void;
+  setScheduled: (scheduled: ScheduledTrigger[]) => void;
 }
 
 export const liveStore = createStore<LiveState>()((set) => ({
@@ -53,6 +69,8 @@ export const liveStore = createStore<LiveState>()((set) => ({
   cuedColumn: null,
   preloadClipId: null,
   layerTriggers: {},
+  clockOrigin: clockNow(),
+  scheduled: [],
   setRenderer: (renderer) => {
     try {
       localStorage.setItem(RENDERER_KEY, renderer);
@@ -73,6 +91,8 @@ export const liveStore = createStore<LiveState>()((set) => ({
     for (const id of layerIds) layerTriggers[id] = (layerTriggers[id] ?? 0) + 1;
     return { layerTriggers };
   }),
+  setClockOrigin: (clockOrigin) => set({ clockOrigin }),
+  setScheduled: (scheduled) => set({ scheduled }),
 }));
 
 export function useLiveStore<T>(selector: (state: LiveState) => T): T {

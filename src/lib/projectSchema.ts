@@ -1,10 +1,12 @@
 import { z } from 'zod';
 import type {
-  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord,
+  MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord, TempoSettings,
 } from '../types';
 import {
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_PERSPECTIVE_CORNERS, DEFAULT_SOFT_EDGE,
+  DEFAULT_TEMPO,
 } from './defaults';
+import { MAX_BPM, MIN_BPM } from '../state/clock';
 import { pinFrameToQuadVertices } from './geometry';
 import {
   createColumns, emptyShow, framesFromShow, showFromFrames,
@@ -25,7 +27,10 @@ import {
 // ---------------------------------------------------------------------------
 
 // 5.1: clips have a trigger style (clip launcher)
-export const PROJECT_VERSION = '5.1.0';
+// 5.2: master clock (tempo) and beat snap per composition / clip
+export const PROJECT_VERSION = '5.2.0';
+
+const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 
 const PointSchema = z.object({ x: z.number(), y: z.number() });
 
@@ -123,6 +128,8 @@ const ClipSchema = z.object({
   name: z.string().optional(),
   // 5.1 — an unknown style (newer file) falls back to normal instead of losing the clip
   triggerStyle: z.enum(['normal', 'toggle', 'piano']).optional().catch(undefined),
+  // 5.2 — unset: the composition's beat snap
+  beatSnap: z.enum(BEAT_SNAPS).optional().catch(undefined),
   source: z.object({
     type: z.enum(['video', 'image']),
     url: z.string().default(''),
@@ -174,6 +181,13 @@ const GridSchema = z.object({
   showInPresentation: z.boolean().default(DEFAULT_GRID.showInPresentation),
 });
 
+// Each setting falls back on its own: a bad value doesn't reset the others
+const TempoSchema = z.object({
+  bpm: z.number().min(MIN_BPM).max(MAX_BPM).catch(DEFAULT_TEMPO.bpm),
+  beatsPerBar: z.number().int().min(1).max(16).catch(DEFAULT_TEMPO.beatsPerBar),
+  beatSnap: z.enum(BEAT_SNAPS).catch(DEFAULT_TEMPO.beatSnap),
+});
+
 const CompositionSchema = z.object({
   width: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.width),
   height: z.number().int().min(16).max(16384).default(DEFAULT_COMPOSITION.height),
@@ -203,6 +217,7 @@ export interface ParsedProject extends ShowDocument {
   background: BackgroundSettings;
   grid: GridSettings;
   composition: CompositionSettings;
+  tempo: TempoSettings;
   media?: ExportedMediaRecord[]; // legacy: base64-embedded media
   mediaFiles?: PackageMediaEntry[]; // project packages: media files in the zip
   name?: string; // project name stored in exported files
@@ -367,6 +382,8 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
     warnings.push(`Composition size was reset to ${composition.width} × ${composition.height}.`);
   }
 
+  const tempo = isRecord(raw.tempo) ? TempoSchema.parse(raw.tempo) : DEFAULT_TEMPO;
+
   let media: ExportedMediaRecord[] | undefined;
   if (Array.isArray(raw.media)) {
     media = [];
@@ -389,5 +406,5 @@ export const parseProjectData = (raw: unknown): ParsedProject => {
 
   const name = typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : undefined;
 
-  return { ...show, frames, background, grid, composition, media, mediaFiles, name, warnings };
+  return { ...show, frames, background, grid, composition, tempo, media, mediaFiles, name, warnings };
 };

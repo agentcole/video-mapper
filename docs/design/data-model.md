@@ -53,5 +53,6 @@ This keeps 1.3 a pure data-model change. The clip launcher (2.1) works on layers
 ## Next
 
 - ~~2.1 Clip launcher: layers × columns grid, column trigger, preload.~~ Done — see [clip-launcher.md](clip-launcher.md). Format 5.1 adds `Clip.triggerStyle`.
+- ~~2.2 Master clock + beat snap.~~ Done — see [master-clock.md](master-clock.md). Format 5.2 adds `tempo` and `Clip.beatSnap`.
 - 2.3 Transitions: a layer crossfades from the old to the new active clip.
 - 3.1 Screens/slices: surfaces that sample a *region of the composition* (render-to-texture, GPU renderer) instead of a single layer.

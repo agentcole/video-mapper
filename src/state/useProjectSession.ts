@@ -5,7 +5,7 @@ import { projectHistory } from './history';
 import { parseProjectData } from '../lib/projectSchema';
 import {
   serializeProject, exportProjectJson, exportProjectPackage, importProjectFile, type LoadedProject,
-  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION,
+  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO,
 } from '../lib/storage';
 import {
   openInitialProject, getProject, createProject, saveProjectData, renameProject, deleteProject,
@@ -33,6 +33,7 @@ const documentOf = (d: ProjectDocument): ProjectDocument => ({
   background: d.background,
   grid: d.grid,
   composition: d.composition,
+  tempo: d.tempo,
 });
 
 const currentDocument = (): ProjectDocument => documentOf(projectStore.getState());
@@ -68,6 +69,7 @@ const EMPTY_DOCUMENT: ProjectDocument = {
   background: DEFAULT_BACKGROUND,
   grid: DEFAULT_GRID,
   composition: DEFAULT_COMPOSITION,
+  tempo: DEFAULT_TEMPO,
 };
 
 // One initial load per page (StrictMode runs effects twice in development)
@@ -127,7 +129,8 @@ export function useProjectSession(onDocumentReplaced: () => void) {
     if (suspendedRef.current) return;
     if (
       state.surfaces === prev.surfaces && state.layers === prev.layers && state.columns === prev.columns &&
-      state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition
+      state.background === prev.background && state.grid === prev.grid && state.composition === prev.composition &&
+      state.tempo === prev.tempo
     ) {
       return;
     }

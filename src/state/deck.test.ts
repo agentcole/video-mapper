@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addColumn, addLayer, layersTopFirst, moveClip, onlyActiveClipsChanged, placeClip, preloadClips,
+  addColumn, addLayer, layersTopFirst, moveClip, onlyActiveClipsChanged, placeClip, preloadClips, preloadTargets,
   removeClip, setActiveClip, triggerColumn, updateClip,
 } from './deck';
 import { createClip, createColumns, type IdFactory, type Layer, type ShowDocument, type Surface } from './showModel';
@@ -117,8 +117,15 @@ describe('launcher order and preloading', () => {
 
   it('preloads the cued column and the clip under the pointer, but not playing clips', () => {
     const s = show();
-    expect(preloadClips(s, 0).map(p => p.clip.id)).toEqual(['b1']); // a1 already plays
-    expect(preloadClips(s, 1, 'b3').map(p => p.clip.id)).toEqual(['a2', 'b3']);
-    expect(preloadClips(s, null)).toEqual([]);
+    const ids = (targets: Parameters<typeof preloadTargets>) => preloadClips(s, preloadTargets(...targets)).map(p => p.clip.id);
+    expect(ids([0, null, []])).toEqual(['b1']); // a1 already plays
+    expect(ids([1, 'b3', []])).toEqual(['a2', 'b3']);
+    expect(ids([null, null, []])).toEqual([]);
+    // Triggers waiting for their beat preload what they will start
+    expect(ids([null, null, [
+      { kind: 'column', column: 2, at: 0, beats: 4 },
+      { kind: 'clip', layerId: 'a', clipId: 'a2', at: 0, beats: 1 },
+      { kind: 'clip', layerId: 'b', clipId: null, at: 0, beats: 1 },
+    ]])).toEqual(['a2', 'b3']);
   });
 });

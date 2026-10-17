@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compareVersions, parseProjectData, PROJECT_VERSION } from './projectSchema';
+import { DEFAULT_TEMPO } from './defaults';
 
 // A frame as older project files stored it — fields added later are missing
 const legacyFrame = (overrides: Record<string, unknown> = {}) => ({
@@ -158,6 +159,19 @@ describe('format 5', () => {
     const future = parseProjectData({ version: PROJECT_VERSION, surfaces, columns, layers: withStyle('hold-and-loop') });
     expect(future.layers[0].slots[0]).not.toBeNull();
     expect(future.layers[0].slots[0]?.triggerStyle).toBeUndefined();
+  });
+
+  it('reads the tempo and beat snap, repairing bad values one by one', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    expect(parseProjectData({ surfaces, layers, columns }).tempo).toEqual(DEFAULT_TEMPO); // before 5.2
+    const withSnap = [{ ...layers[0], slots: layers[0].slots.map(c => (c ? { ...c, beatSnap: 'bar' } : c)) }];
+    const project = parseProjectData({
+      version: PROJECT_VERSION, surfaces, columns, layers: withSnap,
+      tempo: { bpm: 128, beatsPerBar: 3, beatSnap: 'every-other-tuesday' },
+    });
+    expect(project.tempo).toEqual({ bpm: 128, beatsPerBar: 3, beatSnap: 'off' });
+    expect(project.layers[0].slots[0]?.beatSnap).toBe('bar');
+    expect(parseProjectData({ surfaces, layers, columns, tempo: { bpm: 9000 } }).tempo.bpm).toBe(DEFAULT_TEMPO.bpm);
   });
 
   it('skips broken clips and surfaces individually and repairs references', () => {

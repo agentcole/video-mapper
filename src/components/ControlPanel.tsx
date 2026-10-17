@@ -552,6 +552,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             • <strong>B</strong> - Blackout<br />
             • <strong>1–9</strong> - Play column · <strong>Shift+1–9</strong> - Cue<br />
             • <strong>Space</strong> - Go (fire cue) · <strong>L</strong> - Clip launcher<br />
+            • <strong>Alt</strong> + trigger - Fire now (skip beat snap)<br />
+            • <strong>T</strong> - Tap tempo · <strong>Shift+T</strong> - Resync bar<br />
             • <strong>G</strong> / <strong>Shift+G</strong> - Grid / snap<br />
             • <strong>Del</strong> - Delete selection<br />
             • <strong>Arrows</strong> - Nudge (Shift = faster)<br />

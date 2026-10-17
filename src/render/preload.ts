@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { MediaFrame } from '../types';
-import { preloadClips } from '../state/deck';
+import { preloadClips, preloadTargets, type PreloadTargets } from '../state/deck';
 import { useProjectStore } from '../state/projectStore';
 import { useLiveStore } from '../state/liveStore';
 import type { ClipSource, ShowDocument } from '../state/showModel';
@@ -8,18 +8,18 @@ import type { PreloadMedia } from './types';
 
 // ---------------------------------------------------------------------------
 // What a renderer should preload: the clips the launcher may start next
-// (cued column, clip under the pointer) on layers that are actually visible.
+// (cued column, clip under the pointer, triggers waiting for their beat) on
+// layers that are actually visible.
 // ---------------------------------------------------------------------------
 
 export const preloadMedia = (
   show: ShowDocument,
-  cuedColumn: number | null,
-  preloadClipId: string | null,
+  targets: PreloadTargets,
   urlOf: (source: ClipSource) => string,
 ): PreloadMedia[] => {
   const visibleLayers = new Set(show.surfaces.filter(s => s.visible).map(s => s.layerId));
   const result: PreloadMedia[] = [];
-  for (const { layerId, clip } of preloadClips(show, cuedColumn, preloadClipId)) {
+  for (const { layerId, clip } of preloadClips(show, targets)) {
     if (!visibleLayers.has(layerId)) continue;
     const url = urlOf(clip.source);
     if (!url) continue;
@@ -56,10 +56,11 @@ export function usePreload(urlOf: (source: ClipSource) => string): {
   const columns = useProjectStore(s => s.columns);
   const cuedColumn = useLiveStore(s => s.cuedColumn);
   const preloadClipId = useLiveStore(s => s.preloadClipId);
+  const scheduled = useLiveStore(s => s.scheduled);
 
   const computed = useMemo(
-    () => preloadMedia({ surfaces, layers, columns }, cuedColumn, preloadClipId, urlOf),
-    [surfaces, layers, columns, cuedColumn, preloadClipId, urlOf],
+    () => preloadMedia({ surfaces, layers, columns }, preloadTargets(cuedColumn, preloadClipId, scheduled), urlOf),
+    [surfaces, layers, columns, cuedColumn, preloadClipId, scheduled, urlOf],
   );
   // Most edits don't change what to preload — keep the previous list then
   const [preload, setPreload] = useState(computed);
