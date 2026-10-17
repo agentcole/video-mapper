@@ -55,8 +55,8 @@ A tempo change while a trigger waited fired it 7 ms off the computed new boundar
 
 ## Limits / next
 
-- Timers in a **hidden** editor window are throttled by the browser (to 1 s, later 1 min). Mouse and keyboard triggers need the editor in front anyway; once MIDI (2.6) or OSC (4.4) trigger with the editor hidden, the scheduler moves to a worker (worker timers aren't throttled like that).
+- Timers in a **hidden** editor window are throttled by the browser (to 1 s, later 1 min). Since 2.6 waiting triggers use a worker timer, so beat snap stays on the beat when a MIDI controller drives the show from behind the output window (see [midi.md](midi.md)).
 - Two windows started at different times derive the shared time base from the system clock; an NTP step in between would offset them by that step.
-- No **Ableton Link** / **MIDI clock** yet: MIDI clock in/out fits 2.6 (Web MIDI), Link needs the companion bridge (4.4).
+- **MIDI clock in** follows tempo and bar since 2.6 ([midi.md](midi.md)); no clock out yet. **Ableton Link** needs the companion bridge (4.4).
 - **BPM-synced clip playback** (a loop lasts N beats) and beat-synced parameters come with modulation (2.5) and the WebCodecs engine (2.9).
 - 2.3 Transitions can take their duration in beats from this clock.

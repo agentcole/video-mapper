@@ -88,6 +88,7 @@ const SHORTCUTS: [string, string][] = [
   ['Alt', '+ trigger: fire now, skip beat snap'],
   [`T / ${SHIFT}T`, 'Tap tempo / resync bar'],
   ['L', 'Clip launcher'],
+  ['M', 'Learn MIDI / key mappings (Esc ends)'],
   [`G / ${SHIFT}G`, 'Grid / snap'],
   ['Del', 'Delete selection'],
   ['Arrows', `Nudge (${SHIFT.replace('+', '')} = grid steps)`],
@@ -505,7 +506,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         {/* Output (live controls) */}
         <div className={`space-y-2 pt-3 border-t ${divider}`}>
           <p className={sectionLabel}>Output</p>
-          <div>
+          <div data-control="master">
             <label className="text-[11px] text-gray-400 mb-1.5 flex justify-between">
               Master <span className="tabular-nums text-white">{Math.round(masterOpacity * 100)}%</span>
             </label>
@@ -522,6 +523,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               variant={blackout ? 'destructive' : 'outline'}
               size="sm"
               onClick={onToggleBlackout}
+              data-control="blackout"
               className="flex-1"
               title="Blackout — instantly hide all output (B)"
             >
@@ -532,6 +534,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               variant={showTestCard ? 'default' : 'outline'}
               size="sm"
               onClick={onToggleTestCard}
+              data-control="test-card"
               className="flex-1"
               title="Show the output test card for projector setup"
             >

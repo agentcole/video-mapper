@@ -60,19 +60,26 @@ export function startControlSync(): () => void {
   const ch = new BroadcastChannel(OUTPUT_CHANNEL);
   channel = ch;
   const lastSeen = new Map<string, number>();
-  let pending: ReturnType<typeof setTimeout> | null = null;
+  let pending = false;
 
   const updateStatus = () => outputStatusStore.setState({ connected: lastSeen.size });
 
-  const post = () => {
-    pending = null;
+  const send = () => {
     if (lastSeen.size === 0) return;
     ch.postMessage({ type: 'state', snapshot: createSnapshot() } satisfies OutputMessage);
   };
-  // Coalesce bursts (a drag fires many updates per frame) into one message.
-  // A timer rather than rAF so updates still flow while the editor is hidden.
+  const post = () => {
+    if (!pending) return;
+    pending = false;
+    send();
+  };
+  // Coalesce the updates of one event into one message. A microtask, not a
+  // timer or rAF: those are throttled while the editor window is hidden,
+  // and a MIDI controller may be driving the show from behind the output.
   const schedule = () => {
-    if (pending === null) pending = setTimeout(post, 0);
+    if (pending) return;
+    pending = true;
+    queueMicrotask(post);
   };
 
   const unsubscribeProject = projectStore.subscribe(schedule);
@@ -84,14 +91,14 @@ export function startControlSync(): () => void {
       case 'hello':
         lastSeen.set(message.outputId, Date.now());
         updateStatus();
-        post();
+        send();
         break;
       case 'heartbeat':
         if (!lastSeen.has(message.outputId)) {
           // An output that outlived an editor reload — bring it up to date
           lastSeen.set(message.outputId, Date.now());
           updateStatus();
-          post();
+          send();
         } else {
           lastSeen.set(message.outputId, Date.now());
         }
@@ -125,7 +132,7 @@ export function startControlSync(): () => void {
     unsubscribeProject();
     unsubscribeLive();
     clearInterval(expiry);
-    if (pending !== null) clearTimeout(pending);
+    pending = false;
     ch.close();
     if (channel === ch) channel = null;
     outputStatusStore.setState({ connected: 0 });

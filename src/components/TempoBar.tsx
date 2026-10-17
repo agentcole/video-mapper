@@ -123,6 +123,7 @@ const NudgeButton: React.FC<{ direction: 1 | -1 }> = ({ direction }) => {
     <button
       type="button"
       onPointerDown={onPointerDown}
+      data-control={`nudge:${direction}`}
       className="p-0.5 rounded bg-white/10 hover:bg-white/20"
       title={direction > 0 ? 'Push the beat ahead (hold)' : 'Hold the beat back (hold)'}
     >
@@ -152,15 +153,16 @@ export const TempoBar: React.FC = () => {
         }}
         className="px-2 py-0.5 rounded bg-white/15 hover:bg-white/25 active:bg-cyan-500 active:text-black font-semibold"
         title="Tap the beat (T). The first tap is the downbeat."
+        data-control="tap"
       >
         Tap
       </button>
       <BpmInput bpm={tempo.bpm} />
       <span className="text-gray-500">BPM</span>
-      <button type="button" onClick={blurAfter(() => scaleTempo(0.5))} className="px-1 rounded bg-white/10 hover:bg-white/20" title="Half tempo">
+      <button type="button" onClick={blurAfter(() => scaleTempo(0.5))} className="px-1 rounded bg-white/10 hover:bg-white/20" title="Half tempo" data-control="tempo-half">
         ÷2
       </button>
-      <button type="button" onClick={blurAfter(() => scaleTempo(2))} className="px-1 rounded bg-white/10 hover:bg-white/20" title="Double tempo">
+      <button type="button" onClick={blurAfter(() => scaleTempo(2))} className="px-1 rounded bg-white/10 hover:bg-white/20" title="Double tempo" data-control="tempo-double">
         ×2
       </button>
       <NudgeButton direction={-1} />
@@ -168,6 +170,7 @@ export const TempoBar: React.FC = () => {
       <button
         type="button"
         onClick={blurAfter(resyncBar)}
+        data-control="resync"
         className="p-0.5 rounded bg-white/10 hover:bg-white/20"
         title="Resync: now is the start of a bar (Shift+T)"
       >
@@ -187,7 +190,7 @@ export const TempoBar: React.FC = () => {
           <option key={n} value={n} className={option}>{n}/4</option>
         ))}
       </select>
-      <label className={`flex items-center gap-1 ${waiting ? 'text-amber-300' : 'text-gray-400'}`} title="Beat snap: triggers wait for the next beat / bar (Alt + trigger fires now)">
+      <label className={`flex items-center gap-1 ${waiting ? 'text-amber-300' : 'text-gray-400'}`} title="Beat snap: triggers wait for the next beat / bar (Alt + trigger fires now)" data-control="snap">
         Snap
         <select
           value={tempo.beatSnap}

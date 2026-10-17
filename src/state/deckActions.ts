@@ -8,6 +8,7 @@ import {
 import { createClip, defaultIds, findClip, type Clip, type ClipSource, type TriggerStyle } from './showModel';
 import { beatAt, clockNow, snapBeats, snapTime, timeOfBeat, type Clock } from './clock';
 import { markTriggered } from '../render/startStats';
+import { setWorkerTimeout } from './workerTimer';
 
 // ---------------------------------------------------------------------------
 // Clip launcher actions: apply deck operations to the project store and tell
@@ -91,25 +92,26 @@ const run = (trigger: ScheduledTrigger): void => {
 // A trigger before it gets its time (Omit over each member of the union)
 type Trigger = ScheduledTrigger extends infer T ? (T extends unknown ? Omit<T, 'at' | 'beats'> : never) : never;
 
-let timer: ReturnType<typeof setTimeout> | null = null;
+// A worker timer: keeps the beat while the editor window is hidden
+let cancelTimer: (() => void) | null = null;
 
 const scheduled = () => liveStore.getState().scheduled;
 const setScheduled = (next: ScheduledTrigger[]) => liveStore.getState().setScheduled(next);
 
 const armTimer = () => {
-  if (timer !== null) clearTimeout(timer);
-  timer = null;
+  cancelTimer?.();
+  cancelTimer = null;
   const pending = scheduled();
   if (pending.length === 0) return;
   const next = Math.min(...pending.map(t => t.at));
-  timer = setTimeout(fireDue, Math.max(0, next - clockNow()));
+  cancelTimer = setWorkerTimeout(fireDue, Math.max(0, next - clockNow()));
 };
 
 // Same moment: columns before clips, so a clip pressed after a column wins on its layer
 const order = (t: ScheduledTrigger) => (t.kind === 'clip' ? 1 : 0);
 
 function fireDue() {
-  timer = null;
+  cancelTimer = null;
   const now = clockNow();
   const pending = scheduled();
   const due = pending.filter(t => t.at <= now + 1);

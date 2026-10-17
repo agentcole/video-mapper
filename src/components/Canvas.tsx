@@ -34,7 +34,12 @@ import { assignGenerator, type EffectTarget } from '../state/effectActions';
 import { loadUserEffects } from '../effects/library';
 import { EffectsPanel } from './EffectsPanel';
 import { DashboardPanel } from './DashboardPanel';
+import { ControlsPanel } from './ControlsPanel';
+import { LearnOverlay } from './LearnOverlay';
 import { resumeAudioInput } from '../audio/audioInput';
+import { resumeMidi } from '../control/midi';
+import { controlStore } from '../control/mappings';
+import { handleKeyDown as handleMappedKey, handleKeyUp as handleMappedKeyUp, stopLearning, toggleLearning } from '../control/engine';
 
 // Store actions are stable for the app's lifetime
 const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
@@ -321,9 +326,20 @@ export const Canvas: React.FC = () => {
     void loadUserEffects();
   }, []);
   const [effectsTarget, setEffectsTarget] = useState<EffectTarget | null>(null);
-  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
-  // The audio input comes back on if it was on (the permission is remembered)
-  useEffect(() => resumeAudioInput(), []);
+  // Left dock: Audio & Macros or MIDI & Keys (one at a time)
+  const [sidePanel, setSidePanel] = useState<'audio' | 'midi' | null>(null);
+  const toggleSidePanel = (panel: 'audio' | 'midi') => setSidePanel(open => (open === panel ? null : panel));
+  // The audio input and MIDI come back on if they were on (permissions are remembered)
+  useEffect(() => {
+    resumeAudioInput();
+    void resumeMidi();
+  }, []);
+  // Mapped keys let go on key up (piano clips, nudge)
+  useEffect(() => {
+    const onKeyUp = (e: KeyboardEvent) => handleMappedKeyUp(e);
+    window.addEventListener('keyup', onKeyUp);
+    return () => window.removeEventListener('keyup', onKeyUp);
+  }, []);
   const outputsConnected = useOutputStatus(s => s.connected) > 0;
 
   // Master fader and blackout apply to audio as well as pixels. While an
@@ -504,6 +520,12 @@ export const Canvas: React.FC = () => {
       const isTyping = (target.tagName === 'INPUT' && !isToggleInput) || target.tagName === 'TEXTAREA'
         || target.tagName === 'SELECT' || target.isContentEditable;
 
+      // Learn mode ends with Esc before anything else
+      if (e.key === 'Escape' && controlStore.getState().learning) {
+        stopLearning();
+        return;
+      }
+
       // ESC works even while typing: exit mode, cancel draw, or deselect
       if (e.key === 'Escape') {
         if (isPresentationMode) {
@@ -527,6 +549,16 @@ export const Canvas: React.FC = () => {
       }
 
       if (isTyping || isMediaLibraryOpen) return;
+
+      // Keys mapped to targets (and learn mode) come before the built-in shortcuts
+      if (handleMappedKey(e)) {
+        e.preventDefault();
+        return;
+      }
+      if (e.code === 'KeyM' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        toggleLearning();
+        return;
+      }
 
       // Clip launcher: 1–9 play a column, Shift+1–9 cue it, Space fires the
       // cue; with Alt they fire now instead of on the beat (beat snap)
@@ -1369,14 +1401,18 @@ export const Canvas: React.FC = () => {
           onLayerAdded={(surfaceId) => setSelectedFrameIds([surfaceId])}
           onClose={toggleLauncher}
           onOpenEffects={setEffectsTarget}
-          dashboardOpen={isDashboardOpen}
-          onToggleDashboard={() => setIsDashboardOpen(open => !open)}
+          dashboardOpen={sidePanel === 'audio'}
+          onToggleDashboard={() => toggleSidePanel('audio')}
+          midiOpen={sidePanel === 'midi'}
+          onToggleMidi={() => toggleSidePanel('midi')}
         />
       )}
       {effectsTarget && !isPresentationMode && (
         <EffectsPanel target={effectsTarget} onClose={() => setEffectsTarget(null)} />
       )}
-      {isDashboardOpen && !isPresentationMode && <DashboardPanel onClose={() => setIsDashboardOpen(false)} />}
+      {sidePanel === 'audio' && !isPresentationMode && <DashboardPanel onClose={() => setSidePanel(null)} />}
+      {sidePanel === 'midi' && !isPresentationMode && <ControlsPanel onClose={() => setSidePanel(null)} />}
+      {!isPresentationMode && <LearnOverlay />}
 
       {/* Media Library Modal */}
       <MediaLibrary

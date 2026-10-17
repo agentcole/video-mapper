@@ -17,6 +17,7 @@ import { sameTransition, TRANSITION_PRESETS, transitionLabel } from '../state/tr
 import type { Clip, Layer, TriggerStyle } from '../state/showModel';
 import { TempoBar } from './TempoBar';
 import { AudioChip } from './DashboardPanel';
+import { MidiChip } from './ControlsPanel';
 import { LiveMarker, ModButton, ModEditor } from './ModControls';
 import { liveValue } from '../state/liveModulation';
 import { setLayerMod } from '../state/modActions';
@@ -134,6 +135,7 @@ const armedOf = (
 
 interface CellProps {
   layerId: string;
+  row: number; // from the top, for controller mappings
   column: number;
   clip: Clip | null;
   isActive: boolean;
@@ -145,7 +147,7 @@ interface CellProps {
 }
 
 const ClipCell = React.memo(function ClipCell({
-  layerId, column, clip, isActive, isCued, armed, columnCount, onPickMedia, onMenu,
+  layerId, row, column, clip, isActive, isCued, armed, columnCount, onPickMedia, onMenu,
 }: CellProps) {
   const thumbnail = useThumbnail(clip?.source.mediaId);
   const [isDropTarget, setIsDropTarget] = useState(false);
@@ -174,6 +176,7 @@ const ClipCell = React.memo(function ClipCell({
         isActive ? 'ring-2 ring-emerald-400' : isCued ? 'ring-1 ring-amber-400/80' : 'ring-1 ring-white/10'
       } ${isDropTarget ? 'outline outline-2 outline-cyan-400' : ''}`}
       style={{ width: CELL_W, height: CELL_H }}
+      data-control={`slot:${row}:${column}`}
       onDragOver={(e) => {
         if (!acceptsDrop(e)) return;
         e.preventDefault();
@@ -594,6 +597,8 @@ interface ClipLauncherProps {
   onOpenEffects: (target: EffectTarget) => void;
   dashboardOpen: boolean;
   onToggleDashboard: () => void;
+  midiOpen: boolean;
+  onToggleMidi: () => void;
 }
 
 const nextSide = (side: CrossfadeSide | undefined): CrossfadeSide | null =>
@@ -601,10 +606,11 @@ const nextSide = (side: CrossfadeSide | undefined): CrossfadeSide | null =>
 
 const LayerHeader: React.FC<{
   layer: Layer;
+  row: number;
   onSelect: (layerId: string) => void;
   onMenu: (e: React.MouseEvent, layerId: string) => void;
   onEffects: (target: EffectTarget) => void;
-}> = ({ layer, onSelect, onMenu, onEffects }) => (
+}> = ({ layer, row, onSelect, onMenu, onEffects }) => (
   <div
     className="shrink-0 flex flex-col justify-center gap-1 pr-2"
     style={{ width: HEADER_W, height: CELL_H }}
@@ -621,13 +627,14 @@ const LayerHeader: React.FC<{
       <button
         onClick={() => clearLayer(layer.id)}
         disabled={!layer.activeClipId}
+        data-control={`clear:${row}`}
         className="p-0.5 rounded hover:bg-white/15 disabled:opacity-25"
         title="Clear layer (stop its clip)"
       >
         <X className="w-3.5 h-3.5" />
       </button>
     </div>
-    <div className="relative flex items-center">
+    <div className="relative flex items-center py-1" data-control={`opacity:${row}`}>
       <input
         type="range"
         min={0}
@@ -675,6 +682,7 @@ const Crossfader: React.FC = () => {
     <div
       className={`flex items-center gap-1.5 px-2 py-1 rounded bg-white/5 ${inUse ? '' : 'opacity-50'}`}
       title="Crossfader for layers on side A / B — both are full in the middle; double-click centres it"
+      data-control="crossfader"
     >
       <span className={`font-semibold ${value < 0.5 ? 'text-cyan-300' : ''}`}>A</span>
       <input
@@ -693,7 +701,7 @@ const Crossfader: React.FC = () => {
 };
 
 export const ClipLauncher: React.FC<ClipLauncherProps> = ({
-  onPickMedia, onSelectLayer, onLayerAdded, onClose, onOpenEffects, dashboardOpen, onToggleDashboard,
+  onPickMedia, onSelectLayer, onLayerAdded, onClose, onOpenEffects, dashboardOpen, onToggleDashboard, midiOpen, onToggleMidi,
 }) => {
   const compositionFx = useProjectStore(s => s.effects.length);
   const surfaces = useProjectStore(s => s.surfaces);
@@ -750,6 +758,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
         </h2>
         <TempoBar />
         <AudioChip open={dashboardOpen} onClick={onToggleDashboard} />
+        <MidiChip open={midiOpen} onClick={onToggleMidi} />
         <Crossfader />
         <button
           onClick={() => onOpenEffects({ kind: 'composition' })}
@@ -761,13 +770,14 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
         <button
           onClick={(e) => go({ now: e.altKey })}
           disabled={cuedColumn === null}
+          data-control="go"
           className={`flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500 text-black font-semibold disabled:bg-white/10 disabled:text-white/40 ${goArmed ? 'animate-pulse' : ''}`}
           title="Fire the cued column, then cue the next one (Space; Alt: now, without beat snap)"
         >
           <Play className="w-3 h-3 fill-current" />
           Go{nextCue ? ` · ${nextCue.name || cuedColumn! + 1}` : ''}
         </button>
-        <button onClick={clearAllLayers} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20" title="Stop every layer's clip">
+        <button onClick={clearAllLayers} className="px-2 py-1 rounded bg-white/10 hover:bg-white/20" title="Stop every layer's clip" data-control="clear-all">
           Clear all
         </button>
         <button
@@ -797,7 +807,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
       </div>
 
       {!collapsed && (
-        <div className="overflow-auto px-3 pb-3 max-h-[40vh]">
+        <div className="overflow-auto px-3 pb-3 max-h-[40vh]" data-control-scope>
           {/* Column headers */}
           <div className="flex gap-1.5 mb-1.5">
             <div className="shrink-0" style={{ width: HEADER_W }} />
@@ -813,6 +823,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
               >
                 <button
                   onClick={(e) => triggerColumn(index, { now: e.altKey })}
+                  data-control={`column:${index}`}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     const name = prompt('Column name', column.name || String(index + 1));
@@ -825,6 +836,7 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
                 </button>
                 <button
                   onClick={() => cueColumn(cuedColumn === index ? null : index)}
+                  data-control={`cue:${index}`}
                   className={`p-1 rounded hover:bg-white/15 ${cuedColumn === index ? 'text-amber-300' : 'text-white/30'}`}
                   title={`Cue column (preload, fire with Go)${index < 9 ? ` — Shift+${index + 1}` : ''}`}
                 >
@@ -842,15 +854,16 @@ export const ClipLauncher: React.FC<ClipLauncherProps> = ({
 
           {/* Layers, top of the stack first */}
           <div className="flex flex-col gap-1.5">
-            {ordered.map(layer => (
+            {ordered.map((layer, row) => (
               <div key={layer.id} className="flex gap-1.5 items-center">
-                <LayerHeader layer={layer} onSelect={onSelectLayer} onMenu={openLayerMenu} onEffects={onOpenEffects} />
+                <LayerHeader layer={layer} row={row} onSelect={onSelectLayer} onMenu={openLayerMenu} onEffects={onOpenEffects} />
                 {columns.map((column, index) => {
                   const clip = layer.slots[index] ?? null;
                   return (
                     <ClipCell
                       key={column.id}
                       layerId={layer.id}
+                      row={row}
                       column={index}
                       clip={clip}
                       isActive={clip !== null && clip.id === layer.activeClipId}

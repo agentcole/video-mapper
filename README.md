@@ -73,6 +73,11 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 - **Tempo from audio:** the detected BPM shows next to the chip; **Sync** takes it and puts the beat on the kick, **Follow** keeps the master clock on it while it is steady.
 - **Modulation:** the **∿** button next to any effect or generator parameter — and *Opacity modulation* in the layer menu — moves it with an **LFO** (7 shapes, synced to beats or in seconds), an **audio band** or a **macro**; a marker on the slider shows the live value. **8 macro faders** (renamable) drive as many parameters as you like and are saved with the project. Details: [docs/design/modulation.md](docs/design/modulation.md).
 
+### 🎛️ MIDI Controllers & Key Mappings
+- **MIDI learn** (**M**): every mappable control gets a frame — click it, then move a knob, press a pad or a key. Clips, columns, cue, Go, layer opacity and clear, crossfader, master, blackout, tempo (tap, resync, nudge, ÷2 ×2, beat snap) and the 8 macros; effect parameters through the macros. Relative encoders, pitch-bend faders and *Pickup* fader takeover are supported; LEDs show playing / cued / waiting clips.
+- **Controller templates** with LED colours, detected by port name: Akai APC mini mk2 and APC40 mkII, Novation Launchpad Mini MK3 and Launchpad X, DJ TechTools Midi Fighter Twister, Korg nanoKONTROL2 (built from the manufacturers' documentation, not yet tried on hardware).
+- **MIDI clock in** sets the master tempo and, after Start, the bar. Beat-snapped triggers keep the beat while the editor window is hidden. Details: [docs/design/midi.md](docs/design/midi.md).
+
 ### 🥁 Master Clock & Beat Snap
 - **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
 - **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
@@ -195,6 +200,7 @@ npm run preview
 - **ESC**: Exit presentation mode, cancel draw mode, or deselect
 - **1–9**: Play a launcher column · **Shift+1–9**: cue (preload) a column · **Space**: Go (fire the cue) · **L**: show/hide the clip launcher
 - **T**: Tap tempo · **Shift+T**: resync (now is a bar start) · **Alt** + clip / column / Go: fire now, without beat snap
+- **M**: MIDI / key learn (Esc ends) — learned keys take precedence over these shortcuts
 
 ### Composition & Output (Resolume-style)
 

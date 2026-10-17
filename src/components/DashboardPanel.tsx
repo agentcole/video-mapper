@@ -211,7 +211,7 @@ const TempoSection: React.FC = () => {
 const MacroRow: React.FC<{ index: number; name: string; value: number }> = ({ index, name, value }) => {
   const [draft, setDraft] = useState<string | null>(null);
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2" data-control={`macro:${index}`}>
       {draft !== null ? (
         <input
           autoFocus

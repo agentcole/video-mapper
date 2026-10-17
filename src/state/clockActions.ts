@@ -1,7 +1,7 @@
 import type { BeatSnap } from '../types';
 import { projectStore } from './projectStore';
 import { liveStore } from './liveStore';
-import { addTap, alignClock, beatError, clampBpm, clockNow, retime, type Clock, type Tap } from './clock';
+import { addTap, alignClock, beatAt, beatError, clampBpm, clockNow, msPerBeat, retime, type Clock, type Tap } from './clock';
 import { currentClock, retargetScheduled } from './deckActions';
 
 // ---------------------------------------------------------------------------
@@ -48,6 +48,25 @@ export const followTempo = (estimate: { bpm: number; beatTime: number; stable: b
   if (Math.abs(estimate.bpm - clock.bpm) < FOLLOW_BPM && beatError(clock, estimate.beatTime) < FOLLOW_PHASE_MS) return;
   lastFollow = now;
   syncToBeat(estimate.bpm, estimate.beatTime);
+};
+
+/**
+ * Follow an external clock (MIDI clock): its tempo, and its bar when the
+ * position is known (null: keep our phase, change only the tempo). Small
+ * differences are left alone so the clock doesn't churn.
+ */
+export const followExternalClock = (bpm: number, origin: number | null): void => {
+  const clock = currentClock();
+  const next = origin === null
+    ? retime(clock, clampBpm(bpm), clockNow())
+    : { bpm: clampBpm(bpm), origin };
+  // Same tempo and the bars line up (within 1 ms): nothing to do
+  const bar = projectStore.getState().tempo.beatsPerBar;
+  const beats = beatAt(clock, next.origin);
+  const barError = Math.abs(beats - Math.round(beats / bar) * bar) * msPerBeat(clock.bpm);
+  if (Math.abs(next.bpm - clock.bpm) < 0.01 && barError < 1) return;
+  taps = [];
+  applyClock(next);
 };
 
 /** Double / halve the tempo. */
