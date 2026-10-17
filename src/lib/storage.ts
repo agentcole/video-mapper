@@ -1,216 +1,206 @@
-import type { MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord } from '../types';
-import { pinFrameToQuadVertices } from './geometry';
+import { Zip, ZipDeflate, ZipPassThrough, unzip, strToU8, strFromU8, type Unzipped } from 'fflate';
+import type { BackgroundSettings } from '../types';
+import type { ProjectDocument } from '../state/projectStore';
+import { allClips, mapClips, type Clip } from '../state/showModel';
+import { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO } from './defaults';
+import { parseProjectData, PROJECT_VERSION, type ParsedProject, type PackageMediaEntry } from './projectSchema';
+import { getMediaFile, importMediaBlob, importMediaRecords } from './mediaStorage';
+import { getEffectDef } from '../effects/library';
+import type { EffectInstance } from '../types';
 
-const STORAGE_KEY = 'video-mapper-project';
-const VERSION = '4.1.0'; // Bumped for the single-homography warp model
+// ---------------------------------------------------------------------------
+// Project files: serialization (for the repository and exports), JSON export,
+// project packages (zip: project.json + media files) and import of both.
+// ---------------------------------------------------------------------------
 
-export const DEFAULT_BACKGROUND: BackgroundSettings = {
-  type: 'color',
-  color: '#1e293b', // slate-800
-};
+export { DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_TEMPO };
 
-export const DEFAULT_GRID: GridSettings = {
-  show: false,
-  snap: false,
-  size: 32,
-  showInPresentation: false,
-};
+// A validated, migrated project (see projectSchema.ts)
+export type LoadedProject = ParsedProject;
 
-export const DEFAULT_COMPOSITION: CompositionSettings = {
-  width: 1920,
-  height: 1080,
-};
+// Blob URLs are session-specific — media is re-resolved from its mediaId
+const stripClipUrl = (clip: Clip): Clip =>
+  clip.source.mediaId ? { ...clip, source: { ...clip.source, url: '' } } : clip;
+const stripBackgroundUrl = (bg: BackgroundSettings): BackgroundSettings => (bg.mediaId ? { ...bg, url: '' } : bg);
 
-// Prepare frames for storage - remove temporary blob URLs
-const prepareFramesForStorage = (frames: MediaFrame[]): MediaFrame[] => {
-  return frames.map(frame => {
-    const storedFrame = { ...frame };
-    
-    // If frame has a mediaId, clear the url (it's a temporary blob URL)
-    // The URL will be regenerated from IndexedDB on load
-    if (storedFrame.mediaId) {
-      storedFrame.url = '';
+// Every effect / generator a project uses
+const effectIdsOf = (doc: ProjectDocument): string[] => {
+  const ids = new Set<string>();
+  const add = (list?: EffectInstance[]) => list?.forEach(e => ids.add(e.effectId));
+  add(doc.effects);
+  for (const layer of doc.layers) {
+    add(layer.effects);
+    for (const clip of layer.slots) {
+      add(clip?.effects);
+      if (clip?.generator) ids.add(clip.generator.effectId);
     }
-    
-    return storedFrame;
+  }
+  return [...ids];
+};
+
+/** Imported (non-bundled) shaders the project uses, so the file works in another browser. */
+const shaderSourcesOf = (doc: ProjectDocument) =>
+  effectIdsOf(doc).flatMap(id => {
+    const def = getEffectDef(id);
+    return def && !def.builtin ? [{ id, name: def.name, source: def.source }] : [];
   });
+
+export const serializeProject = (doc: ProjectDocument, name?: string) => ({
+  ...(name ? { name } : {}),
+  version: PROJECT_VERSION,
+  timestamp: new Date().toISOString(),
+  composition: doc.composition,
+  grid: doc.grid,
+  tempo: doc.tempo,
+  effects: doc.effects,
+  macros: doc.macros,
+  background: stripBackgroundUrl(doc.background),
+  surfaces: doc.surfaces,
+  columns: doc.columns,
+  layers: mapClips(doc, stripClipUrl).layers,
+  shaders: shaderSourcesOf(doc),
+});
+
+export type SerializedProject = ReturnType<typeof serializeProject>;
+
+const safeFileName = (name: string): string =>
+  name.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() || 'project';
+
+const downloadBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  // Give the download a moment to start before the URL dies
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 };
 
-// Prepare background for storage
-const prepareBackgroundForStorage = (bg: BackgroundSettings): BackgroundSettings => {
-  const stored = { ...bg };
-  // If background has a mediaId, clear the url
-  if (stored.mediaId) {
-    stored.url = '';
+/** Project only (media stays referenced by id) — small, for backups and sharing within one machine. */
+export const exportProjectJson = (doc: ProjectDocument, name: string): void => {
+  const blob = new Blob([JSON.stringify(serializeProject(doc, name), null, 2)], { type: 'application/json' });
+  downloadBlob(blob, `${safeFileName(name)}.json`);
+};
+
+// Every clip's media (not only the playing ones) + the background
+const mediaIdsOf = (doc: ProjectDocument): string[] => [
+  ...new Set([...allClips(doc).map(c => c.source.mediaId), doc.background.mediaId].filter((id): id is string => Boolean(id))),
+];
+
+/**
+ * A portable project package: project.json plus every referenced media file
+ * (library or linked folder), streamed into a zip without base64 overhead.
+ * Returns the media ids that couldn't be read (deleted, folder disconnected).
+ */
+export async function buildProjectPackage(doc: ProjectDocument, name: string): Promise<{ blob: Blob; missing: string[] }> {
+  const parts: Uint8Array[] = [];
+  let resolveDone!: () => void;
+  let rejectDone!: (error: Error) => void;
+  const finished = new Promise<void>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
+  });
+  const zip = new Zip((error, chunk, final) => {
+    if (error) {
+      rejectDone(error);
+      return;
+    }
+    parts.push(chunk);
+    if (final) resolveDone();
+  });
+
+  const mediaFiles: PackageMediaEntry[] = [];
+  const missing: string[] = [];
+  for (const [index, id] of mediaIdsOf(doc).entries()) {
+    const file = await getMediaFile(id);
+    if (!file) {
+      missing.push(id);
+      continue;
+    }
+    const path = `media/${index + 1}-${safeFileName(file.name)}`;
+    // Video and images are already compressed — store them as they are
+    const entry = new ZipPassThrough(path);
+    zip.add(entry);
+    const reader = file.blob.stream().getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      entry.push(value, false);
+    }
+    entry.push(new Uint8Array(0), true);
+    mediaFiles.push({ id, name: file.name, type: file.type, mimeType: file.mimeType, path });
   }
-  return stored;
-};
 
-const DEFAULT_PERSPECTIVE_CORNERS = {
-  tl: { x: 0, y: 0 },
-  tr: { x: 0, y: 0 },
-  br: { x: 0, y: 0 },
-  bl: { x: 0, y: 0 },
-};
+  const manifest = new ZipDeflate('project.json', { level: 6 });
+  zip.add(manifest);
+  manifest.push(strToU8(JSON.stringify({ ...serializeProject(doc, name), mediaFiles }, null, 2)), true);
+  zip.end();
+  await finished;
 
-// Migrate old frame format to new format
-export const migrateFrame = (frame: MediaFrame): MediaFrame => {
-  const migrated: MediaFrame = {
-    ...frame,
-    // Add defaults for new properties if missing
-    textureMode: frame.textureMode || 'clip',
-    vertices: frame.vertices,
-    mediaId: frame.mediaId,
-    contentScale: frame.contentScale ?? 1,
-    contentOffsetX: frame.contentOffsetX ?? 0,
-    contentOffsetY: frame.contentOffsetY ?? 0,
-    perspectiveMode: frame.perspectiveMode ?? false,
-    perspectiveCorners: frame.perspectiveCorners ?? DEFAULT_PERSPECTIVE_CORNERS,
-    visible: frame.visible ?? true,
-    testPattern: frame.testPattern ?? false,
-    softEdge: frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 },
-  };
-
-  // The old "warp" texture mode stretched media onto a 4-vertex polygon with
-  // a second homography. It is now a corner-pinned rectangle whose pins sit
-  // on those vertices (one homography per frame); anything else just clips.
-  if (migrated.textureMode === 'warp') {
-    const pinned = migrated.shape === 'polygon' ? pinFrameToQuadVertices(migrated) : null;
-    return pinned ? { ...migrated, ...pinned } : { ...migrated, textureMode: 'clip' };
-  }
-  return migrated;
-};
-
-export const saveProject = (
-  frames: MediaFrame[],
-  background?: BackgroundSettings,
-  grid?: GridSettings,
-  composition?: CompositionSettings
-): void => {
-  try {
-    const preparedFrames = prepareFramesForStorage(frames);
-    const projectData = {
-      frames: preparedFrames,
-      background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
-      grid: grid || DEFAULT_GRID,
-      composition: composition || DEFAULT_COMPOSITION,
-      version: VERSION,
-      timestamp: new Date().toISOString(),
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(projectData));
-  } catch (error) {
-    console.error('Failed to save project:', error);
-    const isQuota = error instanceof DOMException && error.name === 'QuotaExceededError';
-    throw new Error(isQuota
-      ? 'browser storage is full — export the project to keep your changes'
-      : 'could not write to browser storage');
-  }
-};
-
-export interface LoadedProject {
-  frames: MediaFrame[];
-  background: BackgroundSettings;
-  grid: GridSettings;
-  composition: CompositionSettings;
-  // Present when the project file embeds its media (export-with-media)
-  media?: ExportedMediaRecord[];
+  return { blob: new Blob(parts as BlobPart[], { type: 'application/zip' }), missing };
 }
 
-export const loadProject = (): LoadedProject | null => {
-  try {
-    const data = localStorage.getItem(STORAGE_KEY);
-    if (!data) return null;
+export async function exportProjectPackage(doc: ProjectDocument, name: string): Promise<{ missing: string[] }> {
+  const { blob, missing } = await buildProjectPackage(doc, name);
+  downloadBlob(blob, `${safeFileName(name)}.videomapper.zip`);
+  return { missing };
+}
 
-    const projectData = JSON.parse(data);
-    if (!projectData.frames) return null;
-
-    // Migrate frames to ensure they have all new properties
-    return {
-      frames: projectData.frames.map(migrateFrame),
-      background: projectData.background || DEFAULT_BACKGROUND,
-      grid: { ...DEFAULT_GRID, ...projectData.grid },
-      composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
-    };
-  } catch (error) {
-    console.error('Failed to load project:', error);
-    return null;
-  }
+const isZipFile = async (file: Blob): Promise<boolean> => {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  return head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04;
 };
 
-export const exportProject = (
-  frames: MediaFrame[],
-  background?: BackgroundSettings,
-  grid?: GridSettings,
-  composition?: CompositionSettings,
-  embeddedMedia?: ExportedMediaRecord[]
-): void => {
-  try {
-    // Strip session-specific blob URLs — they are dead outside this session.
-    // Frames with a mediaId get their URL re-resolved from IndexedDB on import.
-    const projectData = {
-      frames: prepareFramesForStorage(frames),
-      background: background ? prepareBackgroundForStorage(background) : DEFAULT_BACKGROUND,
-      grid: grid || DEFAULT_GRID,
-      composition: composition || DEFAULT_COMPOSITION,
-      ...(embeddedMedia && embeddedMedia.length > 0 ? { media: embeddedMedia } : {}),
-      version: VERSION,
-      timestamp: new Date().toISOString(),
-    };
-    
-    const blob = new Blob([JSON.stringify(projectData, null, 2)], {
-      type: 'application/json',
-    });
-    
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `video-mapper-${Date.now()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  } catch (error) {
-    console.error('Failed to export project:', error);
-    throw new Error('Failed to export project');
-  }
-};
+const unzipAsync = (data: Uint8Array): Promise<Unzipped> =>
+  new Promise((resolve, reject) => unzip(data, (error, files) => (error ? reject(error) : resolve(files))));
 
-export const importProject = (file: File): Promise<LoadedProject> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    
-    reader.onload = (e) => {
-      try {
-        const content = e.target?.result as string;
-        const projectData = JSON.parse(content);
-        
-        if (!projectData.frames || !Array.isArray(projectData.frames)) {
-          reject(new Error('Invalid project file format'));
-          return;
-        }
-        
-        // Migrate frames to ensure they have all new properties
-        resolve({
-          frames: projectData.frames.map(migrateFrame),
-          background: projectData.background || DEFAULT_BACKGROUND,
-          grid: { ...DEFAULT_GRID, ...projectData.grid },
-          composition: { ...DEFAULT_COMPOSITION, ...projectData.composition },
-          media: Array.isArray(projectData.media) ? projectData.media : undefined,
-        });
-      } catch {
-        reject(new Error('Failed to parse project file'));
+export interface ImportedProjectFile {
+  project: LoadedProject;
+  name: string;
+}
+
+/**
+ * Read a project file — a package (zip) or JSON (incl. the old base64
+ * export) — and restore its media into the library under the original ids.
+ */
+export async function importProjectFile(file: File): Promise<ImportedProjectFile> {
+  const baseName = file.name.replace(/(\.videomapper)?\.(zip|json)$/i, '') || 'Imported project';
+
+  if (await isZipFile(file)) {
+    const files = await unzipAsync(new Uint8Array(await file.arrayBuffer()));
+    const manifest = files['project.json'];
+    if (!manifest) throw new Error('Not a Video Mapper package (project.json is missing)');
+    let raw: unknown;
+    try {
+      raw = JSON.parse(strFromU8(manifest));
+    } catch {
+      throw new Error('project.json in the package is not valid JSON');
+    }
+    const project = parseProjectData(raw);
+    for (const entry of project.mediaFiles ?? []) {
+      const data = files[entry.path];
+      if (!data) {
+        project.warnings.push(`Media "${entry.name}" is missing from the package.`);
+        continue;
       }
-    };
-    
-    reader.onerror = () => {
-      reject(new Error('Failed to read file'));
-    };
-    
-    reader.readAsText(file);
-  });
-};
+      await importMediaBlob({ ...entry, blob: new Blob([data as BlobPart], { type: entry.mimeType }) });
+    }
+    return { project, name: project.name ?? baseName };
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await file.text());
+  } catch {
+    throw new Error('Failed to parse project file');
+  }
+  const project = parseProjectData(raw);
+  if (project.media?.length) await importMediaRecords(project.media);
+  return { project, name: project.name ?? baseName };
+}
 
 export const generateFrameId = (): string => {
   return `frame-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 };
-
