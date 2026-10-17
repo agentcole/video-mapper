@@ -10,9 +10,10 @@ A high-performance web-based video mapping application built with React, TypeScr
 - **Multiple Media Types**: Support for both videos and images
 - **Persistent Media Library**:
   - Media files are stored in browser IndexedDB (persists across sessions)
-  - 50MB per file limit, 500MB total storage
+  - Up to 2 GB per file; the total is limited by the browser's storage quota
   - Thumbnail previews for all media
   - Filter by video/image type
+- **Linked media folders** (Chromium): play files straight from a folder on disk — nothing is copied, no size limit; one click reconnects the folder after a browser restart
 - **Flexible Input Methods**:
   - Draw frames directly on canvas (rectangle, circle, or polygon shapes)
   - Add media via URL input
@@ -46,15 +47,16 @@ A high-performance web-based video mapping application built with React, TypeScr
   - Settings panel with all adjustments
 
 ### 💾 Project Management
-- **Auto-save**: Automatic saving to localStorage (one project slot); a failed save (e.g. storage full) shows a notice with an export shortcut
-- **Manual Save**: Save current project state
-- **Export**: Download project as JSON file (optionally with embedded media)
-- **Import**: Load previously exported projects; older formats are migrated on load
+- **Multiple projects** in IndexedDB: create, rename, duplicate, delete and switch in the *Projects* dialog (the previous single autosave slot is migrated into the first project)
+- **Auto-save** of the open project ~1 s after every change; a failed save (e.g. storage full) shows a notice with an export shortcut
+- **Versions**: kept automatically every 5 minutes while you work, plus on demand (*Version* button or **Cmd/Ctrl+S**); restoring keeps the current state as a version first and can be undone
+- **Export**: the project file (JSON, media referenced by id) or a portable **package** (zip with project.json and every media file)
+- **Import**: project files and packages always open as a *new* project — the open one is never overwritten; broken layers are skipped and reported
 
 ### 📱 Progressive Web App (PWA)
 - **Offline Support**: Works without internet connection
 - **Installable**: Can be installed as a desktop/mobile app
-- **Persistent Storage**: Media persists in IndexedDB (persistent storage is requested on the first upload), projects in localStorage
+- **Persistent Storage**: Media and projects persist in IndexedDB (persistent storage is requested on the first upload)
 - **Fast Loading**: Service Worker caching for instant loads
 - **Show-safe updates**: a new version is offered as a small notice in the editor — never a blocking dialog or an automatic reload, and never on the output
 
@@ -79,6 +81,10 @@ The application will start at `http://localhost:5173` (default Vite port).
 ```bash
 npm run build
 ```
+
+### Performance benchmark
+
+Open `/?benchmark` (or *Performance benchmark* in the control panel) on the show machine. It plays 1–16 corner-pinned video layers through the same render path as the output — with a generated 1080p/4K test clip, your own file, or a clip from the media library — and reports display fps, p95/p99 frame times, stutter, dropped video frames, the highest stable layer count, the GPU and hardware-decode support per codec. Results export as JSON.
 
 ### Tests & Lint
 
@@ -160,6 +166,7 @@ npm run preview
 
 - **Fixed composition resolution** (default 1920×1080, presets up to 4K + custom) — frames are stored in composition coordinates, so projects are portable across machines and map 1:1 onto the projector
 - The editor letterboxes and scales the composition to your window; Present mode maps it to the output
+- **Output window**: opens the composition in its own window for the projector while you keep editing. In Chromium browsers, *Detect screens* lets you pick the target display (Window Management API); elsewhere drag the window over. The output mirrors the editor live, shows no editor UI, hides the cursor, keeps the display awake and starts from the autosaved project (it keeps its last picture if the editor reloads). In the output window: click or **F** for fullscreen, **B** for blackout. While an output is live the editor preview is muted.
 - **Master fader** dims the whole output (and scales audio volume); **Blackout (B)** kills picture and sound instantly
 - **Test card**: global output test pattern, plus a per-frame test pattern to calibrate individual surfaces without content
 - **Soft edge masks**: per-edge feathering on frames for blending overlapping projectors
@@ -252,8 +259,11 @@ src/
 │   └── ErrorBoundary.tsx    # Show-safe crash fallback (black output)
 ├── lib/
 │   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
-│   ├── storage.ts           # Project persistence + migrations (+ tests)
-│   ├── mediaStorage.ts      # IndexedDB media management
+│   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
+│   ├── projectRepository.ts # Projects + versions in IndexedDB (+ tests)
+│   ├── storage.ts           # Serialization, JSON export, zip packages, import (+ tests)
+│   ├── mediaStorage.ts      # IndexedDB media library
+│   ├── mediaFolders.ts      # Linked media folders (File System Access)
 │   └── utils.ts
 ├── types.ts                 # TypeScript type definitions
 ├── App.tsx                  # Root component

@@ -14,6 +14,7 @@ import {
   Pentagon,
   FolderOpen,
   Palette,
+  FolderKanban,
   ChevronDown,
   ChevronUp,
   Play,
@@ -26,12 +27,15 @@ import {
   Monitor,
 } from 'lucide-react';
 import type { ShapeType, GridSettings, CompositionSettings } from '../types';
+import { OutputWindowControls } from './OutputWindowControls';
 
 interface ControlPanelProps {
   onAddUrl: (url: string, type: 'video' | 'image') => void;
-  onSave: () => void;
+  projectName: string;
+  onOpenProjects: () => void;
+  onSaveVersion: () => void;
   onExport: () => void;
-  onExportWithMedia: () => void;
+  onExportPackage: () => void;
   onImport: (file: File) => void;
   onDrawMode: (shape: ShapeType) => void;
   isDrawMode: boolean;
@@ -67,9 +71,11 @@ const clampDimension = (value: number) => Math.max(320, Math.min(8192, Math.roun
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   onAddUrl,
-  onSave,
+  projectName,
+  onOpenProjects,
+  onSaveVersion,
   onExport,
-  onExportWithMedia,
+  onExportPackage,
   onImport,
   onDrawMode,
   isDrawMode,
@@ -256,47 +262,57 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         {/* Project Management */}
         <div className="space-y-2 pt-4 border-t border-gray-700">
           <p className="text-xs text-gray-400 uppercase font-semibold">Project</p>
+          <button
+            onClick={onOpenProjects}
+            className="w-full flex items-center gap-2 rounded-md bg-white/10 hover:bg-white/15 px-3 py-2 text-left"
+            title="All projects and versions"
+          >
+            <FolderKanban className="w-4 h-4 text-blue-300 shrink-0" />
+            <span className="flex-1 text-sm truncate">{projectName}</span>
+            <span className="text-[11px] text-gray-400">Projects…</span>
+          </button>
           <div className="grid grid-cols-2 gap-2">
             <Button
               variant="outline"
               size="sm"
-              onClick={onSave}
+              onClick={onSaveVersion}
+              title="Save a version you can go back to (Cmd/Ctrl+S) — changes are autosaved anyway"
             >
               <Save className="w-4 h-4 mr-1" />
-              Save
+              Version
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportClick}
+              title="Import a project file or package as a new project"
+            >
+              <Upload className="w-4 h-4 mr-1" />
+              Import
             </Button>
             <Button
               variant="outline"
               size="sm"
               onClick={onExport}
+              title="Export the project file (media stays on this machine)"
             >
               <Download className="w-4 h-4 mr-1" />
               Export
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onExportPackage}
+              title="Export a portable package (zip) with all media files"
+            >
+              <Package className="w-4 h-4 mr-1" />
+              Package
+            </Button>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onExportWithMedia}
-            className="w-full"
-            title="Export the project with all media files embedded (portable, but large)"
-          >
-            <Package className="w-4 h-4 mr-1" />
-            Export + Media
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleImportClick}
-            className="w-full"
-          >
-            <Upload className="w-4 h-4 mr-1" />
-            Import
-          </Button>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json"
+            accept=".json,.zip,application/json,application/zip"
             onChange={handleFileChange}
             className="hidden"
           />
@@ -472,6 +488,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
               Test Card
             </Button>
           </div>
+          <OutputWindowControls />
         </div>
 
         {/* View & Background */}
@@ -497,6 +514,15 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             </svg>
             Present (P)
           </Button>
+          <a
+            href="?benchmark"
+            target="_blank"
+            rel="noopener"
+            className="block text-center text-xs text-gray-400 hover:text-white underline"
+            title="How many video layers does this machine play smoothly?"
+          >
+            Performance benchmark
+          </a>
         </div>
 
         {/* Instructions */}

@@ -15,6 +15,15 @@ Looks like we got an issue here. Please first research why every corner pin of t
 
 The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) were applied to the same element, so enabling corner pin replaced the shape clip with the quad. Now the content element gets the homography and the *wrapper* gets a clip-path whose vertices are transformed through the same homography (straight edges stay straight under a homography; circles are approximated as 48-gons when warped). See `src/lib/geometry.ts` and the "Unified warp model" block in `src/components/MediaFrame.tsx`.
 
+## Phase 1 progress (branch feat/phase-1-foundation)
+- [x] 1.1 Project + live state in zustand stores, history module, memoized frames
+- [x] 1.2 Validated, versioned project format (zod) with migration chain; unreadable autosaves are backed up
+- [x] 1.7 Output window (BroadcastChannel sync, screen selection via Window Management API, wake lock, cursor hiding)
+- [x] 1.6 Video benchmark page (`?benchmark`) — still needs real runs on show hardware: in the automated test browser rAF fell to ~35 fps as soon as 2 videos played, independent of codec and CSS warp (likely an artifact of that browser instance, unconfirmed)
+- [ ] 1.3 Data model: surfaces/slices (stage) + layers with clip slots (show) — needs a product decision
+- [x] 1.4 Project management: multiple projects + versions in IndexedDB (legacy slot migrated), import always creates a new project, zip packages, linked media folders (Chromium, not yet clicked through in a real browser — the folder picker can't be automated), storage limits from the browser quota
+- [ ] 1.5 Renderer abstraction + GPU renderer (WebGPU / WebGL2) at parity
+
 ## Next candidates (see the roadmap report, Phase 1+)
 - WebGL compositor behind a renderer abstraction — unlocks true mesh warp (beyond 4 corners), GPU soft-edge blending, and output to multiple displays. The current CSS renderer covers projective quads only.
 - Bezier / curved mask edges.

@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import type {
   MediaFrame, DragState, ResizeState, RotateState, DrawState, MarqueeState,
-  ShapeType, Point, StoredMedia, BackgroundSettings, GridSettings, CompositionSettings,
+  ShapeType, Point, StoredMedia,
 } from '../types';
 import { MediaFrameComponent } from './MediaFrame';
 import { ControlPanel } from './ControlPanel';
@@ -10,12 +10,20 @@ import { MediaLibrary } from './MediaLibrary';
 import { BackgroundSettingsPanel } from './BackgroundSettings';
 import { TestCard } from './TestCard';
 import { UpdatePrompt } from './UpdatePrompt';
-import {
-  saveProject, loadProject, exportProject, importProject, generateFrameId,
-  DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, type LoadedProject,
-} from '../lib/storage';
-import { storeMedia, resolveMediaUrls, exportMediaRecords, importMediaRecords, getMediaObjectUrl } from '../lib/mediaStorage';
+import { BackgroundLayer, GridOverlay } from './StageLayers';
+import { generateFrameId } from '../lib/storage';
+import { storeMedia, getMediaObjectUrl } from '../lib/mediaStorage';
 import { dedupePolygon, getFrameCompOutline, rotateVector } from '../lib/geometry';
+import { projectStore, useProjectStore } from '../state/projectStore';
+import { projectHistory } from '../state/history';
+import { liveStore, useLiveStore, outputGainOf } from '../state/liveStore';
+import { startControlSync, useOutputStatus } from '../output/controlSync';
+import { useProjectSession } from '../state/useProjectSession';
+import { ProjectsPanel } from './ProjectsPanel';
+
+// Store actions are stable for the app's lifetime
+const { setFrames, updateFrame, setBackground, setGrid, setComposition } = projectStore.getState();
+const { setMasterOpacity, setBlackout, setShowTestCard, sendPlayback } = liveStore.getState();
 
 // State for polygon drawing (click to add vertices)
 interface PolygonDrawState {
@@ -24,16 +32,6 @@ interface PolygonDrawState {
   startX: number;
   startY: number;
 }
-
-// Snapshot for undo/redo
-interface HistorySnapshot {
-  frames: MediaFrame[];
-  background: BackgroundSettings;
-  composition: CompositionSettings;
-}
-
-const HISTORY_LIMIT = 50;
-const HISTORY_DEBOUNCE_MS = 400;
 
 // Full frame defaults; overrides supply position/size/shape and media info
 const createFrame = (
@@ -90,7 +88,12 @@ const frameAABB = (f: MediaFrame) => {
 };
 
 export const Canvas: React.FC = () => {
-  const [frames, setFrames] = useState<MediaFrame[]>([]);
+  // The project document lives in the project store (shared with autosave,
+  // history and the output window)
+  const frames = useProjectStore(s => s.frames);
+  const background = useProjectStore(s => s.background);
+  const grid = useProjectStore(s => s.grid);
+  const composition = useProjectStore(s => s.composition);
   const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [isPresentationMode, setIsPresentationMode] = useState(false);
   const [dragState, setDragState] = useState<DragState>({
@@ -147,21 +150,18 @@ export const Canvas: React.FC = () => {
   const [isMediaLibraryOpen, setIsMediaLibraryOpen] = useState(false);
   const [mediaLibraryTargetFrameId, setMediaLibraryTargetFrameId] = useState<string | null>(null); // Which frame is requesting media change
   const [mediaLibraryTargetBackground, setMediaLibraryTargetBackground] = useState(false); // Is media library for background?
-  const [background, setBackground] = useState<BackgroundSettings>(DEFAULT_BACKGROUND);
-  const [grid, setGrid] = useState<GridSettings>(DEFAULT_GRID);
-  const [composition, setComposition] = useState<CompositionSettings>(DEFAULT_COMPOSITION);
   const [isBackgroundSettingsOpen, setIsBackgroundSettingsOpen] = useState(false);
   const [showPresentationControls, setShowPresentationControls] = useState(false);
-  const [playbackCommand, setPlaybackCommand] = useState<'play' | 'pause' | null>(null);
-  // Live output controls (not persisted)
-  const [masterOpacity, setMasterOpacity] = useState(1);
-  const [blackout, setBlackout] = useState(false);
-  const [showTestCard, setShowTestCard] = useState(false);
-  // Last autosave failure (e.g. storage full) — shown until the next success
-  const [autosaveError, setAutosaveError] = useState<string | null>(null);
-  // Guards auto-save so an empty initial state doesn't overwrite the stored
-  // project before it has been loaded
-  const [isProjectLoaded, setIsProjectLoaded] = useState(false);
+  // Live output controls (not persisted) — shared with the output window
+  const masterOpacity = useLiveStore(s => s.masterOpacity);
+  const blackout = useLiveStore(s => s.blackout);
+  const showTestCard = useLiveStore(s => s.showTestCard);
+  const playback = useLiveStore(s => s.playback);
+  const [isProjectsOpen, setIsProjectsOpen] = useState(false);
+  // Open project, autosave, versions, import/export (see useProjectSession)
+  const clearSelection = useCallback(() => setSelectedFrameIds([]), []);
+  const session = useProjectSession(clearSelection);
+  const { saveVersion, exportJson, exportPackage, importFile } = session;
   // Viewport (editor window) size — drives the letterboxed stage transform
   const [viewport, setViewport] = useState({ w: window.innerWidth, h: window.innerHeight });
 
@@ -169,16 +169,13 @@ export const Canvas: React.FC = () => {
   const stageRef = useRef<HTMLDivElement>(null);
   // Editor overlay (frame handles/outlines/hit areas are portalled here)
   const [overlayEl, setOverlayEl] = useState<HTMLDivElement | null>(null);
-  const backgroundVideoRef = useRef<HTMLVideoElement>(null);
   const clipboardRef = useRef<MediaFrame[] | null>(null);
   const dragMovedRef = useRef(false);
-  const historyRef = useRef<{
-    past: HistorySnapshot[];
-    future: HistorySnapshot[];
-    last: HistorySnapshot | null;
-    timer: number | null;
-    applying: boolean;
-  }>({ past: [], future: [], last: null, timer: null, applying: false });
+  // Latest selection for stable (memo-friendly) gesture callbacks
+  const selectedIdsRef = useRef(selectedFrameIds);
+  useEffect(() => {
+    selectedIdsRef.current = selectedFrameIds;
+  }, [selectedFrameIds]);
 
   // ------------------------------------------------------------------
   // Composition view transform (letterboxed fit)
@@ -219,18 +216,9 @@ export const Canvas: React.FC = () => {
   // Check if there are any video frames
   const hasVideos = frames.some(f => f.type === 'video');
 
-  // Play all videos
-  const handlePlayAll = useCallback(() => {
-    setPlaybackCommand('play');
-    // Reset command after a short delay to allow re-triggering
-    setTimeout(() => setPlaybackCommand(null), 100);
-  }, []);
-
-  // Pause all videos
-  const handlePauseAll = useCallback(() => {
-    setPlaybackCommand('pause');
-    setTimeout(() => setPlaybackCommand(null), 100);
-  }, []);
+  // Play / pause all videos (also reaches the output window)
+  const handlePlayAll = useCallback(() => sendPlayback('play'), []);
+  const handlePauseAll = useCallback(() => sendPlayback('pause'), []);
 
   const togglePresentationMode = useCallback(() => {
     setIsPresentationMode(prev => !prev);
@@ -267,136 +255,33 @@ export const Canvas: React.FC = () => {
   // Project load / save
   // ------------------------------------------------------------------
 
-  // Resolve mediaId references to fresh blob URLs and apply project state.
-  // Shared by initial load and project import.
-  const applyProject = useCallback(async ({ frames: newFrames, background: newBackground, grid: newGrid, composition: newComposition }: LoadedProject) => {
-    const mediaIds = [
-      ...newFrames.filter(f => f.mediaId).map(f => f.mediaId!),
-      ...(newBackground.mediaId ? [newBackground.mediaId] : []),
-    ];
-
-    let resolvedFrames = newFrames;
-    let resolvedBackground = newBackground;
-    if (mediaIds.length > 0) {
-      try {
-        const urlMap = await resolveMediaUrls(mediaIds);
-        resolvedFrames = newFrames.map(frame =>
-          frame.mediaId && urlMap.has(frame.mediaId)
-            ? { ...frame, url: urlMap.get(frame.mediaId)! }
-            : frame
-        );
-        if (newBackground.mediaId && urlMap.has(newBackground.mediaId)) {
-          resolvedBackground = { ...newBackground, url: urlMap.get(newBackground.mediaId) };
-        }
-      } catch (error) {
-        console.error('Failed to resolve media URLs:', error);
-      }
-    }
-
-    setFrames(resolvedFrames);
-    setBackground(resolvedBackground);
-    setGrid(newGrid);
-    setComposition(newComposition);
-    setSelectedFrameIds([]);
-  }, []);
-
-  // Load project on mount
-  useEffect(() => {
-    const load = async () => {
-      const savedProject = loadProject();
-      if (savedProject) {
-        await applyProject(savedProject);
-      }
-      setIsProjectLoaded(true);
-    };
-    load();
-  }, [applyProject]);
-
-  // Auto-save (debounced). Waits for the initial load so the empty first
-  // render doesn't overwrite the stored project, then persists every change —
-  // including deleting the last frame.
-  useEffect(() => {
-    if (!isProjectLoaded) return;
-    const timer = setTimeout(() => {
-      try {
-        saveProject(frames, background, grid, composition);
-        setAutosaveError(null);
-      } catch (error) {
-        setAutosaveError((error as Error).message);
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [frames, background, grid, composition, isProjectLoaded]);
-
   // ------------------------------------------------------------------
-  // Undo / redo — debounced snapshots so a whole gesture is one entry
+  // Undo / redo (see state/history.ts) — drops selection entries that no
+  // longer exist in the restored state
   // ------------------------------------------------------------------
-  useEffect(() => {
-    if (!isProjectLoaded) return;
-    const h = historyRef.current;
-    const current: HistorySnapshot = { frames, background, composition };
-
-    if (h.applying) {
-      h.applying = false;
-      h.last = current;
-      return;
-    }
-    if (h.last === null) {
-      h.last = current; // baseline after initial load
-      return;
-    }
-    if (h.timer !== null) clearTimeout(h.timer);
-    h.timer = window.setTimeout(() => {
-      h.past.push(h.last!);
-      if (h.past.length > HISTORY_LIMIT) h.past.shift();
-      h.future = [];
-      h.last = current;
-      h.timer = null;
-    }, HISTORY_DEBOUNCE_MS);
-  }, [frames, background, composition, isProjectLoaded]);
-
-  const applySnapshot = useCallback((snapshot: HistorySnapshot) => {
-    historyRef.current.applying = true;
-    setFrames(snapshot.frames);
-    setBackground(snapshot.background);
-    setComposition(snapshot.composition);
-    // Drop selection entries that no longer exist in the restored state
-    setSelectedFrameIds(prev => prev.filter(id => snapshot.frames.some(f => f.id === id)));
+  const pruneSelection = useCallback(() => {
+    const ids = new Set(projectStore.getState().frames.map(f => f.id));
+    setSelectedFrameIds(prev => prev.filter(id => ids.has(id)));
   }, []);
 
   const undo = useCallback(() => {
-    const h = historyRef.current;
-    // Commit any pending (dirty) change first so it becomes undoable
-    if (h.timer !== null) {
-      clearTimeout(h.timer);
-      h.timer = null;
-      h.past.push(h.last!);
-      if (h.past.length > HISTORY_LIMIT) h.past.shift();
-      h.future = [];
-      h.last = { frames, background, composition };
-    }
-    const prev = h.past.pop();
-    if (!prev) return;
-    h.future.push(h.last!);
-    h.last = prev;
-    applySnapshot(prev);
-  }, [frames, background, composition, applySnapshot]);
+    projectHistory.undo();
+    pruneSelection();
+  }, [pruneSelection]);
 
   const redo = useCallback(() => {
-    const h = historyRef.current;
-    const next = h.future.pop();
-    if (!next) return;
-    h.past.push(h.last!);
-    if (h.past.length > HISTORY_LIMIT) h.past.shift();
-    h.last = next;
-    applySnapshot(next);
-  }, [applySnapshot]);
+    projectHistory.redo();
+    pruneSelection();
+  }, [pruneSelection]);
 
-  // Master fader and blackout apply to audio as well as pixels
-  const outputGain = blackout ? 0 : masterOpacity;
-  useEffect(() => {
-    if (backgroundVideoRef.current) backgroundVideoRef.current.volume = outputGain;
-  }, [outputGain, background.type, background.url]);
+  // Mirror the project + live state to output windows
+  useEffect(() => startControlSync(), []);
+  const outputsConnected = useOutputStatus(s => s.connected) > 0;
+
+  // Master fader and blackout apply to audio as well as pixels. While an
+  // output window is live it carries the sound, so the editor stays silent.
+  const outputGain = outputGainOf({ masterOpacity, blackout });
+  const editorGain = outputsConnected ? 0 : outputGain;
 
   // Names of the layers using a stored media (for the library's delete warning)
   const getMediaUsage = useCallback((mediaId: string): string[] => {
@@ -416,16 +301,14 @@ export const Canvas: React.FC = () => {
     setSelectedFrameIds([newFrame.id]);
   }, []);
 
-  const updateFrame = useCallback((id: string, updates: Partial<MediaFrame>) => {
-    setFrames(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
-  }, []);
-
   const deleteFrames = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
     const idSet = new Set(ids);
     setFrames(prev => prev.filter(f => !idSet.has(f.id)));
     setSelectedFrameIds(prev => prev.filter(id => !idSet.has(id)));
   }, []);
+
+  const deleteFrame = useCallback((id: string) => deleteFrames([id]), [deleteFrames]);
 
   const duplicateFrames = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
@@ -542,6 +425,13 @@ export const Canvas: React.FC = () => {
 
       const hasSelection = selectedFrameIds.length > 0;
 
+      // Save a version
+      if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        void saveVersion();
+        return;
+      }
+
       // Undo / redo
       if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
@@ -632,7 +522,7 @@ export const Canvas: React.FC = () => {
   }, [
     isPresentationMode, isDrawMode, polygonDrawState.isDrawing, isMediaLibraryOpen,
     selectedFrameIds, frames, grid.snap, grid.size,
-    deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo,
+    deleteFrames, duplicateFrames, copySelection, pasteClipboard, undo, redo, saveVersion,
     togglePresentationMode, toggleFullscreen,
   ]);
 
@@ -781,8 +671,12 @@ export const Canvas: React.FC = () => {
   // ------------------------------------------------------------------
 
   // Handle frame drag start — establishes the (possibly multi-) selection
+  // (Gesture starts read the latest frames/selection at call time so they stay
+  // stable and memoized frames don't re-render on every change.)
   const handleDragStart = useCallback((frameId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const frames = projectStore.getState().frames;
+    const selectedFrameIds = selectedIdsRef.current;
     const frame = frames.find(f => f.id === frameId);
     if (!frame) return;
 
@@ -813,12 +707,12 @@ export const Canvas: React.FC = () => {
       offsetY: frame.y,
       groupStartPositions,
     });
-  }, [frames, selectedFrameIds, toComp]);
+  }, [toComp]);
 
   // Handle resize start
   const handleResizeStart = useCallback((frameId: string, handle: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const frame = frames.find(f => f.id === frameId);
+    const frame = projectStore.getState().frames.find(f => f.id === frameId);
     if (!frame) return;
 
     const comp = toComp(e.clientX, e.clientY);
@@ -836,12 +730,12 @@ export const Canvas: React.FC = () => {
       // Snapshot corners so we can scale them proportionally while resizing
       startPerspectiveCorners: frame.perspectiveMode ? { ...frame.perspectiveCorners } : undefined,
     });
-  }, [frames, toComp]);
+  }, [toComp]);
 
   // Handle rotate start
   const handleRotateStart = useCallback((frameId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const frame = frames.find(f => f.id === frameId);
+    const frame = projectStore.getState().frames.find(f => f.id === frameId);
     if (!frame) return;
 
     const centerX = frame.x + frame.width / 2;
@@ -856,7 +750,7 @@ export const Canvas: React.FC = () => {
       centerX,
       centerY,
     });
-  }, [frames, toComp]);
+  }, [toComp]);
 
   // Handle mouse move
   const handleMouseMove = useCallback((e: MouseEvent) => {
@@ -993,7 +887,7 @@ export const Canvas: React.FC = () => {
     if (marquee.isActive) {
       setMarquee(prev => ({ ...prev, currentX: comp.x, currentY: comp.y }));
     }
-  }, [dragState, resizeState, rotateState, drawState, marquee.isActive, frames, updateFrame, snapToGrid, toComp, viewScale]);
+  }, [dragState, resizeState, rotateState, drawState, marquee.isActive, frames, snapToGrid, toComp, viewScale]);
 
   // Handle mouse up
   const handleMouseUp = useCallback((e: MouseEvent) => {
@@ -1159,7 +1053,7 @@ export const Canvas: React.FC = () => {
       setIsDrawMode(true);
       setDrawShape('rectangle');
     }
-  }, [mediaLibraryTargetFrameId, mediaLibraryTargetBackground, updateFrame]);
+  }, [mediaLibraryTargetFrameId, mediaLibraryTargetBackground]);
 
   // Handle opening media library for a specific frame (to change its media)
   const handleOpenMediaLibraryForFrame = useCallback((frameId: string) => {
@@ -1192,49 +1086,22 @@ export const Canvas: React.FC = () => {
     }
   }, [isDrawMode, drawShape]);
 
-  const handleSave = useCallback(() => {
+  const handleExportPackage = useCallback(async () => {
     try {
-      saveProject(frames, background, grid, composition);
-      setAutosaveError(null);
-      alert('Project saved!');
+      await exportPackage();
     } catch (error) {
-      alert((error as Error).message);
+      alert('Failed to export the project package: ' + (error as Error).message);
     }
-  }, [frames, background, grid, composition]);
+  }, [exportPackage]);
 
-  const handleExport = useCallback(() => {
-    exportProject(frames, background, grid, composition);
-  }, [frames, background, grid, composition]);
-
-  // Export with all referenced media embedded (base64) — portable but large
-  const handleExportWithMedia = useCallback(async () => {
-    try {
-      const mediaIds = [
-        ...frames.filter(f => f.mediaId).map(f => f.mediaId!),
-        ...(background.mediaId ? [background.mediaId] : []),
-      ];
-      const records = await exportMediaRecords(mediaIds);
-      exportProject(frames, background, grid, composition, records);
-    } catch (error) {
-      alert('Failed to export with media: ' + (error as Error).message);
-    }
-  }, [frames, background, grid, composition]);
-
+  // Imports always become a new project — the open one is never overwritten
   const handleImport = useCallback(async (file: File) => {
     try {
-      const imported = await importProject(file);
-      // Restore embedded media (if the file carries it) before resolving
-      if (imported.media && imported.media.length > 0) {
-        await importMediaRecords(imported.media);
-      }
-      // Resolve mediaId references against the local media library so
-      // imported frames show their media without a page reload
-      await applyProject(imported);
-      alert('Project imported successfully!');
+      await importFile(file);
     } catch (error) {
       alert('Failed to import project: ' + (error as Error).message);
     }
-  }, [applyProject]);
+  }, [importFile]);
 
   // ------------------------------------------------------------------
   // Render
@@ -1272,11 +1139,28 @@ export const Canvas: React.FC = () => {
         style={{ display: isPresentationMode ? 'none' : undefined }}
       >
         <UpdatePrompt />
-        {autosaveError && (
+        {session.notice && (
+          <div className="bg-black/85 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
+            {session.notice}
+          </div>
+        )}
+        {session.loadWarnings.length > 0 && (
+          <div className="flex items-start gap-3 bg-amber-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm max-w-xl">
+            <div>
+              <p>The project was repaired while opening:</p>
+              <ul className="list-disc pl-4 text-xs text-white/80 mt-1">
+                {session.loadWarnings.slice(0, 5).map((warning, i) => <li key={i}>{warning}</li>)}
+                {session.loadWarnings.length > 5 && <li>…and {session.loadWarnings.length - 5} more (see console)</li>}
+              </ul>
+            </div>
+            <button onClick={session.dismissLoadWarnings} className="text-white/70 hover:text-white">Dismiss</button>
+          </div>
+        )}
+        {session.autosaveError && (
           <div className="flex items-center gap-3 bg-red-900/90 text-white text-sm rounded-lg px-4 py-2 shadow-xl backdrop-blur-sm">
-            <span>Autosave failed: {autosaveError}</span>
-            <button onClick={handleExport} className="underline whitespace-nowrap">Export project</button>
-            <button onClick={() => setAutosaveError(null)} className="text-white/70 hover:text-white">Dismiss</button>
+            <span>Autosave failed: {session.autosaveError}</span>
+            <button onClick={exportJson} className="underline whitespace-nowrap">Export project</button>
+            <button onClick={session.dismissAutosaveError} className="text-white/70 hover:text-white">Dismiss</button>
           </div>
         )}
       </div>
@@ -1284,9 +1168,11 @@ export const Canvas: React.FC = () => {
       {!isPresentationMode && (
         <ControlPanel
           onAddUrl={handleAddUrl}
-          onSave={handleSave}
-          onExport={handleExport}
-          onExportWithMedia={handleExportWithMedia}
+          projectName={session.project?.name ?? '…'}
+          onOpenProjects={() => setIsProjectsOpen(true)}
+          onSaveVersion={saveVersion}
+          onExport={exportJson}
+          onExportPackage={handleExportPackage}
           onImport={handleImport}
           onDrawMode={handleDrawMode}
           isDrawMode={isDrawMode}
@@ -1335,6 +1221,8 @@ export const Canvas: React.FC = () => {
         getMediaUsage={getMediaUsage}
       />
 
+      <ProjectsPanel isOpen={isProjectsOpen} onClose={() => setIsProjectsOpen(false)} session={session} />
+
       {/* Background Settings Panel */}
       <BackgroundSettingsPanel
         background={background}
@@ -1377,32 +1265,7 @@ export const Canvas: React.FC = () => {
         >
           {/* Master-faded output (background + frames) */}
           <div data-canvas-bg="true" className="absolute inset-0" style={{ opacity: masterOpacity }}>
-            {/* Background */}
-            {background.type === 'color' && (
-              <div
-                data-canvas-bg="true"
-                className="absolute inset-0"
-                style={{ backgroundColor: background.color }}
-              />
-            )}
-            {background.type === 'image' && background.url && (
-              <img
-                src={background.url}
-                alt="Background"
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              />
-            )}
-            {background.type === 'video' && background.url && (
-              <video
-                ref={backgroundVideoRef}
-                src={background.url}
-                loop={background.loop ?? true}
-                muted={background.muted ?? true}
-                autoPlay
-                playsInline
-                className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-              />
-            )}
+            <BackgroundLayer background={background} outputGain={editorGain} playback={playback} />
 
             {/* Frames */}
             {frames.filter(f => f.visible !== false).map(frame => (
@@ -1410,19 +1273,19 @@ export const Canvas: React.FC = () => {
                 key={frame.id}
                 frame={frame}
                 isSelected={selectedFrameIds.includes(frame.id) && !isPresentationMode}
-                onUpdate={(updates) => updateFrame(frame.id, updates)}
-                onDelete={() => deleteFrames([frame.id])}
-                onDragStart={(e) => !isPresentationMode && handleDragStart(frame.id, e)}
-                onResizeStart={(e, handle) => !isPresentationMode && handleResizeStart(frame.id, handle, e)}
-                onRotateStart={(e) => !isPresentationMode && handleRotateStart(frame.id, e)}
+                onUpdateFrame={updateFrame}
+                onDeleteFrame={deleteFrame}
+                onFrameDragStart={handleDragStart}
+                onFrameResizeStart={handleResizeStart}
+                onFrameRotateStart={handleRotateStart}
                 isPresentationMode={isPresentationMode}
-                onOpenMediaLibrary={() => handleOpenMediaLibraryForFrame(frame.id)}
-                playbackCommand={playbackCommand}
+                onOpenFrameMediaLibrary={handleOpenMediaLibraryForFrame}
+                playback={playback}
                 clientToComp={toComp}
                 snapToGrid={snapToGrid}
                 overlayContainer={overlayEl}
                 viewScale={viewScale}
-                outputGain={outputGain}
+                outputGain={editorGain}
               />
             ))}
           </div>
@@ -1431,28 +1294,9 @@ export const Canvas: React.FC = () => {
               above the content and outside the master fader */}
           <div ref={setOverlayEl} className="absolute inset-0 pointer-events-none" style={{ zIndex: 700 }} />
 
-          {/* Grid Overlay — minor lines every cell, accent lines every 5 cells.
-              Optionally stays visible in presentation mode for projector alignment. */}
-          {gridVisible && (
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                zIndex: 500,
-                backgroundImage: [
-                  'linear-gradient(to right, rgba(34,211,238,0.35) 1px, transparent 1px)',
-                  'linear-gradient(to bottom, rgba(34,211,238,0.35) 1px, transparent 1px)',
-                  'linear-gradient(to right, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                  'linear-gradient(to bottom, rgba(255,255,255,0.12) 1px, transparent 1px)',
-                ].join(', '),
-                backgroundSize: [
-                  `${grid.size * 5}px ${grid.size * 5}px`,
-                  `${grid.size * 5}px ${grid.size * 5}px`,
-                  `${grid.size}px ${grid.size}px`,
-                  `${grid.size}px ${grid.size}px`,
-                ].join(', '),
-              }}
-            />
-          )}
+          {/* Grid overlay — optionally stays visible in presentation mode for
+              projector alignment */}
+          {gridVisible && <GridOverlay grid={grid} />}
 
           {/* Global output test card (projector setup) */}
           {showTestCard && (

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { MediaFrame, Point, PerspectiveCorners, BlendMode, ResizeHandle } from '../types';
+import type { LiveState } from '../state/liveStore';
 import {
   RotateCw,
   Trash2,
@@ -19,9 +20,8 @@ import {
   PenTool,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
-import { TestCard } from './TestCard';
+import { FrameContent } from './FrameContent';
 import {
-  homographyToCSS,
   applyHomography,
   invertHomography,
   getFrameHomography,
@@ -33,17 +33,19 @@ import {
   pinFrameToQuadVertices,
 } from '../lib/geometry';
 
+// Callbacks take the frame id so the parent can pass stable functions and
+// the component can be memoized (only frames that change re-render)
 interface MediaFrameComponentProps {
   frame: MediaFrame;
   isSelected: boolean;
-  onUpdate: (updates: Partial<MediaFrame>) => void;
-  onDelete: () => void;
-  onDragStart: (e: React.MouseEvent) => void;
-  onResizeStart: (e: React.MouseEvent, handle: ResizeHandle) => void;
-  onRotateStart: (e: React.MouseEvent) => void;
+  onUpdateFrame: (id: string, updates: Partial<MediaFrame>) => void;
+  onDeleteFrame: (id: string) => void;
+  onFrameDragStart: (id: string, e: React.MouseEvent) => void;
+  onFrameResizeStart: (id: string, handle: ResizeHandle, e: React.MouseEvent) => void;
+  onFrameRotateStart: (id: string, e: React.MouseEvent) => void;
   isPresentationMode: boolean;
-  onOpenMediaLibrary: () => void; // Open media library to change media for this frame
-  playbackCommand: 'play' | 'pause' | null; // Global playback command
+  onOpenFrameMediaLibrary: (id: string) => void; // Open media library to change media for this frame
+  playback: LiveState['playback']; // Global transport (play / pause all)
   clientToComp: (clientX: number, clientY: number) => Point; // pointer → composition coords
   snapToGrid: (value: number) => number; // identity when snapping is off
   // Editor overlay layer (portal target) — handles, outlines and hit areas
@@ -52,13 +54,6 @@ interface MediaFrameComponentProps {
   viewScale: number; // composition → screen scale; keeps handles a constant screen size
   outputGain: number; // master fader × blackout, applied to audio volume
 }
-
-// Helper to convert normalized vertices to clip-path polygon string (percent)
-const verticesToClipPath = (vertices: Point[] | undefined): string => {
-  if (!vertices || vertices.length < 3) return 'none';
-  const points = vertices.map(v => `${v.x * 100}% ${v.y * 100}%`).join(', ');
-  return `polygon(${points})`;
-};
 
 // Number of subdivisions of the warped editing grid (Resolume-style)
 const WARP_GRID_DIVISIONS = 8;
@@ -78,23 +73,34 @@ const RESIZE_HANDLES: { handle: ResizeHandle; fx: number; fy: number }[] = [
 // Frame UI layers (outlines, handles, controls) stack above every hit area
 const UI_LAYER_Z = 100000;
 
-export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
+export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   frame,
   isSelected,
-  onUpdate,
-  onDelete,
-  onDragStart,
-  onResizeStart,
-  onRotateStart,
+  onUpdateFrame,
+  onDeleteFrame,
+  onFrameDragStart,
+  onFrameResizeStart,
+  onFrameRotateStart,
   isPresentationMode,
-  onOpenMediaLibrary,
-  playbackCommand,
+  onOpenFrameMediaLibrary,
+  playback,
   clientToComp,
   snapToGrid,
   overlayContainer,
   viewScale,
   outputGain,
-}) => {
+}: MediaFrameComponentProps) {
+  const frameId = frame.id;
+  const onUpdate = useCallback(
+    (updates: Partial<MediaFrame>) => onUpdateFrame(frameId, updates),
+    [onUpdateFrame, frameId]
+  );
+  const onDelete = () => onDeleteFrame(frameId);
+  const onDragStart = (e: React.MouseEvent) => onFrameDragStart(frameId, e);
+  const onResizeStart = (e: React.MouseEvent, handle: ResizeHandle) => onFrameResizeStart(frameId, handle, e);
+  const onRotateStart = (e: React.MouseEvent) => onFrameRotateStart(frameId, e);
+  const onOpenMediaLibrary = () => onOpenFrameMediaLibrary(frameId);
+
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEffects, setShowEffects] = useState(false);
@@ -104,7 +110,6 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   // box corners), so — like Photoshop's transform vs. direct selection —
   // either the warp pins or the shape's vertices are editable at a time
   const [isEditingShape, setIsEditingShape] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
   const hideControlsTimerRef = useRef<number | null>(null);
   const bodyPointerDownRef = useRef<Point | null>(null);
 
@@ -265,87 +270,10 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     };
   }, []); // Empty dependency — handlers use refs
 
-  // Handle video playback settings
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.playbackRate = frame.playbackRate;
-    }
-  }, [frame.playbackRate, frame.type]);
-
-  // Handle video muted state separately to avoid autoplay issues
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.muted = frame.muted;
-    }
-  }, [frame.muted, frame.type]);
-
-  // Master fader / blackout also apply to audio, not just pixels
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.volume = Math.max(0, Math.min(1, outputGain));
-    }
-  }, [outputGain, frame.type, frame.url]);
-
   // Clear a pending hide-controls timer on unmount
   useEffect(() => () => {
     if (hideControlsTimerRef.current !== null) clearTimeout(hideControlsTimerRef.current);
   }, []);
-
-  // Auto-play video when URL changes or on mount
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !frame.url) return;
-
-    const attemptPlay = async () => {
-      try {
-        // Ensure video is muted for autoplay (browser policy)
-        video.muted = true;
-        await video.play();
-        // Restore muted state after successful autoplay
-        video.muted = frame.muted;
-      } catch (error) {
-        console.warn('Autoplay failed, will play on user interaction:', error);
-        // Try again with muted if unmuted failed
-        if (!video.muted) {
-          video.muted = true;
-          video.play().catch(() => {});
-        }
-      }
-    };
-
-    // Try to play when video data is loaded
-    const handleLoadedData = () => {
-      attemptPlay();
-    };
-
-    // If video is already loaded, play immediately
-    if (video.readyState >= 2) {
-      attemptPlay();
-    } else {
-      video.addEventListener('loadeddata', handleLoadedData);
-    }
-
-    return () => {
-      video.removeEventListener('loadeddata', handleLoadedData);
-    };
-  }, [frame.url, frame.type, frame.muted]);
-
-  // Handle global playback commands (Play All / Pause All)
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !playbackCommand) return;
-
-    if (playbackCommand === 'play') {
-      video.play().catch((error) => {
-        console.warn('Play failed:', error);
-        // Try muted play as fallback
-        video.muted = true;
-        video.play().catch(() => {});
-      });
-    } else if (playbackCommand === 'pause') {
-      video.pause();
-    }
-  }, [playbackCommand, frame.type]);
 
   // Hover shows the controls; hiding is delayed slightly so the pointer can
   // cross the gap between the shape and its (outside-anchored) buttons
@@ -405,93 +333,12 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const shapeVerticesPx: Point[] = shapeVertices.map(v => toWarped(v.x * w, v.y * h));
   const outlinePoints = shapeVerticesPx.map(p => `${p.x},${p.y}`).join(' ');
 
-  // Clip path on the content box (untransformed space)
-  const getClipPath = (): string => {
-    if (H) {
-      // All shapes clip to their homography-transformed outline
-      return `polygon(${shapeVerticesPx.map(p => `${p.x}px ${p.y}px`).join(', ')})`;
-    }
-    if (frame.shape === 'circle') {
-      return 'ellipse(50% 50% at 50% 50%)'; // exact ellipse when unwarped
-    }
-    if (frame.shape === 'polygon') {
-      return verticesToClipPath(frame.vertices);
-    }
-    return 'none';
-  };
-
-  const clipPathStyle = getClipPath();
-
-  // Build CSS filter string
-  const filterStyle = [
-    frame.blur > 0 ? `blur(${frame.blur}px)` : '',
-    frame.brightness !== 100 ? `brightness(${frame.brightness}%)` : '',
-    frame.contrast !== 100 ? `contrast(${frame.contrast}%)` : '',
-    frame.grayscale > 0 ? `grayscale(${frame.grayscale}%)` : '',
-    frame.saturate !== 100 ? `saturate(${frame.saturate}%)` : '',
-    frame.hueRotate !== 0 ? `hue-rotate(${frame.hueRotate}deg)` : '',
-    frame.invert > 0 ? `invert(${frame.invert}%)` : '',
-    frame.sepia > 0 ? `sepia(${frame.sepia}%)` : '',
-  ].filter(Boolean).join(' ');
-
+  // Values edited in the settings / effects panels
   const contentScale = frame.contentScale ?? 1;
   const contentOffsetX = frame.contentOffsetX ?? 0;
   const contentOffsetY = frame.contentOffsetY ?? 0;
-
-  // Content transform. With a homography the transform-origin is (0,0), so
-  // flips/zoom are expressed relative to the frame box and composed AFTER the
-  // homography (transform lists apply right-to-left).
-  const buildContentTransform = (): string => {
-    const parts: string[] = [];
-    if (H) {
-      parts.push(homographyToCSS(H));
-      if (frame.flipHorizontal) parts.push(`translate(${w}px, 0px) scaleX(-1)`);
-      if (frame.flipVertical) parts.push(`translate(0px, ${h}px) scaleY(-1)`);
-      if (contentScale !== 1) parts.push(`translate(${w / 2}px, ${h / 2}px) scale(${contentScale}) translate(${-w / 2}px, ${-h / 2}px)`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
-    } else {
-      if (frame.flipHorizontal) parts.push('scaleX(-1)');
-      if (frame.flipVertical) parts.push('scaleY(-1)');
-      if (contentScale !== 1) parts.push(`scale(${contentScale})`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
-    }
-    return parts.join(' ');
-  };
-
-  // Soft edge feathering — masks the content element itself, so the feather
-  // warps together with the content under a corner-pin homography.
   const softEdge = frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 };
   const hasSoftEdge = softEdge.left > 0 || softEdge.right > 0 || softEdge.top > 0 || softEdge.bottom > 0;
-  const softEdgeMask = hasSoftEdge
-    ? [
-        `linear-gradient(to right, transparent 0px, black ${softEdge.left}px, black calc(100% - ${softEdge.right}px), transparent 100%)`,
-        `linear-gradient(to bottom, transparent 0px, black ${softEdge.top}px, black calc(100% - ${softEdge.bottom}px), transparent 100%)`,
-      ].join(', ')
-    : undefined;
-
-  const contentStyle: React.CSSProperties = {
-    ...(H
-      ? {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          transformOrigin: '0 0',
-        }
-      : {}),
-    filter: filterStyle || undefined,
-    transform: buildContentTransform() || undefined,
-    ...(softEdgeMask
-      ? {
-          maskImage: softEdgeMask,
-          maskComposite: 'intersect',
-          WebkitMaskImage: softEdgeMask,
-          WebkitMaskComposite: 'source-in',
-        }
-      : {}),
-  };
 
   // ---- Editor overlay geometry (warped frame-local px) ----
   const ui = 1 / (viewScale || 1); // composition px per screen px
@@ -562,77 +409,6 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     transform: `rotate(${frame.rotation}deg)`,
     pointerEvents: 'none',
   };
-
-  // Content — pure output: positioned, rotated, blended, never interactive
-  const content = (
-    <div
-      className="absolute"
-      style={{
-        left: frame.x,
-        top: frame.y,
-        width: w,
-        height: h,
-        transform: `rotate(${frame.rotation}deg)`,
-        zIndex: frame.zIndex,
-        opacity: frame.opacity,
-        // This element is the frame's stacking context, so the blend mode has
-        // to sit here to mix with the frames and background below it
-        mixBlendMode: frame.blendMode,
-        pointerEvents: 'none',
-        // Warped content may extend beyond the box; the clip-path (which
-        // follows the warped shape) does the clipping
-        overflow: H ? 'visible' : undefined,
-      }}
-    >
-      <div
-        className="w-full h-full relative"
-        style={{
-          clipPath: clipPathStyle,
-          overflow: H ? 'visible' : 'hidden',
-          backgroundColor: frame.url || frame.testPattern || isPresentationMode ? undefined : 'rgb(243 244 246)',
-        }}
-      >
-        {frame.testPattern ? (
-          <div className="w-full h-full" style={contentStyle}>
-            <TestCard
-              width={frame.width}
-              height={frame.height}
-              label={frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`}
-            />
-          </div>
-        ) : frame.url ? (
-          frame.type === 'video' ? (
-            <video
-              ref={videoRef}
-              src={frame.url}
-              loop={frame.loop}
-              muted // Always muted for initial autoplay (browser requirement)
-              autoPlay
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              playsInline
-            />
-          ) : (
-            <img
-              src={frame.url}
-              alt="Media"
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              draggable={false}
-            />
-          )
-        ) : !isPresentationMode ? (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300">
-            <div className="text-center text-gray-500">
-              <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm font-medium">Click to add media</p>
-              <p className="text-xs mt-1">from library</p>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
 
   // Hit layer — exactly the rendered (warped) shape, stacked like the content
   const hitLayer = !isPresentationMode ? (
@@ -1345,9 +1121,14 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
 
   return (
     <>
-      {content}
+      <FrameContent
+        frame={frame}
+        playback={playback}
+        outputGain={outputGain}
+        showPlaceholder={!isPresentationMode}
+      />
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}
       {overlayContainer && uiLayer && createPortal(uiLayer, overlayContainer)}
     </>
   );
-};
+});
