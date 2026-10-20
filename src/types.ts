@@ -143,6 +143,18 @@ export interface Rect {
 // Four corners: top left, top right, bottom right, bottom left
 export type Quad = [Point, Point, Point, Point]
 
+// ---- Mesh warp (roadmap 3.2, see docs/design/mesh-warp.md) ------------------
+
+// A grid of control points inside a corner pin: columns × rows points in the
+// pin's unit square (0..1), row by row from the top left. Untouched they lie
+// on a regular grid; moved, they bend the picture between the four corners.
+export interface MeshWarp {
+  columns: number
+  rows: number
+  points: Point[]
+  smooth: boolean // a curve through the points; off: straight between them
+}
+
 // A part of the composition (input, composition px) placed on a screen
 // (output, screen px — four corners, so it can be warped)
 export interface Slice {
@@ -151,6 +163,8 @@ export interface Slice {
   enabled: boolean
   input: Rect
   output: Quad
+  bilinear?: boolean // the corners interpolate bilinearly instead of in perspective
+  mesh?: MeshWarp // grid warp inside the corners
 }
 
 // One output: a projector or display, with its own resolution
@@ -247,6 +261,8 @@ export interface MediaFrame {
   // Perspective / corner-pin distortion
   perspectiveMode: boolean
   perspectiveCorners: PerspectiveCorners
+  bilinear?: boolean // corner pin interpolates bilinearly instead of in perspective
+  mesh?: MeshWarp // grid warp inside the corner pin (GPU renderer)
 }
 
 export interface ProjectData {

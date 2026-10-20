@@ -27,7 +27,7 @@ ProjectDocument
 
 ## Rendering
 
-- **GPU:** the compositor renders the composition into its targets — at the composition's resolution, or less when the slices show it smaller (the editor preview), in steps of a quarter so dragging a corner doesn't reallocate textures — then draws the screen: each enabled slice is a quad at its output corners; per pixel the inverse homography (screen px → the slice's unit square) gives the point in the input rectangle (`SLICE_FRAGMENT`). Edges are antialiased; outside the composition is transparent. Master fader on the slices, blackout and test card as DOM overlays.
+- **GPU:** the compositor renders the composition into its targets — at the composition's resolution, or less when the slices show it smaller (the editor preview), in steps of a quarter so dragging a corner doesn't reallocate textures — then draws the screen: each enabled slice is its warp mesh on the output corners (exact homography, interpolated in perspective; mesh and bilinear pins since 3.2, see [mesh-warp.md](mesh-warp.md)), each pixel showing its point of the input rectangle (`SLICE_FRAGMENT`). Edges are antialiased; outside the composition is transparent. Master fader on the slices, blackout and test card as DOM overlays.
 - **CSS:** each slice is a copy of the composition DOM, clipped to the input rectangle (`overflow: hidden`) and warped with `matrix3d` onto the output corners (`ScreenDom`). Every slice plays its own copy of the media (only the first one is audible); fine for a slice per screen, heavier with many.
 - Output windows that show a screen: test card is the **screen's** (name and resolution, for focusing and keystoning the projector); the composition grid isn't shown (it is in composition px). A window whose screen was deleted stays black (a hint appears when the mouse moves).
 
@@ -50,6 +50,6 @@ ProjectDocument
 
 ## Next
 
-- 3.2 Mesh warp inside the corner pin (per slice and per surface).
+- ~~3.2 Mesh warp inside the corner pin (per slice and per surface).~~ Done — see [mesh-warp.md](mesh-warp.md); slices are now drawn as warp meshes instead of through the inverse homography.
 - 3.5 Edge blending between overlapping screens (the split's overlap is the place for it), colour correction per screen.
 - 3.7 Virtual screens and screen-to-screen routing; polygon input shapes and output masks (3.4).

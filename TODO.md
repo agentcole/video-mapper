@@ -35,12 +35,13 @@ The old inconsistency: the homography (`matrix3d`) and the shape (`clip-path`) w
 
 ## Phase 3 progress
 - [x] 3.1 Screens / slices (docs/design/screens.md, format 5.6): screens with their own resolution, slices with an input rectangle of the composition and four output corners; GPU (composition rendered once, slices sample it through the inverse homography) and CSS (one warped copy per slice); output window per screen (`?output=<id>`), display per screen remembered per machine, screen test card, live status per screen; screen editor with Input / Output views on the stage (drag, snap, arrow keys, numbers), split into columns × rows with overlap, match input / output, fill screen. Verified with pixel probes in Chrome. Also fixed: an editor that mounted again (hot reload) reopened the project as it was at page load. Open: real multi-projector test, mesh warp per slice (3.2), edge blending on the overlaps (3.5), polygon inputs / output masks (3.4)
+- [x] 3.2 Mesh warp (docs/design/mesh-warp.md, format 5.7): N × M points (2–17) inside the corner pin of surfaces and slices, linear or smooth (Catmull-Rom through the points), perspective or bilinear pin; the GPU renderer now draws every surface and slice as a warp mesh with homogeneous positions (a corner pin is one exact cell; bends get more), uploaded once per change; editor: Warp section (layer properties, slice settings), points on the stage (drag under the pointer, Shift+click, arrows, ⌘A, reset selected / all), outlines / click areas / vertices / editing grid follow the mesh, polygon refit crops the mesh. Verified with a before/after pixel comparison (only exact-edge pixels differ, now antialiased) and warp-accuracy probes on an 8 × 8 grid (11 kinds, 80 / 80, controls fail). CSS shows the corner pin only. Open: test on a real curved surface; marquee / row selection, Bezier handles, presets
 
 ## UI
 - [x] One look for the whole editor, set by the clip launcher (docs/design/ui-style.md): shared theme tokens, dark button/input/slider primitives, one dialog shell (media library, projects), segmented controls, notices; cyan only for on/selected, amber for show timing, emerald for playing, red for blackout/errors; shortcuts list collapsed and platform-aware
 
 ## Next candidates (see the roadmap report, Phase 1+)
-- WebGL compositor behind a renderer abstraction — unlocks true mesh warp (beyond 4 corners), GPU soft-edge blending, and output to multiple displays. The current CSS renderer covers projective quads only.
+- GPU soft-edge / edge blending between projectors (3.5) on the mesh-warp renderer.
 - Bezier / curved mask edges.
 - Timeline for synchronized playback across layers.
 - Export composition as video.

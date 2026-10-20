@@ -42,6 +42,7 @@ import { SliceInputOverlay, SliceOutputOverlay } from './SliceOverlay';
 import { FrameContent } from './FrameContent';
 import { openScreenEditor, screenEditorStore, selectSlice, useScreenEditor } from '../state/screenEditor';
 import { duplicateSlice, nudgeSelection, removeSlice } from '../state/screenActions';
+import { editMesh, meshEditorStore, nudgeMeshSelection, selectMeshPoints, targetWarp } from '../state/meshEditor';
 import { resumeAudioInput } from '../audio/audioInput';
 import { resumeMidi } from '../control/midi';
 import { controlStore } from '../control/mappings';
@@ -226,6 +227,9 @@ export const Canvas: React.FC = () => {
   const selectedIdsRef = useRef(selectedFrameIds);
   useEffect(() => {
     selectedIdsRef.current = selectedFrameIds;
+    // A surface's mesh is edited while that surface alone is selected
+    const { target } = meshEditorStore.getState();
+    if (target?.kind === 'surface' && (selectedFrameIds.length !== 1 || selectedFrameIds[0] !== target.id)) editMesh(null);
   }, [selectedFrameIds]);
 
   // ------------------------------------------------------------------
@@ -558,12 +562,17 @@ export const Canvas: React.FC = () => {
 
       // ESC works even while typing: exit mode, cancel draw, or deselect
       const screenEditor = screenEditorStore.getState();
+      const meshEditor = meshEditorStore.getState();
       if (e.key === 'Escape') {
         if (isPresentationMode) {
           setIsPresentationMode(false);
           if (document.fullscreenElement) {
             document.exitFullscreen();
           }
+        } else if (meshEditor.target) {
+          // Mesh points, then mesh editing
+          if (meshEditor.selected.length > 0) selectMeshPoints([]);
+          else editMesh(null);
         } else if (screenEditor.open) {
           if (screenEditor.sliceId) selectSlice(null);
           else openScreenEditor(false);
@@ -622,6 +631,32 @@ export const Canvas: React.FC = () => {
           if (!e.repeat) {
             if (e.shiftKey) resyncBar(); else tapTempo();
           }
+          return;
+        }
+      }
+
+      // Mesh editing: arrows move the selected points, Cmd/Ctrl+A selects
+      // them all; Delete does nothing (the surface / slice stays)
+      if (meshEditor.target && !isPresentationMode) {
+        const command = e.metaKey || e.ctrlKey;
+        if (!command && !isToggleInput && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+          const step = e.shiftKey ? 10 : 1;
+          if (nudgeMeshSelection(
+            e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0,
+            e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0,
+          )) {
+            e.preventDefault();
+            return;
+          }
+        }
+        if (command && (e.key === 'a' || e.key === 'A')) {
+          e.preventDefault();
+          const mesh = targetWarp(meshEditor.target)?.mesh;
+          selectMeshPoints(mesh ? mesh.points.map((_, k) => k) : []);
+          return;
+        }
+        if (!command && (e.key === 'Delete' || e.key === 'Backspace')) {
+          e.preventDefault();
           return;
         }
       }

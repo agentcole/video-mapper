@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { NumberField } from './ui/number-field';
+import { WarpControls } from './WarpControls';
 import { divider, field, iconButton, option, panelSurface, panelTitle, sectionLabel, segment, segmented } from './ui/theme';
 import { useProjectStore } from '../state/projectStore';
 import { openScreenEditor, selectScreen, selectSlice, setScreenView, useScreenEditor } from '../state/screenEditor';
@@ -230,6 +231,8 @@ const SliceSettings: React.FC<{ screen: Screen; slice: Slice }> = ({ screen, sli
           = Input
         </Button>
       </div>
+
+      <WarpControls target={{ kind: 'slice', screenId: screen.id, id: slice.id }} bilinear={slice.bilinear} mesh={slice.mesh} />
     </div>
   );
 };

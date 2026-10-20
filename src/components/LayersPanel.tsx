@@ -17,8 +17,9 @@ import {
 } from 'lucide-react';
 import { Slider } from './ui/slider';
 import { NumberField } from './ui/number-field';
+import { WarpControls } from './WarpControls';
 import { scaleFrameSize } from '../lib/geometry';
-import { field, iconButton, option, panelSurface, panelTitle, sectionLabel } from './ui/theme';
+import { divider, field, iconButton, option, panelSurface, panelTitle, sectionLabel } from './ui/theme';
 
 interface LayersPanelProps {
   frames: MediaFrame[];
@@ -226,6 +227,14 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
                       <option key={mode} value={mode} className={option}>{mode}</option>
                     ))}
                   </select>
+                </div>
+                <div className={`pt-2 border-t ${divider}`}>
+                  <WarpControls
+                    target={{ kind: 'surface', id: selectedFrame.id }}
+                    bilinear={selectedFrame.perspectiveMode && selectedFrame.bilinear}
+                    mesh={selectedFrame.mesh}
+                    pinOff={!selectedFrame.perspectiveMode}
+                  />
                 </div>
               </>
             ) : selectedFrameIds.length > 1 ? (

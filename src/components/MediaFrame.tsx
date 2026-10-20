@@ -34,6 +34,9 @@ import {
   pinFrameToQuadVertices,
 } from '../lib/geometry';
 import { field, menuSurface } from './ui/theme';
+import { MeshHandles } from './MeshHandles';
+import { bendsBeyondPerspective, cropMesh, prepareWarp, surfaceWarp, type PreparedWarp } from '../lib/meshWarp';
+import { useMeshEditor } from '../state/meshEditor';
 
 // Callbacks take the frame id so the parent can pass stable functions and
 // the component can be memoized (only frames that change re-render)
@@ -81,6 +84,21 @@ const RESIZE_HANDLES: { handle: ResizeHandle; fx: number; fy: number }[] = [
 // Frame UI layers (outlines, handles, controls) stack above every hit area
 const UI_LAYER_Z = 100000;
 
+const NO_POINTS: readonly number[] = [];
+
+/** The surface's warp when it bends beyond its corner-pin homography (mesh, bilinear pin). */
+const innerWarpOf = (frame: MediaFrame): PreparedWarp | null => {
+  const warp = surfaceWarp(frame);
+  return bendsBeyondPerspective(warp) ? prepareWarp(warp) : null;
+};
+
+/** More points along every edge of a closed outline, so it can follow a curved warp. */
+const densify = (points: Point[], steps: number): Point[] =>
+  points.flatMap((p, i) => {
+    const q = points[(i + 1) % points.length];
+    return Array.from({ length: steps }, (_, k) => ({ x: p.x + ((q.x - p.x) * k) / steps, y: p.y + ((q.y - p.y) * k) / steps }));
+  });
+
 export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   frame,
   isSelected,
@@ -123,6 +141,9 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   // box corners), so — like Photoshop's transform vs. direct selection —
   // either the warp pins or the shape's vertices are editable at a time
   const [isEditingShape, setIsEditingShape] = useState(false);
+  // This surface's mesh is the one edited on the stage, and its selected points
+  const isMeshTarget = useMeshEditor(s => s.target?.kind === 'surface' && s.target.id === frame.id);
+  const meshSelected = useMeshEditor(s => (s.target?.kind === 'surface' && s.target.id === frame.id ? s.selected : NO_POINTS));
   const hideControlsTimerRef = useRef<number | null>(null);
   const bodyPointerDownRef = useRef<Point | null>(null);
 
@@ -221,10 +242,19 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
         if (!currentFrame.vertices) return;
 
         const warped = pointerToSnappedLocal(clientX, clientY);
-        const H = getFrameHomography(currentFrame);
-        const Hinv = H ? invertHomography(H) : null;
-        if (H && !Hinv) return;
-        const local = Hinv ? applyHomography(Hinv, warped.x, warped.y) : warped;
+        let local: Point;
+        const inner = innerWarpOf(currentFrame);
+        if (inner) {
+          // Through the mesh / bilinear pin
+          const uv = inner.inverse(warped);
+          if (!uv) return;
+          local = { x: uv.x * currentFrame.width, y: uv.y * currentFrame.height };
+        } else {
+          const H = getFrameHomography(currentFrame);
+          const Hinv = H ? invertHomography(H) : null;
+          if (H && !Hinv) return;
+          local = Hinv ? applyHomography(Hinv, warped.x, warped.y) : warped;
+        }
 
         const newVertices = [...currentFrame.vertices];
         newVertices[currentIndex] = {
@@ -260,8 +290,18 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
         setDraggingVertexIndex(null);
         draggingVertexIndexRef.current = null;
         // Shrink/grow the box to the edited shape without moving anything
-        const refit = refitFrameToVertices(frameRef.current);
-        if (refit) onUpdateRef.current(refit);
+        const edited = frameRef.current;
+        const refit = refitFrameToVertices(edited);
+        if (refit && edited.mesh && edited.vertices) {
+          // The mesh follows: the new box is a part of the old one
+          const xs = edited.vertices.map(v => v.x);
+          const ys = edited.vertices.map(v => v.y);
+          const x = Math.min(...xs);
+          const y = Math.min(...ys);
+          onUpdateRef.current({ ...refit, mesh: cropMesh(edited.mesh, { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y }) });
+        } else if (refit) {
+          onUpdateRef.current(refit);
+        }
       }
       if (draggingCornerRef.current !== null) {
         setDraggingCorner(null);
@@ -341,9 +381,13 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   const w = frame.width;
   const h = frame.height;
   const H = getFrameHomography(frame);
-  const toWarped = (x: number, y: number): Point => (H ? applyHomography(H, x, y) : { x, y });
+  // A mesh or a bilinear pin bends lines: everything goes through the full warp
+  const innerWarp = innerWarpOf(frame);
+  const toWarped = (x: number, y: number): Point =>
+    innerWarp ? innerWarp.point(x / w, y / h) : H ? applyHomography(H, x, y) : { x, y };
 
-  const shapeVertices = getShapeVertices(frame.shape, frame.vertices, H ? 96 : 48);
+  const baseVertices = getShapeVertices(frame.shape, frame.vertices, H || innerWarp ? 96 : 48);
+  const shapeVertices = innerWarp && frame.shape !== 'circle' ? densify(baseVertices, 24) : baseVertices;
   const shapeVerticesPx: Point[] = shapeVertices.map(v => toWarped(v.x * w, v.y * h));
   const outlinePoints = shapeVerticesPx.map(p => `${p.x},${p.y}`).join(' ');
 
@@ -356,10 +400,13 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
 
   // ---- Editor overlay geometry (warped frame-local px) ----
   const ui = 1 / (viewScale || 1); // composition px per screen px
+  // Mesh editing (3.2): the mesh's points replace the other handles
+  const editingMesh = isMeshTarget && isSelected && !!frame.mesh && !isPresentationMode;
   const canToggleShapeEdit = frame.shape === 'polygon' && frame.perspectiveMode;
-  const editingShape = canToggleShapeEdit && isEditingShape && isSelected;
-  const showPins = frame.perspectiveMode && (isSelected || showControls) && !editingShape;
-  const showVertexHandles = isSelected && frame.shape === 'polygon' && (!frame.perspectiveMode || editingShape);
+  const editingShape = canToggleShapeEdit && isEditingShape && isSelected && !editingMesh;
+  const showPins = frame.perspectiveMode && (isSelected || showControls) && !editingShape && !editingMesh;
+  const showVertexHandles = isSelected && frame.shape === 'polygon' && (!frame.perspectiveMode || editingShape) && !editingMesh;
+  const showBoxHandles = isSelected && !editingMesh;
   const cornerPositions = getCornerLocalPositions(w, h, frame.perspectiveCorners);
   const pinQuad = frame.perspectiveMode
     ? [cornerPositions.tl, cornerPositions.tr, cornerPositions.br, cornerPositions.bl]
@@ -389,18 +436,16 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   });
   const rotateAnchor = toWarped(w / 2, 0);
 
-  // Warped editing grid lines (homographies map straight lines to straight
-  // lines, so each grid line is a segment between transformed endpoints)
-  const warpGridLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  if (frame.perspectiveMode && (isSelected || showControls)) {
+  // Warped editing grid lines. Homographies map straight lines to straight
+  // lines (a segment between transformed endpoints); a mesh bends them.
+  const warpGridLines: Point[][] = [];
+  if ((frame.perspectiveMode || innerWarp) && (isSelected || showControls) && !editingMesh) {
+    const samples = innerWarp ? 24 : 1;
+    const along = (fn: (t: number) => Point) => Array.from({ length: samples + 1 }, (_, k) => fn(k / samples));
     for (let i = 1; i < WARP_GRID_DIVISIONS; i++) {
       const f = i / WARP_GRID_DIVISIONS;
-      const v1 = toWarped(f * w, 0);
-      const v2 = toWarped(f * w, h);
-      warpGridLines.push({ x1: v1.x, y1: v1.y, x2: v2.x, y2: v2.y });
-      const h1 = toWarped(0, f * h);
-      const h2 = toWarped(w, f * h);
-      warpGridLines.push({ x1: h1.x, y1: h1.y, x2: h2.x, y2: h2.y });
+      warpGridLines.push(along(t => toWarped(f * w, t * h)));
+      warpGridLines.push(along(t => toWarped(t * w, f * h)));
     }
   }
 
@@ -473,12 +518,10 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
         {warpGridLines.length > 0 && (
           <g clipPath={`url(#${clipId})`}>
             {warpGridLines.map((line, i) => (
-              <line
+              <polyline
                 key={i}
-                x1={line.x1}
-                y1={line.y1}
-                x2={line.x2}
-                y2={line.y2}
+                points={line.map(p => `${p.x},${p.y}`).join(' ')}
+                fill="none"
                 stroke="rgba(34, 211, 238, 0.45)"
                 strokeWidth={ui}
               />
@@ -507,6 +550,21 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
           strokeLinejoin="round"
         />
       </svg>
+
+      {/* Mesh warp points (3.2) */}
+      {editingMesh && frame.mesh && (
+        <MeshHandles
+          target={{ kind: 'surface', id: frame.id }}
+          warp={surfaceWarp(frame)}
+          mesh={frame.mesh}
+          selected={meshSelected}
+          px={ui}
+          toSpace={(clientX, clientY) => {
+            const comp = clientToCompRef.current(clientX, clientY);
+            return compToFrameLocal(comp.x, comp.y, frameRef.current);
+          }}
+        />
+      )}
 
       {/* Perspective corner pins — visible on hover OR when selected */}
       {showPins &&
@@ -544,7 +602,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
         ))}
 
       {/* Resize handles — every shape, on the warped box */}
-      {isSelected && resizeHandlePositions.map(({ handle, p }) => (
+      {showBoxHandles && resizeHandlePositions.map(({ handle, p }) => (
         <div
           key={handle}
           className="absolute bg-yellow-400 border-yellow-600 shadow-md"
@@ -597,7 +655,7 @@ export const MediaFrameComponent = React.memo(function MediaFrameComponent({
       })}
 
       {/* Rotation handle — above the warped top edge */}
-      {isSelected && (
+      {showBoxHandles && (
         <div
           className="absolute bg-green-500 rounded-full border-white cursor-grab flex items-center justify-center shadow-lg"
           style={{

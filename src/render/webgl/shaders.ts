@@ -3,17 +3,22 @@ import { MAX_POLYGON_VERTICES } from '../frameMath';
 // ---------------------------------------------------------------------------
 // GLSL ES 3.00 shaders for the WebGL2 compositor.
 //
-// Geometry is drawn in composition px; the frame shader then maps each pixel
-// backwards (see frameMath.ts for the reference implementation).
+// Surfaces and slices are drawn as warp meshes (lib/meshWarp.ts): triangles
+// whose vertices carry a homogeneous output position and where in the
+// content they are (v_uv). The GPU divides by w, so a corner pin is an exact
+// homography and the content is interpolated in perspective.
 // ---------------------------------------------------------------------------
 
-/** Quad vertices in composition px → clip space. */
-export const QUAD_VERTEX = /* glsl */ `#version 300 es
-in vec2 a_position;           // composition px
-uniform vec2 u_compSize;
+/** Warp mesh vertices (output px, homogeneous) → clip space. */
+export const WARP_VERTEX = /* glsl */ `#version 300 es
+in vec3 a_position;           // output px × w, and w
+in vec2 a_uv;                 // in the content: 0..1 across (beyond: the antialiasing pad)
+uniform vec2 u_viewSize;      // output px across the target
+out vec2 v_uv;
 void main() {
-  vec2 ndc = a_position / u_compSize * 2.0 - 1.0;
-  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+  v_uv = a_uv;
+  vec2 ndc = a_position.xy / u_viewSize * 2.0 - a_position.z; // clip space × w
+  gl_Position = vec4(ndc.x, -ndc.y, 0.0, a_position.z);
 }
 `;
 
@@ -39,35 +44,20 @@ void main() {
 }
 `;
 
-/** Slice vertices in screen px → clip space (the canvas shows the whole screen). */
-export const SLICE_VERTEX = /* glsl */ `#version 300 es
-in vec2 a_position;           // screen px
-uniform vec2 u_screenSize;
-out vec2 v_screen;
-void main() {
-  v_screen = a_position;
-  vec2 ndc = a_position / u_screenSize * 2.0 - 1.0;
-  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
-}
-`;
-
 /**
- * A slice: each screen pixel maps back through the inverse homography to
- * the slice's unit square, then into its input rectangle of the composition.
- * Edges are antialiased; outside the composition is transparent.
+ * A slice: its warp mesh on the screen, each pixel showing its point of the
+ * input rectangle of the composition. Edges are antialiased; outside the
+ * composition is transparent.
  */
 export const SLICE_FRAGMENT = /* glsl */ `#version 300 es
 precision highp float;
-in vec2 v_screen;
-uniform mat3 u_hinv;          // screen px → slice unit square
+in vec2 v_uv;                 // in the slice: 0..1 across its input rectangle
 uniform sampler2D u_picture;  // the composition (bottom row first)
 uniform vec4 u_input;         // input rectangle: x, y, width, height (0..1 of the composition)
 uniform float u_gain;         // master fader
 out vec4 outColor;
 void main() {
-  vec3 p = u_hinv * vec3(v_screen, 1.0);
-  if (p.z <= 0.0) discard;
-  vec2 uv = p.xy / p.z;
+  vec2 uv = v_uv;
   vec2 fw = max(fwidth(uv), vec2(1e-6));
   vec2 edge = min(uv, 1.0 - uv) / fw;
   float coverage = clamp(min(edge.x, edge.y) + 0.5, 0.0, 1.0);
@@ -104,14 +94,11 @@ void main() {
 export const FRAME_FRAGMENT = /* glsl */ `#version 300 es
 precision highp float;
 
-uniform vec2 u_targetSize;     // render target px
-uniform vec2 u_compSize;       // composition px
+uniform vec2 u_targetSize;     // render target px (backdrop lookups)
+in vec2 v_uv;                  // in the frame box, 0..1 (through its corner pin and mesh)
 
 // Geometry (see frameMath.ts)
-uniform vec2 u_center;
-uniform vec2 u_rot;            // cos, sin
 uniform vec2 u_size;
-uniform mat3 u_hinv;
 uniform int u_shape;           // 0 rect, 1 circle, 2 polygon
 uniform int u_vertexCount;
 uniform vec2 u_vertices[${MAX_POLYGON_VERTICES}];
@@ -294,14 +281,8 @@ vec4 content(vec2 box, sampler2D media, Look look) {
 }
 
 void main() {
-  vec2 targetPx = vec2(gl_FragCoord.x, u_targetSize.y - gl_FragCoord.y);
-  vec2 comp = targetPx * (u_compSize / u_targetSize);
-
-  // Composition → warped local (undo rotation) → unwarped box (H⁻¹)
-  vec2 d = comp - u_center;
-  vec2 local = vec2(d.x * u_rot.x + d.y * u_rot.y, -d.x * u_rot.y + d.y * u_rot.x) + u_size * 0.5;
-  vec3 hp = u_hinv * vec3(local, 1.0);
-  vec2 box = hp.xy / hp.z;
+  // Where this pixel is in the unwarped box (the warp mesh brought it here)
+  vec2 box = v_uv * u_size;
 
   // Shape coverage (antialiased) — content only exists inside the box. One
   // combined distance so fwidth() runs in uniform control flow.

@@ -3,10 +3,12 @@ import type { Point, Quad, Rect, Screen, Slice } from '../types';
 import { useProjectStore } from '../state/projectStore';
 import { selectScreen, selectSlice, useScreenEditor } from '../state/screenEditor';
 import { updateSlice } from '../state/screenActions';
-import { applyHomography, computeHomography } from '../lib/geometry';
 import {
-  isValidQuad, moveQuad, rectQuad, resizeRect, setCorner, snapDelta, snapShift, snapTargets, type RectHandle,
+  isValidQuad, moveQuad, rectQuad, resizeRect, setCorner, sliceWarp, snapDelta, snapShift, snapTargets, type RectHandle,
 } from '../state/screens';
+import { bendsBeyondPerspective, prepareWarp, warpOutline } from '../lib/meshWarp';
+import { useMeshEditor } from '../state/meshEditor';
+import { MeshHandles } from './MeshHandles';
 
 // ---------------------------------------------------------------------------
 // Editing slices on the stage. Input view: the composition with every
@@ -197,18 +199,29 @@ export const SliceInputOverlay: React.FC<{ viewScale: number }> = ({ viewScale }
 // ---- Output view ------------------------------------------------------------------------------
 
 const GRID_STEPS = [0.25, 0.5, 0.75];
+const NO_POINTS: readonly number[] = [];
 
-/** Lines of a 4 × 4 grid through the slice's warp — shows the perspective. */
-const warpGrid = (quad: Quad): [Point, Point][] => {
-  const h = computeHomography([[0, 0], [1, 0], [1, 1], [0, 1]], quad.map(p => [p.x, p.y]));
-  if (!h) return [];
-  const at = (u: number, v: number) => applyHomography(h, u, v);
-  return GRID_STEPS.flatMap(t => [[at(t, 0), at(t, 1)], [at(0, t), at(1, t)]] as [Point, Point][]);
+/** Lines of a 4 × 4 grid through the slice's warp — shows the perspective (and the mesh's bends). */
+const warpGrid = (slice: Slice): Point[][] => {
+  const warp = prepareWarp(sliceWarp(slice));
+  if (!warp) return [];
+  const samples = bendsBeyondPerspective(sliceWarp(slice)) ? 24 : 1;
+  const along = (fn: (t: number) => Point) => Array.from({ length: samples + 1 }, (_, k) => fn(k / samples));
+  return GRID_STEPS.flatMap(t => [along(s => warp.point(t, s)), along(s => warp.point(s, t))]);
+};
+
+/** The slice's border on the screen: its corners, or the curve of its mesh. */
+const sliceOutline = (slice: Slice): Point[] => {
+  const warp = bendsBeyondPerspective(sliceWarp(slice)) ? prepareWarp(sliceWarp(slice)) : null;
+  return warp ? warpOutline(warp, 24) : slice.output;
 };
 
 export const SliceOutputOverlay: React.FC<{ screen: Screen; viewScale: number }> = ({ screen, viewScale }) => {
   const sliceId = useScreenEditor(s => s.sliceId);
   const corner = useScreenEditor(s => s.corner);
+  // The selected slice's mesh is edited: its points replace the corners
+  const meshSliceId = useMeshEditor(s => (s.target?.kind === 'slice' && s.target.screenId === screen.id ? s.target.id : null));
+  const meshSelected = useMeshEditor(s => (s.target?.kind === 'slice' ? s.selected : NO_POINTS));
   const rootRef = useRef<HTMLDivElement>(null);
   const gesture = useRef<(Gesture & { corner: number | null; start: Quad }) | null>(null);
   const px = 1 / viewScale;
@@ -262,6 +275,7 @@ export const SliceOutputOverlay: React.FC<{ screen: Screen; viewScale: number }>
   };
 
   const selected = screen.slices.find(s => s.id === sliceId);
+  const editingMesh = !!selected?.mesh && meshSliceId === selected.id;
   const stroke = 1.5 * px;
 
   return (
@@ -282,7 +296,7 @@ export const SliceOutputOverlay: React.FC<{ screen: Screen; viewScale: number }>
           return (
             <g key={slice.id} opacity={slice.enabled ? 1 : 0.45}>
               <polygon
-                points={slice.output.map(p => `${p.x},${p.y}`).join(' ')}
+                points={sliceOutline(slice).map(p => `${p.x},${p.y}`).join(' ')}
                 fill={isSelected ? 'rgba(34,211,238,0.06)' : 'transparent'}
                 stroke={isSelected ? '#22d3ee' : 'rgba(255,255,255,0.7)'}
                 strokeWidth={isSelected ? 2 * px : stroke}
@@ -304,14 +318,14 @@ export const SliceOutputOverlay: React.FC<{ screen: Screen; viewScale: number }>
             </g>
           );
         })}
-        {selected && (
-          <g className="pointer-events-none">
-            {warpGrid(selected.output).map(([a, b], i) => (
-              <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="rgba(34,211,238,0.45)" strokeWidth={px} />
+        {selected && !editingMesh && (
+          <g className="pointer-events-none" fill="none">
+            {warpGrid(selected).map((line, i) => (
+              <polyline key={i} points={line.map(p => `${p.x},${p.y}`).join(' ')} stroke="rgba(34,211,238,0.45)" strokeWidth={px} />
             ))}
           </g>
         )}
-        {selected && selected.output.map((p, i) => (
+        {selected && !editingMesh && selected.output.map((p, i) => (
           <circle
             key={i}
             cx={p.x}
@@ -325,6 +339,16 @@ export const SliceOutputOverlay: React.FC<{ screen: Screen; viewScale: number }>
           />
         ))}
       </svg>
+      {selected?.mesh && editingMesh && (
+        <MeshHandles
+          target={{ kind: 'slice', screenId: screen.id, id: selected.id }}
+          warp={sliceWarp(selected)}
+          mesh={selected.mesh}
+          selected={meshSelected}
+          px={px}
+          toSpace={(clientX, clientY) => stagePoint(rootRef.current!, screen, clientX, clientY)}
+        />
+      )}
     </div>
   );
 };

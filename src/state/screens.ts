@@ -1,5 +1,6 @@
 import type { CompositionSettings, Point, Quad, Rect, Screen, Slice } from '../types';
 import { computeHomography, invertHomography, isConvexQuad } from '../lib/geometry';
+import type { Warp } from '../lib/meshWarp';
 
 // ---------------------------------------------------------------------------
 // Screens and slices (roadmap 3.1): the composition is the content; a screen
@@ -136,6 +137,9 @@ export const screenToSlice = (slice: Slice): number[] | null => {
   const toScreen = computeHomography(UNIT, pairs(slice.output));
   return toScreen ? invertHomography(toScreen) : null;
 };
+
+/** A slice's warp onto its screen: the output corners, how they interpolate, its mesh. */
+export const sliceWarp = (slice: Slice): Warp => ({ corners: slice.output, bilinear: slice.bilinear, mesh: slice.mesh });
 
 /** How much a slice magnifies the composition (screen px per composition px). */
 export const sliceZoom = (slice: Slice): number => {

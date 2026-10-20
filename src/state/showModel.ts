@@ -1,5 +1,5 @@
 import type {
-  BeatSnap, BlendMode, CrossfadeSide, EffectInstance, GeneratorSettings, MediaFrame, MediaType, ModMap,
+  BeatSnap, BlendMode, CrossfadeSide, EffectInstance, GeneratorSettings, MediaFrame, MediaType, MeshWarp, ModMap,
   PerspectiveCorners, Point, ShapeType, SoftEdge, Transition,
 } from '../types';
 
@@ -85,6 +85,8 @@ export interface Surface {
   lockAspectRatio: boolean;
   perspectiveMode: boolean;
   perspectiveCorners: PerspectiveCorners;
+  bilinear?: boolean; // 5.7 — the corner pin interpolates bilinearly
+  mesh?: MeshWarp; // 5.7 — grid warp inside the corner pin
   softEdge: SoftEdge;
 }
 
@@ -140,6 +142,8 @@ const surfaceFromFrame = (frame: MediaFrame, layerId: string): Surface => ({
   lockAspectRatio: frame.lockAspectRatio,
   perspectiveMode: frame.perspectiveMode,
   perspectiveCorners: frame.perspectiveCorners,
+  bilinear: frame.bilinear,
+  mesh: frame.mesh,
   softEdge: frame.softEdge,
 });
 
@@ -217,6 +221,8 @@ const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null
     lockAspectRatio: surface.lockAspectRatio,
     perspectiveMode: surface.perspectiveMode,
     perspectiveCorners: surface.perspectiveCorners,
+    bilinear: surface.bilinear,
+    mesh: surface.mesh,
     softEdge: surface.softEdge,
     opacity: layer?.opacity ?? 1,
     blendMode: layer?.blendMode ?? 'normal',
@@ -243,11 +249,11 @@ const frameFrom = (surface: Surface, layer: Layer | undefined, clip: Clip | null
   };
 };
 
+// A missing key equals an undefined one (optional fields of loaded projects)
 const shallowEqual = (a: object, b: object): boolean => {
-  const ka = Object.keys(a) as (keyof typeof a)[];
-  const kb = Object.keys(b);
-  if (ka.length !== kb.length) return false;
-  return ka.every(k => a[k] === b[k]);
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  return Object.keys(x).every(k => x[k] === y[k]) && Object.keys(y).every(k => x[k] === y[k]);
 };
 
 // Only the fields a frame carries — clip-only settings (name, trigger style)

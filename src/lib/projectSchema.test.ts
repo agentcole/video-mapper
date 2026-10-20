@@ -297,3 +297,48 @@ describe('screens (5.6)', () => {
     expect(project.warnings).toHaveLength(3);
   });
 });
+
+describe('mesh warps (5.7)', () => {
+  const mesh = {
+    columns: 2, rows: 2, smooth: false,
+    points: [{ x: 0, y: 0 }, { x: 1.1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }],
+  };
+  const slice = {
+    id: 'slice-1', name: 'Left', enabled: true,
+    input: { x: 0, y: 0, width: 960, height: 1080 },
+    output: [{ x: 0, y: 0 }, { x: 960, y: 0 }, { x: 960, y: 1080 }, { x: 0, y: 1080 }],
+  };
+  const screenWith = (s: object) => [{ id: 'screen-1', name: 'P', width: 960, height: 1080, slices: [s] }];
+
+  it('reads meshes and bilinear pins on surfaces and slices', () => {
+    const { surfaces, layers, columns } = parseProjectData({ frames: [legacyFrame()] });
+    const project = parseProjectData({
+      version: PROJECT_VERSION,
+      columns,
+      layers,
+      surfaces: [{ ...surfaces[0], perspectiveMode: true, bilinear: true, mesh }],
+      screens: screenWith({ ...slice, bilinear: true, mesh: { ...mesh, smooth: true } }),
+    });
+    expect(project.surfaces[0]).toMatchObject({ bilinear: true, mesh });
+    expect(project.frames[0]).toMatchObject({ bilinear: true, mesh });
+    expect(project.screens[0].slices[0]).toMatchObject({ bilinear: true, mesh: { ...mesh, smooth: true } });
+    expect(project.warnings).toEqual([]);
+  });
+
+  it('older projects have none', () => {
+    const project = parseProjectData({ version: '5.6.0', surfaces: [], layers: [], screens: screenWith(slice) });
+    expect(project.screens[0].slices[0].mesh).toBeUndefined();
+    expect(project.screens[0].slices[0].bilinear).toBeUndefined();
+  });
+
+  it('removes a broken mesh with a warning and keeps its owner', () => {
+    const project = parseProjectData({
+      version: PROJECT_VERSION, surfaces: [], layers: [],
+      screens: screenWith({ ...slice, mesh: { ...mesh, columns: 3 }, bilinear: 'yes' }),
+    });
+    expect(project.screens[0].slices).toHaveLength(1);
+    expect(project.screens[0].slices[0].mesh).toBeUndefined();
+    expect(project.screens[0].slices[0].bilinear).toBeUndefined();
+    expect(project.warnings).toEqual([expect.stringContaining('mesh warp of slice "Left" was removed')]);
+  });
+});

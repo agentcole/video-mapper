@@ -67,6 +67,22 @@ describe('frames ⇄ show', () => {
     expect(nextShow.layers).toEqual(show.layers);
   });
 
+  it('a loaded surface without optional fields stays the same object', () => {
+    const show = showFromFrames(emptyShow(), [frame('a')], counterIds());
+    // As parsed from a file: unset optional fields are missing, not undefined
+    const { name, vertices, bilinear, mesh, ...loaded } = show.surfaces[0];
+    void name; void vertices; void bilinear; void mesh;
+    const fromFile = { ...show, surfaces: [loaded] };
+    expect(showFromFrames(fromFile, framesFromShow(fromFile)).surfaces[0]).toBe(loaded);
+  });
+
+  it('carries the corner pin mode and the mesh warp to the surface', () => {
+    const mesh = { columns: 2, rows: 2, smooth: true, points: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1.2 }] };
+    const show = showFromFrames(emptyShow(), [frame('a', { bilinear: true, mesh })], counterIds());
+    expect(show.surfaces[0]).toMatchObject({ bilinear: true, mesh });
+    expect(framesFromShow(show)[0]).toMatchObject({ bilinear: true, mesh });
+  });
+
   it('edits the active clip instead of adding clips', () => {
     const ids = counterIds();
     let show = showFromFrames(emptyShow(), [frame('a')], ids);

@@ -4,11 +4,13 @@ import {
 } from '../lib/geometry';
 
 // ---------------------------------------------------------------------------
-// Per-frame render parameters for the GPU compositor. The fragment shader
-// maps every pixel backwards: composition → frame box (undo rotation, then
-// H⁻¹) → content element (undo flip / zoom / pan) → media (object-fit:
-// cover). The TypeScript functions below are the reference implementation
-// of that mapping (and are what the unit tests check against the CSS model).
+// Per-frame render parameters for the GPU compositor. Each pixel of a frame
+// knows where it is in the frame box — the warp mesh (lib/meshWarp.ts)
+// carries it there through rotation, corner pin and mesh; the fragment
+// shader maps on: box → content element (undo flip / zoom / pan) → media
+// (object-fit: cover). The TypeScript functions below are the reference
+// implementation of that mapping, with compToBox the box position for a
+// corner pin without a mesh (what the unit tests check against the CSS model).
 // ---------------------------------------------------------------------------
 
 export const MAX_POLYGON_VERTICES = 64;
@@ -22,7 +24,7 @@ export interface FrameRenderParams {
   size: Point; // box width / height
   // Warped local → unwarped box px, as a column-major 3×3 (GLSL mat3)
   hinv: number[];
-  // The warped box's corners in composition px (geometry to draw)
+  // The warped box's corners in composition px
   quad: Point[];
   shape: ShapeCode;
   vertices: Point[]; // normalized polygon vertices (polygon shape only)

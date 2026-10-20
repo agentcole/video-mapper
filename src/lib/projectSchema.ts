@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type {
   MediaFrame, BackgroundSettings, GridSettings, CompositionSettings, ExportedMediaRecord, TempoSettings,
-  EffectInstance, Macro, ModMap, Screen, Slice,
+  EffectInstance, Macro, MeshWarp, ModMap, Screen, Slice,
 } from '../types';
 import {
   DEFAULT_BACKGROUND, DEFAULT_GRID, DEFAULT_COMPOSITION, DEFAULT_MACROS, DEFAULT_PERSPECTIVE_CORNERS,
@@ -10,6 +10,7 @@ import {
 import { MAX_BPM, MIN_BPM } from '../state/clock';
 import { pinFrameToQuadVertices } from './geometry';
 import { MAX_SCREEN_SIZE, MIN_SLICE_SIZE } from '../state/screens';
+import { MESH_MAX_POINTS, MESH_MIN_POINTS } from './meshWarp';
 import {
   createColumns, emptyShow, framesFromShow, showFromFrames,
   type Clip, type Column, type Layer, type ShowDocument, type Surface,
@@ -34,7 +35,8 @@ import {
 // 5.4: ISF effect stacks (clip, layer, composition) and generator clips
 // 5.5: parameter modulation (LFO, audio, macros) and macro faders
 // 5.6: screens (outputs) with slices of the composition
-export const PROJECT_VERSION = '5.6.0';
+// 5.7: mesh warp and bilinear corner pins on surfaces and slices
+export const PROJECT_VERSION = '5.7.0';
 
 const BEAT_SNAPS = ['off', 'beat', 'bar', '2bars', '4bars'] as const;
 
@@ -175,6 +177,8 @@ const SurfaceSchema = z.object({
   lockAspectRatio: z.boolean().default(true),
   perspectiveMode: z.boolean().default(false),
   perspectiveCorners: CornersSchema.default(DEFAULT_PERSPECTIVE_CORNERS),
+  bilinear: z.boolean().optional().catch(undefined),
+  mesh: z.unknown().optional(), // parseMesh
   softEdge: SoftEdgeSchema.default(DEFAULT_SOFT_EDGE),
 }).refine(s => s.shape !== 'polygon' || (s.vertices?.length ?? 0) >= 3, {
   message: 'polygon without vertices',
@@ -276,6 +280,8 @@ const SliceSchema = z.object({
     height: z.number().min(MIN_SLICE_SIZE),
   }),
   output: z.tuple([PointSchema, PointSchema, PointSchema, PointSchema]),
+  bilinear: z.boolean().optional().catch(undefined),
+  mesh: z.unknown().optional(), // parseMesh
 });
 const ScreenSchema = z.object({
   id: z.string().min(1),
@@ -284,6 +290,21 @@ const ScreenSchema = z.object({
   height: z.number().int().min(16).max(MAX_SCREEN_SIZE),
   slices: z.array(z.unknown()).catch([]),
 });
+// 5.7 — a mesh warp. A broken one is removed; its surface / slice stays (warped by its corners only)
+const MeshWarpSchema = z.object({
+  columns: z.number().int().min(MESH_MIN_POINTS).max(MESH_MAX_POINTS),
+  rows: z.number().int().min(MESH_MIN_POINTS).max(MESH_MAX_POINTS),
+  points: z.array(PointSchema),
+  smooth: z.boolean().catch(true),
+}).refine(m => m.points.length === m.columns * m.rows, { message: 'wrong number of points', path: ['points'] });
+const parseMesh = (raw: unknown, owner: string, warnings: string[]): MeshWarp | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+  const result = MeshWarpSchema.safeParse(raw);
+  if (result.success) return result.data;
+  warnings.push(`The mesh warp of ${owner} was removed (${describeIssue(result.error)}).`);
+  return undefined;
+};
+
 const parseScreens = (raw: unknown, warnings: string[]): Screen[] => {
   if (!Array.isArray(raw)) return [];
   const ids = new Set<string>();
@@ -303,7 +324,7 @@ const parseScreens = (raw: unknown, warnings: string[]): Screen[] => {
         return;
       }
       ids.add(slice.data.id);
-      slices.push(slice.data);
+      slices.push({ ...slice.data, mesh: parseMesh(slice.data.mesh, `slice "${slice.data.name}"`, warnings) });
     });
     screens.push({ ...result.data, slices });
   });
@@ -461,7 +482,7 @@ const parseShow = (raw: Record<string, unknown>, warnings: string[]): ShowDocume
       warnings.push(`Surface ${label} was skipped (${describeIssue(result.error)}).`);
       return;
     }
-    const surface = result.data;
+    const surface: Surface = { ...result.data, mesh: parseMesh(result.data.mesh, `surface "${result.data.name ?? result.data.id}"`, warnings) };
     // Keep the mapping even if its layer is gone: give it an empty layer
     if (!layerIds.has(surface.layerId)) {
       warnings.push(`Surface "${surface.name ?? surface.id}" lost its layer; an empty one was created.`);

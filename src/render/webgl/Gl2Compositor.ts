@@ -1,7 +1,10 @@
-import type { EffectInstance, MediaFrame, Point, Screen } from '../../types';
+import type { EffectInstance, MediaFrame, Screen } from '../../types';
 import type { RenderScene, SceneRenderer } from '../types';
-import { frameRenderParams, MAX_POLYGON_VERTICES, toMat3 } from '../frameMath';
-import { isValidQuad, screenToSlice, sliceZoom } from '../../state/screens';
+import { frameRenderParams, MAX_POLYGON_VERTICES } from '../frameMath';
+import { isValidQuad, sliceWarp, sliceZoom } from '../../state/screens';
+import {
+  buildWarpGeometry, prepareWarp, surfaceWarp, warpSegments, type Affine, type Warp, type WarpGeometry,
+} from '../../lib/meshWarp';
 import { crossfadeGain, fadeProgress, transitionMs } from '../../state/transitions';
 import { beatAt, clockNow } from '../../state/clock';
 import { hasMods, modulate, modulatedParams, seedOf, type ModContext } from '../../state/modulation';
@@ -11,8 +14,8 @@ import { EffectRunner, type ResolvedEffect } from './EffectRunner';
 import { drawTestCard } from '../testCardCanvas';
 import { MediaPool, type MediaItem, type MediaTexture } from './MediaPool';
 import {
-  QUAD_VERTEX, FULLSCREEN_VERTEX, COPY_FRAGMENT, BACKGROUND_FRAGMENT, FRAME_FRAGMENT, BLEND_MODE_CODES,
-  SLICE_VERTEX, SLICE_FRAGMENT,
+  WARP_VERTEX, FULLSCREEN_VERTEX, COPY_FRAGMENT, BACKGROUND_FRAGMENT, FRAME_FRAGMENT, BLEND_MODE_CODES,
+  SLICE_FRAGMENT,
 } from './shaders';
 
 // ---------------------------------------------------------------------------
@@ -21,7 +24,9 @@ import {
 // blending; other blend modes read the layers below from a ping-pong copy.
 // For a screen (3.1) the composition is rendered at its own resolution and
 // the canvas shows the screen: each slice samples its input rectangle and
-// lands on its four output corners.
+// lands on its four output corners. Surfaces and slices are drawn as warp
+// meshes (corner pin + mesh warp, 3.2), uploaded once and redrawn until
+// their geometry changes.
 // ---------------------------------------------------------------------------
 
 const BACKGROUND_KEY = '__background__';
@@ -40,6 +45,20 @@ interface Target {
   texture: WebGLTexture;
   framebuffer: WebGLFramebuffer;
 }
+
+// A warp mesh on the GPU, with what it was built from
+interface WarpBuffers {
+  vao: WebGLVertexArrayObject;
+  vertices: WebGLBuffer;
+  indices: WebGLBuffer;
+  count: number;
+  type: number; // index type
+  inputs: unknown[];
+}
+
+// Vertex attributes of the warp meshes (bound before linking, the same in every program)
+const ATTRIB_POSITION = 0;
+const ATTRIB_UV = 1;
 
 interface FrameSource {
   texture: MediaTexture;
@@ -81,10 +100,9 @@ export class Gl2Compositor implements SceneRenderer {
   private backgroundProgram!: Program;
   private copyProgram!: Program;
   private sliceProgram!: Program;
-  private quadBuffer!: WebGLBuffer;
-  private quadVao!: WebGLVertexArrayObject;
-  private sliceBuffer!: WebGLBuffer;
-  private sliceVao!: WebGLVertexArrayObject;
+  // Warp meshes by surface / slice; the ones not drawn in a render are freed
+  private warps = new Map<string, WarpBuffers>();
+  private warpsDrawn = new Set<string>();
   private maxTextureSize = 4096;
   private emptyVao!: WebGLVertexArrayObject;
   private targets: Target[] = [];
@@ -141,28 +159,12 @@ export class Gl2Compositor implements SceneRenderer {
 
   private initResources() {
     const gl = this.gl;
-    this.frameProgram = this.createProgram(QUAD_VERTEX, FRAME_FRAGMENT);
+    this.frameProgram = this.createProgram(WARP_VERTEX, FRAME_FRAGMENT);
     this.backgroundProgram = this.createProgram(FULLSCREEN_VERTEX, BACKGROUND_FRAGMENT);
     this.copyProgram = this.createProgram(FULLSCREEN_VERTEX, COPY_FRAGMENT);
-    this.sliceProgram = this.createProgram(SLICE_VERTEX, SLICE_FRAGMENT);
+    this.sliceProgram = this.createProgram(WARP_VERTEX, SLICE_FRAGMENT);
     this.maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-
-    this.quadBuffer = gl.createBuffer()!;
-    this.quadVao = gl.createVertexArray()!;
-    gl.bindVertexArray(this.quadVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, 12 * 4, gl.DYNAMIC_DRAW);
-    const location = gl.getAttribLocation(this.frameProgram.program, 'a_position');
-    gl.enableVertexAttribArray(location);
-    gl.vertexAttribPointer(location, 2, gl.FLOAT, false, 0, 0);
-    this.sliceBuffer = gl.createBuffer()!;
-    this.sliceVao = gl.createVertexArray()!;
-    gl.bindVertexArray(this.sliceVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.sliceBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, 12 * 4, gl.DYNAMIC_DRAW);
-    const sliceLocation = gl.getAttribLocation(this.sliceProgram.program, 'a_position');
-    gl.enableVertexAttribArray(sliceLocation);
-    gl.vertexAttribPointer(sliceLocation, 2, gl.FLOAT, false, 0, 0);
+    this.warps.clear(); // buffers of a lost context are gone with it
     this.emptyVao = gl.createVertexArray()!;
     gl.bindVertexArray(null);
 
@@ -186,6 +188,8 @@ export class Gl2Compositor implements SceneRenderer {
     const program = gl.createProgram()!;
     gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource));
     gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+    gl.bindAttribLocation(program, ATTRIB_POSITION, 'a_position');
+    gl.bindAttribLocation(program, ATTRIB_UV, 'a_uv');
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS) && !gl.isContextLost()) {
       throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
@@ -355,6 +359,7 @@ export class Gl2Compositor implements SceneRenderer {
       this.copy(picture, scene.masterOpacity);
     }
     this.effects.endFrame();
+    this.pruneWarps();
   }
 
   dispose(): void {
@@ -364,6 +369,8 @@ export class Gl2Compositor implements SceneRenderer {
     this.effects.dispose();
     const gl = this.gl;
     for (const card of this.testCards.values()) gl.deleteTexture(card.texture);
+    this.warpsDrawn.clear();
+    this.pruneWarps();
     for (const target of this.targets) {
       gl.deleteTexture(target.texture);
       gl.deleteFramebuffer(target.framebuffer);
@@ -626,32 +633,85 @@ export class Gl2Compositor implements SceneRenderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.useProgram(p.program);
-    gl.uniform2f(u('u_screenSize'), screen.width, screen.height);
+    gl.uniform2f(u('u_viewSize'), screen.width, screen.height);
     gl.uniform1f(u('u_gain'), scene.masterOpacity);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, picture);
     gl.uniform1i(u('u_picture'), 0);
-    gl.bindVertexArray(this.sliceVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.sliceBuffer);
     const { width: compW, height: compH } = scene.composition;
-    // Grow the quad a little so antialiased edges aren't cut off
+    // Grow the slices a little so antialiased edges aren't cut off
     const pad = (EDGE_PAD_PX * screen.width) / this.canvasWidth;
     for (const slice of screen.slices) {
       if (!slice.enabled || !isValidQuad(slice.output)) continue;
-      const hinv = screenToSlice(slice);
-      if (!hinv) continue;
-      const cx = slice.output.reduce((sum, q) => sum + q.x, 0) / 4;
-      const cy = slice.output.reduce((sum, q) => sum + q.y, 0) / 4;
-      const [a, b, c, d] = slice.output.map((q): Point => {
-        const len = Math.hypot(q.x - cx, q.y - cy) || 1;
-        return { x: q.x + ((q.x - cx) / len) * pad, y: q.y + ((q.y - cy) / len) * pad };
-      });
-      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([a.x, a.y, b.x, b.y, c.x, c.y, a.x, a.y, c.x, c.y, d.x, d.y]));
-      gl.uniformMatrix3fv(u('u_hinv'), false, toMat3(hinv));
+      const warp = this.warpBuffers(`slice:${screen.id}:${slice.id}`, [slice.output, slice.bilinear, slice.mesh, pad],
+        () => this.geometry(sliceWarp(slice), pad));
+      if (!warp) continue;
       const { x, y, width, height } = slice.input;
       gl.uniform4f(u('u_input'), x / compW, y / compH, width / compW, height / compH);
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      this.drawWarp(warp);
     }
+  }
+
+  // ---- Warp meshes -----------------------------------------------------------------------------
+
+  private geometry(warp: Warp, pad: number, affine?: Affine): WarpGeometry | null {
+    const prepared = prepareWarp(warp);
+    return prepared ? buildWarpGeometry(prepared, warpSegments(warp), pad, affine) : null;
+  }
+
+  /** The mesh for `key` on the GPU, rebuilt when one of its inputs changed. */
+  private warpBuffers(key: string, inputs: unknown[], build: () => WarpGeometry | null): WarpBuffers | null {
+    this.warpsDrawn.add(key);
+    const cached = this.warps.get(key);
+    if (cached && cached.inputs.length === inputs.length && cached.inputs.every((v, i) => v === inputs[i])) return cached;
+    const geometry = build();
+    if (!geometry) return null;
+    const gl = this.gl;
+    let entry = cached;
+    if (!entry) {
+      const vao = gl.createVertexArray()!;
+      const vertices = gl.createBuffer()!;
+      const indices = gl.createBuffer()!;
+      gl.bindVertexArray(vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
+      gl.enableVertexAttribArray(ATTRIB_POSITION);
+      gl.vertexAttribPointer(ATTRIB_POSITION, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(ATTRIB_UV);
+      gl.vertexAttribPointer(ATTRIB_UV, 2, gl.FLOAT, false, 20, 12);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
+      entry = { vao, vertices, indices, count: 0, type: gl.UNSIGNED_SHORT, inputs };
+      this.warps.set(key, entry);
+    }
+    gl.bindVertexArray(entry.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, entry.vertices);
+    gl.bufferData(gl.ARRAY_BUFFER, geometry.vertices, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, entry.indices);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geometry.indices, gl.DYNAMIC_DRAW);
+    gl.bindVertexArray(null);
+    entry.count = geometry.indices.length;
+    entry.type = geometry.indices instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
+    entry.inputs = inputs;
+    return entry;
+  }
+
+  private drawWarp(warp: WarpBuffers) {
+    const gl = this.gl;
+    gl.bindVertexArray(warp.vao);
+    gl.drawElements(gl.TRIANGLES, warp.count, warp.type, 0);
+    gl.bindVertexArray(null);
+  }
+
+  /** Free the meshes of surfaces and slices that weren't drawn this render. */
+  private pruneWarps() {
+    const gl = this.gl;
+    for (const [key, warp] of this.warps) {
+      if (this.warpsDrawn.has(key)) continue;
+      gl.deleteVertexArray(warp.vao);
+      gl.deleteBuffer(warp.vertices);
+      gl.deleteBuffer(warp.indices);
+      this.warps.delete(key);
+    }
+    this.warpsDrawn.clear();
   }
 
   private drawBackground(scene: RenderScene) {
@@ -709,27 +769,23 @@ export class Gl2Compositor implements SceneRenderer {
     const u = (name: string) => this.uniform(p, name);
     gl.useProgram(p.program);
 
-    // Geometry: the warped box, padded outwards for antialiasing
+    // Geometry: the box through its corner pin and mesh, rotated into place
+    // and padded outwards for antialiasing (in composition px)
     const pad = (EDGE_PAD_PX * scene.composition.width) / this.width;
-    const cx = params.quad.reduce((s, q) => s + q.x, 0) / 4;
-    const cy = params.quad.reduce((s, q) => s + q.y, 0) / 4;
-    const padded = params.quad.map((q): Point => {
-      const dx = q.x - cx;
-      const dy = q.y - cy;
-      const len = Math.hypot(dx, dy) || 1;
-      return { x: q.x + (dx / len) * pad, y: q.y + (dy / len) * pad };
+    const warp = this.warpBuffers(`frame:${frame.id}`, [
+      frame.x, frame.y, frame.width, frame.height, frame.rotation, frame.perspectiveMode, frame.perspectiveCorners,
+      frame.bilinear, frame.mesh, pad,
+    ], () => {
+      const affine = frameAffine(frame);
+      // Degenerate corner pins draw the box unwarped
+      return this.geometry(surfaceWarp(frame), pad, affine) ??
+        this.geometry(surfaceWarp({ ...frame, perspectiveMode: false, mesh: undefined }), pad, affine);
     });
-    const [a, b, c, d] = padded;
-    gl.bindVertexArray(this.quadVao);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
-    gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array([a.x, a.y, b.x, b.y, c.x, c.y, a.x, a.y, c.x, c.y, d.x, d.y]));
+    if (!warp) return;
 
-    gl.uniform2f(u('u_compSize'), scene.composition.width, scene.composition.height);
+    gl.uniform2f(u('u_viewSize'), scene.composition.width, scene.composition.height);
     gl.uniform2f(u('u_targetSize'), this.width, this.height);
-    gl.uniform2f(u('u_center'), params.center.x, params.center.y);
-    gl.uniform2f(u('u_rot'), params.cos, params.sin);
     gl.uniform2f(u('u_size'), params.size.x, params.size.y);
-    gl.uniformMatrix3fv(u('u_hinv'), false, params.hinv);
     gl.uniform1i(u('u_shape'), params.shape);
     gl.uniform1i(u('u_vertexCount'), params.vertices.length);
     if (params.vertices.length > 0) {
@@ -765,6 +821,16 @@ export class Gl2Compositor implements SceneRenderer {
     gl.bindTexture(gl.TEXTURE_2D, backdrop);
     gl.uniform1i(u('u_backdrop'), 1);
 
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    this.drawWarp(warp);
   }
+}
+
+/** A surface's warped-local px → composition px: rotation about the box centre, then its position. */
+function frameAffine(frame: MediaFrame): Affine {
+  const rad = (frame.rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = frame.width / 2;
+  const cy = frame.height / 2;
+  return [cos, -sin, frame.x + cx - (cos * cx - sin * cy), sin, cos, frame.y + cy - (sin * cx + cos * cy)];
 }

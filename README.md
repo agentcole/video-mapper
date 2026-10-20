@@ -83,6 +83,11 @@ Projects (format 5) separate **mapping** from **content**, like Resolume: *surfa
 - The stage switches between the composition with the slices' inputs and a screen as its output window shows it; drag rectangles and corners (snapping to edges and other slices, Alt: free), arrow keys for 1 px steps, numbers in the panel.
 - Each screen opens in its own output window (`?output=<screen id>`), on a display remembered per machine; the test card shows the screen's name and resolution. Without screens, outputs show the whole composition as before. Details: [docs/design/screens.md](docs/design/screens.md).
 
+### 🕸️ Mesh Warp (GPU renderer)
+- A grid of points **inside the corner pin** of a surface or a slice (2–17 per side) bends the picture onto curved or uneven surfaces: *Add mesh* in the Warp section, *Edit points* and drag them on the stage (Shift+click for several, arrow keys for 1 px steps). **Linear** (straight between the points) or **Smooth** (curves through them).
+- The corner pin itself interpolates in **perspective** (straight lines stay straight) or **bilinearly**.
+- Moving a corner keeps the bends; outlines, click areas and handles follow the mesh. The CSS renderer shows the corner pin only. Details: [docs/design/mesh-warp.md](docs/design/mesh-warp.md).
+
 ### 🥁 Master Clock & Beat Snap
 - **Tempo** in the launcher toolbar: type the BPM (arrows ±1, Shift ±0.1), **Tap** (**T**) — from the second tap the tempo follows a fit over your taps, and the first tap is the downbeat — ÷2 / ×2, hold the ‹ › buttons to bend the beat back or ahead, and **Resync** (**Shift+T**) to make *now* the start of a bar. Beat dots show the bar; 2/4 to 8/4.
 - **Beat snap** (Off, Beat, Bar, 2 Bars, 4 Bars) for the composition, and per clip (right-click) to override it: clip, column and Go triggers wait for the next boundary, shown as *Next* / *Stop* on the cells with a beat countdown, while their clips preload. A press up to 50 ms after a boundary still counts as on it. **Alt** + any trigger fires right away; piano clips never wait.
@@ -221,7 +226,7 @@ npm run preview
 The *Renderer* switch in the Output section chooses how the composition's content is drawn — in the editor and in output windows (remembered per machine):
 
 - **CSS** — browser layout with `matrix3d` corner pins and `clip-path` shapes (the proven path)
-- **GPU (beta)** — a WebGL2 compositor: every pixel is mapped back through the frame's inverse homography (exact perspective), antialiased shapes, all 16 blend modes per the W3C compositing spec, the CSS filter set, soft edges, master fader; recovers automatically from a lost GPU context and falls back to CSS if WebGL2 isn't available. Editor handles stay DOM on top, so editing works the same.
+- **GPU (beta)** — a WebGL2 compositor: surfaces and slices are drawn as warp meshes interpolated in perspective (an exact homography for a corner pin; mesh warp and bilinear pins on top), antialiased shapes, all 16 blend modes per the W3C compositing spec, the CSS filter set, soft edges, master fader; recovers automatically from a lost GPU context and falls back to CSS if WebGL2 isn't available. Editor handles stay DOM on top, so editing works the same.
 - Known differences in GPU mode: soft edges stay at the frame's edges when content is zoomed; blur is a 12-tap approximation; remote media URLs need CORS headers to be drawn (library and folder media always work)
 
 ### Warping (unified corner pin)
@@ -232,6 +237,7 @@ The *Renderer* switch in the Output section chooses how the composition's conten
 - A warped editing grid renders inside the frame while corner-pin editing, Resolume slice-style
 - Corner-pin handles and polygon vertices snap to the canvas grid when snapping is on
 - Typing W/H in the layers panel scales the pins like the resize handles do
+- Inside the pins: mesh warp and bilinear pins (GPU renderer) — see *Mesh Warp* above
 
 ### Layers & Selection
 
@@ -308,6 +314,8 @@ src/
 │   ├── LayersPanel.tsx      # Right layers dock with numeric properties
 │   ├── ScreensPanel.tsx     # Screens and slices (replaces the layers dock in the screen editor)
 │   ├── SliceOverlay.tsx     # Slice inputs / outputs on the stage (drag, snap)
+│   ├── WarpControls.tsx     # Warp section: perspective / bilinear pin, mesh settings
+│   ├── MeshHandles.tsx      # A mesh's points and curves on the stage
 │   ├── ScreenDom.tsx        # A screen with the CSS renderer (one warped copy per slice)
 │   ├── ClipLauncher.tsx     # Layers × columns clip launcher (bottom dock)
 │   ├── TempoBar.tsx         # Master clock: tap, BPM, nudge, resync, beat snap
@@ -330,6 +338,7 @@ src/
 ├── benchmark/               # Video layer benchmark (?benchmark)
 ├── lib/
 │   ├── geometry.ts          # Homography, corner pin, refit, shape helpers (+ tests)
+│   ├── meshWarp.ts          # Mesh warp: evaluation, inverse, GPU geometry (+ tests)
 │   ├── projectSchema.ts     # Project format validation + migrations (+ tests)
 │   ├── projectRepository.ts # Projects + versions in IndexedDB (+ tests)
 │   ├── storage.ts           # Serialization, JSON export, zip packages, import (+ tests)
@@ -362,7 +371,8 @@ src/
 - [ ] Audio waveform visualization
 - [ ] Export as video file
 - [x] Screens and slices: several outputs, each with its own part of the composition and corner pin
-- [ ] Advanced polygon warp with mesh deformation (WebGL)
+- [x] Mesh warp inside the corner pin (linear / smooth, perspective / bilinear pin), surfaces and slices
+- [ ] Piecewise-affine polygon warp (texture follows a polygon's vertices)
 - [ ] Bezier curve mask edges
 
 ## License
