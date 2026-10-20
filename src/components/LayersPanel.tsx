@@ -16,7 +16,10 @@ import {
   Pentagon,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
+import { NumberField } from './ui/number-field';
+import { WarpControls } from './WarpControls';
 import { scaleFrameSize } from '../lib/geometry';
+import { divider, field, iconButton, option, panelSurface, panelTitle, sectionLabel } from './ui/theme';
 
 interface LayersPanelProps {
   frames: MediaFrame[];
@@ -42,28 +45,6 @@ const ShapeIcon: React.FC<{ frame: MediaFrame }> = ({ frame }) => {
   if (frame.shape === 'polygon') return <Pentagon className={cls} />;
   return <Square className={cls} />;
 };
-
-// Numeric input that commits parseable values as you type
-const NumberField: React.FC<{
-  label: string;
-  value: number;
-  onCommit: (value: number) => void;
-  step?: number;
-}> = ({ label, value, onCommit, step = 1 }) => (
-  <label className="flex items-center gap-1 text-[11px] text-gray-400">
-    <span className="w-4 shrink-0">{label}</span>
-    <input
-      type="number"
-      value={Math.round(value * 100) / 100}
-      step={step}
-      onChange={(e) => {
-        const n = parseFloat(e.target.value);
-        if (!Number.isNaN(n)) onCommit(n);
-      }}
-      className="w-full min-w-0 bg-white/10 rounded px-1.5 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-cyan-500"
-    />
-  </label>
-);
 
 export const LayersPanel: React.FC<LayersPanelProps> = ({
   frames,
@@ -92,18 +73,22 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
   };
 
   return (
-    <div className={`fixed top-4 right-4 bg-black/80 backdrop-blur-md text-white rounded-lg shadow-2xl z-[1000] w-64 flex flex-col transition-all duration-200 ${isCollapsed ? '' : 'bottom-4'}`}>
+    <div
+      className={`fixed top-4 right-4 ${panelSurface} z-[1000] w-64 flex flex-col`}
+      // Ends above the clip launcher when it is open
+      style={isCollapsed ? undefined : { bottom: 'calc(1rem + var(--launcher-height, 0px))' }}
+    >
       {/* Header */}
       <div
         className="flex items-center justify-between p-3 cursor-pointer shrink-0"
         onClick={() => setIsCollapsed(!isCollapsed)}
       >
-        <h2 className="font-bold text-sm flex items-center gap-2">
+        <h2 className={panelTitle}>
           <Layers className="w-4 h-4" />
           Layers
           <span className="text-xs text-gray-400 font-normal">({frames.length})</span>
         </h2>
-        <button className="p-1 hover:bg-white/10 rounded transition-colors" title={isCollapsed ? 'Expand' : 'Collapse'}>
+        <button className={iconButton} title={isCollapsed ? 'Expand' : 'Collapse'}>
           <ChevronsUpDown className="w-4 h-4" />
         </button>
       </div>
@@ -210,7 +195,7 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
           <div className="border-t border-white/10 p-3 shrink-0 space-y-2">
             {selectedFrame ? (
               <>
-                <p className="text-[11px] uppercase font-semibold text-gray-400">Properties</p>
+                <p className={sectionLabel}>Properties</p>
                 <div className="grid grid-cols-2 gap-2">
                   <NumberField label="X" value={selectedFrame.x} onCommit={(v) => onUpdate(selectedFrame.id, { x: v })} />
                   <NumberField label="Y" value={selectedFrame.y} onCommit={(v) => onUpdate(selectedFrame.id, { y: v })} />
@@ -220,8 +205,8 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
                 </div>
                 <NumberField label="∠" value={selectedFrame.rotation} onCommit={(v) => onUpdate(selectedFrame.id, { rotation: v })} />
                 <div>
-                  <label className="text-[11px] text-gray-400 mb-1 block">
-                    Opacity — {Math.round(selectedFrame.opacity * 100)}%
+                  <label className="text-[11px] text-gray-400 mb-1.5 flex justify-between">
+                    Opacity <span className="tabular-nums text-white">{Math.round(selectedFrame.opacity * 100)}%</span>
                   </label>
                   <Slider
                     value={[selectedFrame.opacity * 100]}
@@ -236,12 +221,20 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({
                   <select
                     value={selectedFrame.blendMode}
                     onChange={(e) => onUpdate(selectedFrame.id, { blendMode: e.target.value as BlendMode })}
-                    className="flex-1 min-w-0 bg-white/10 rounded px-1.5 py-1 text-xs"
+                    className={`flex-1 min-w-0 ${field}`}
                   >
                     {['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge', 'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'].map(mode => (
-                      <option key={mode} value={mode} className="bg-gray-900">{mode}</option>
+                      <option key={mode} value={mode} className={option}>{mode}</option>
                     ))}
                   </select>
+                </div>
+                <div className={`pt-2 border-t ${divider}`}>
+                  <WarpControls
+                    target={{ kind: 'surface', id: selectedFrame.id }}
+                    bilinear={selectedFrame.perspectiveMode && selectedFrame.bilinear}
+                    mesh={selectedFrame.mesh}
+                    pinOff={!selectedFrame.perspectiveMode}
+                  />
                 </div>
               </>
             ) : selectedFrameIds.length > 1 ? (

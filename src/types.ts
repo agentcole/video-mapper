@@ -30,6 +30,83 @@ export interface CompositionSettings {
   height: number
 }
 
+// When a launcher trigger starts: right away, or on the next beat / bar /
+// 2 bars / 4 bars of the master clock (Resolume's Beat Snap)
+export type BeatSnap = 'off' | 'beat' | 'bar' | '2bars' | '4bars'
+
+// Master clock settings, saved with the project. The clock's phase (where
+// the bar starts) is live state.
+export interface TempoSettings {
+  bpm: number
+  beatsPerBar: number
+  beatSnap: BeatSnap // composition default; clips can override it
+}
+
+// How a layer changes clips: a dissolve over `duration` seconds — or beats
+// of the master clock when `beats` is set. 0 is a cut.
+export interface Transition {
+  duration: number
+  beats?: boolean
+}
+
+// Crossfader side of a layer (unset: the crossfader doesn't touch it)
+export type CrossfadeSide = 'A' | 'B'
+
+// An ISF shader in an effect stack (clip, layer or composition) or as a
+// clip's generator. `effectId` names a shader in the effect library;
+// parameters left out use the shader's defaults.
+export type EffectParamValue = number | boolean | number[]
+
+export interface EffectInstance {
+  id: string
+  effectId: string
+  enabled: boolean
+  params: Record<string, EffectParamValue>
+  mods?: ModMap // parameter modulation
+}
+
+export interface GeneratorSettings {
+  effectId: string
+  params: Record<string, EffectParamValue>
+  mods?: ModMap
+}
+
+// ---- Modulation (see state/modulation.ts) ----
+
+export type LfoShape = 'sine' | 'triangle' | 'saw' | 'ramp' | 'square' | 'pulse' | 'random'
+
+// The audio input's analysis: overall level, three bands and kick onsets
+export type AudioBand = 'level' | 'bass' | 'mid' | 'high' | 'kick'
+
+// What moves a parameter. Every source gives 0..1.
+//   lfo:   a wave over `period` seconds — or beats of the master clock when
+//          `beats` is set; `phase` shifts it (0..1), `width` is the duty
+//          cycle of square and the decay of pulse
+//   audio: a band of the audio input
+//   macro: one of the composition's macro faders
+export type ModSource =
+  | { kind: 'lfo'; shape: LfoShape; period: number; beats?: boolean; phase?: number; width?: number }
+  | { kind: 'audio'; band: AudioBand }
+  | { kind: 'macro'; index: number }
+
+// A parameter's modulation: the source pushes the value up from where it
+// is set, by `amount` (-1..1) of the parameter's range at full source
+export interface Modulation {
+  source: ModSource
+  amount: number
+}
+
+// Modulations by parameter: an ISF input name, a point's axis as
+// `name.0` / `name.1`, or a layer property ('opacity')
+export type ModMap = Record<string, Modulation>
+
+// A macro fader of the composition (Resolume's dashboard): one value that
+// can drive many parameters
+export interface Macro {
+  name: string
+  value: number // 0..1
+}
+
 // Per-edge feathering (px in frame-local space) for projection blending
 export interface SoftEdge {
   left: number
@@ -52,6 +129,51 @@ export interface BackgroundSettings {
 export interface Point {
   x: number
   y: number
+}
+
+// ---- Screens and slices (roadmap 3.1, see docs/design/screens.md) ----------
+
+export interface Rect {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+// Four corners: top left, top right, bottom right, bottom left
+export type Quad = [Point, Point, Point, Point]
+
+// ---- Mesh warp (roadmap 3.2, see docs/design/mesh-warp.md) ------------------
+
+// A grid of control points inside a corner pin: columns × rows points in the
+// pin's unit square (0..1), row by row from the top left. Untouched they lie
+// on a regular grid; moved, they bend the picture between the four corners.
+export interface MeshWarp {
+  columns: number
+  rows: number
+  points: Point[]
+  smooth: boolean // a curve through the points; off: straight between them
+}
+
+// A part of the composition (input, composition px) placed on a screen
+// (output, screen px — four corners, so it can be warped)
+export interface Slice {
+  id: string
+  name: string
+  enabled: boolean
+  input: Rect
+  output: Quad
+  bilinear?: boolean // the corners interpolate bilinearly instead of in perspective
+  mesh?: MeshWarp // grid warp inside the corners
+}
+
+// One output: a projector or display, with its own resolution
+export interface Screen {
+  id: string
+  name: string
+  width: number
+  height: number
+  slices: Slice[]
 }
 
 // Stored media in IndexedDB
@@ -82,8 +204,19 @@ export interface MediaLibraryStats {
   maxSize: number // max allowed total size
 }
 
+// A frame is the editor's / renderers' view of one mapped surface with the
+// content its layer currently plays (see state/showModel.ts)
 export interface MediaFrame {
-  id: string
+  id: string // = surface id
+  layerId?: string // the layer feeding this surface (derived, read-only)
+  clipId?: string // the layer's playing clip (derived, read-only)
+  layerHasClips?: boolean // the layer has clips, even if none plays (derived, read-only)
+  transition?: Transition // how the playing clip came in / the layer fades out (derived, read-only)
+  crossfade?: CrossfadeSide // the layer's crossfader side (derived, read-only)
+  clipEffects?: EffectInstance[] // the playing clip's effect stack (derived, read-only)
+  layerEffects?: EffectInstance[] // the layer's effect stack (derived, read-only)
+  layerMods?: ModMap // the layer's modulations, e.g. of its opacity (derived, read-only)
+  generator?: GeneratorSettings // the playing clip is a generator (derived, read-only)
   type: MediaType
   url: string
   filename?: string
@@ -128,6 +261,8 @@ export interface MediaFrame {
   // Perspective / corner-pin distortion
   perspectiveMode: boolean
   perspectiveCorners: PerspectiveCorners
+  bilinear?: boolean // corner pin interpolates bilinearly instead of in perspective
+  mesh?: MeshWarp // grid warp inside the corner pin (GPU renderer)
 }
 
 export interface ProjectData {

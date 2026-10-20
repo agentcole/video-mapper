@@ -1,12 +1,24 @@
 import type { StoredMedia, MediaType, MediaLibraryStats, ExportedMediaRecord } from '../types';
+import { getFolderFile, isFolderMediaId, mediaKindOf } from './mediaFolders';
 
 const DB_NAME = 'video-mapper-media';
 const DB_VERSION = 1;
 const STORE_NAME = 'media';
 
-// Storage limits
-export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB per file
-export const MAX_TOTAL_SIZE = 500 * 1024 * 1024; // 500MB total
+// Storage limits — the real ceiling is the browser's quota for this origin
+// (≈60 % of free disk in Chromium/Safari). Larger show files are better
+// played from a linked folder (no copy at all).
+export const MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024; // 2 GB per file
+const FALLBACK_QUOTA = 2 * 1024 * 1024 * 1024;
+
+const storageEstimate = async (): Promise<{ usage: number; quota: number }> => {
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    return { usage: estimate?.usage ?? 0, quota: estimate?.quota ?? FALLBACK_QUOTA };
+  } catch {
+    return { usage: 0, quota: FALLBACK_QUOTA };
+  }
+};
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -155,13 +167,13 @@ export const storeMedia = async (
 ): Promise<StoredMedia> => {
   // Check file size limit
   if (file.size > MAX_FILE_SIZE) {
-    throw new Error(`File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB`);
+    throw new Error(`File too large. Maximum size is ${formatBytes(MAX_FILE_SIZE)} — link its folder instead.`);
   }
 
-  // Check total storage
-  const stats = await getStorageStats();
-  if (stats.totalSize + file.size > MAX_TOTAL_SIZE) {
-    throw new Error(`Storage limit exceeded. Maximum total storage is ${MAX_TOTAL_SIZE / 1024 / 1024}MB. Please delete some media first.`);
+  // Check the browser quota
+  const { usage, quota } = await storageEstimate();
+  if (usage + file.size > quota) {
+    throw new Error(`Browser storage is full (${formatBytes(usage)} of ${formatBytes(quota)}). Delete media or link a folder instead.`);
   }
 
   const db = await getDB();
@@ -271,11 +283,12 @@ export const clearAllMedia = async (): Promise<void> => {
  */
 export const getStorageStats = async (): Promise<MediaLibraryStats> => {
   const allMedia = await getAllMedia();
-  
+  const { quota } = await storageEstimate();
+
   return {
     totalSize: allMedia.reduce((sum, m) => sum + m.size, 0),
     count: allMedia.length,
-    maxSize: MAX_TOTAL_SIZE,
+    maxSize: quota,
   };
 };
 
@@ -285,9 +298,30 @@ export const getStorageStats = async (): Promise<MediaLibraryStats> => {
 export const createMediaUrl = async (mediaId: string): Promise<string | null> => {
   const cached = objectUrlCache.get(mediaId);
   if (cached) return cached;
+  const file = await getMediaFile(mediaId);
+  if (!file) return null;
+  const url = URL.createObjectURL(file.blob);
+  objectUrlCache.set(mediaId, url);
+  return url;
+};
+
+export interface MediaFile {
+  blob: Blob;
+  name: string;
+  type: MediaType;
+  mimeType: string;
+}
+
+/** The bytes behind a media id — library (IndexedDB) or linked folder. */
+export const getMediaFile = async (mediaId: string): Promise<MediaFile | null> => {
+  if (isFolderMediaId(mediaId)) {
+    const file = await getFolderFile(mediaId);
+    const kind = file ? mediaKindOf(file.name) : null;
+    if (file && kind) return { blob: file, name: file.name, type: kind.type, mimeType: file.type || kind.mimeType };
+    // Not linked on this machine — an imported package may have stored a copy
+  }
   const media = await getMedia(mediaId);
-  if (!media) return null;
-  return getMediaObjectUrl(media);
+  return media ? { blob: media.blob, name: media.name, type: media.type, mimeType: media.mimeType } : null;
 };
 
 /**
@@ -308,77 +342,45 @@ export const resolveMediaUrls = async (mediaIds: string[]): Promise<Map<string, 
 };
 
 /**
- * Read a blob as a base64 data URL
+ * Store media from an imported project under its original id, so
+ * frame.mediaId references keep working. Existing ids are kept as they are.
  */
-const blobToDataURL = (blob: Blob): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error('Failed to read blob'));
-    reader.readAsDataURL(blob);
+export const importMediaBlob = async (entry: { id: string; name: string; type: MediaType; mimeType: string; blob: Blob }): Promise<void> => {
+  if (await getMedia(entry.id)) return;
+  const db = await getDB();
+  requestPersistentStorage();
+
+  let thumbnail: string | undefined;
+  try {
+    thumbnail = await generateThumbnail(entry.blob, entry.type);
+  } catch (error) {
+    console.warn('Failed to generate thumbnail for imported media:', error);
+  }
+
+  const media: StoredMedia = {
+    id: entry.id,
+    name: entry.name,
+    type: entry.type,
+    mimeType: entry.mimeType,
+    size: entry.blob.size,
+    blob: entry.blob,
+    thumbnail,
+    dateAdded: Date.now(),
+  };
+
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const request = transaction.objectStore(STORE_NAME).put(media);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(new Error('Failed to import media'));
   });
 };
 
-/**
- * Collect media records (base64-encoded) for embedding into a project export.
- * Unknown ids are skipped.
- */
-export const exportMediaRecords = async (mediaIds: string[]): Promise<ExportedMediaRecord[]> => {
-  const records: ExportedMediaRecord[] = [];
-  for (const id of [...new Set(mediaIds)]) {
-    const media = await getMedia(id);
-    if (!media) continue;
-    records.push({
-      id: media.id,
-      name: media.name,
-      type: media.type,
-      mimeType: media.mimeType,
-      dataUrl: await blobToDataURL(media.blob),
-    });
-  }
-  return records;
-};
-
-/**
- * Restore embedded media records from an imported project, preserving their
- * original ids so frame.mediaId references keep working. Records whose id
- * already exists locally are skipped.
- */
+/** Legacy project files embedded media as base64 data URLs. */
 export const importMediaRecords = async (records: ExportedMediaRecord[]): Promise<void> => {
-  const db = await getDB();
-
   for (const record of records) {
-    const existing = await getMedia(record.id);
-    if (existing) continue;
-
-    const response = await fetch(record.dataUrl);
-    const blob = await response.blob();
-
-    let thumbnail: string | undefined;
-    try {
-      thumbnail = await generateThumbnail(blob, record.type);
-    } catch (error) {
-      console.warn('Failed to generate thumbnail for imported media:', error);
-    }
-
-    const media: StoredMedia = {
-      id: record.id,
-      name: record.name,
-      type: record.type,
-      mimeType: record.mimeType,
-      size: blob.size,
-      blob,
-      thumbnail,
-      dateAdded: Date.now(),
-    };
-
-    await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction([STORE_NAME], 'readwrite');
-      const store = transaction.objectStore(STORE_NAME);
-      const request = store.put(media);
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject(new Error('Failed to import media'));
-    });
+    const blob = await (await fetch(record.dataUrl)).blob();
+    await importMediaBlob({ id: record.id, name: record.name, type: record.type, mimeType: record.mimeType, blob });
   }
 };
 

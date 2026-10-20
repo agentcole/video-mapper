@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { MediaFrame, Point, PerspectiveCorners, BlendMode, ResizeHandle } from '../types';
+import type { LiveState } from '../state/liveStore';
 import {
   RotateCw,
   Trash2,
@@ -19,9 +20,9 @@ import {
   PenTool,
 } from 'lucide-react';
 import { Slider } from './ui/slider';
-import { TestCard } from './TestCard';
+import { FrameContent } from './FrameContent';
+import type { PreloadMedia } from '../render/types';
 import {
-  homographyToCSS,
   applyHomography,
   invertHomography,
   getFrameHomography,
@@ -32,18 +33,24 @@ import {
   refitFrameToVertices,
   pinFrameToQuadVertices,
 } from '../lib/geometry';
+import { field, menuSurface } from './ui/theme';
+import { MeshHandles } from './MeshHandles';
+import { bendsBeyondPerspective, cropMesh, prepareWarp, surfaceWarp, type PreparedWarp } from '../lib/meshWarp';
+import { useMeshEditor } from '../state/meshEditor';
 
+// Callbacks take the frame id so the parent can pass stable functions and
+// the component can be memoized (only frames that change re-render)
 interface MediaFrameComponentProps {
   frame: MediaFrame;
   isSelected: boolean;
-  onUpdate: (updates: Partial<MediaFrame>) => void;
-  onDelete: () => void;
-  onDragStart: (e: React.MouseEvent) => void;
-  onResizeStart: (e: React.MouseEvent, handle: ResizeHandle) => void;
-  onRotateStart: (e: React.MouseEvent) => void;
+  onUpdateFrame: (id: string, updates: Partial<MediaFrame>) => void;
+  onDeleteFrame: (id: string) => void;
+  onFrameDragStart: (id: string, e: React.MouseEvent) => void;
+  onFrameResizeStart: (id: string, handle: ResizeHandle, e: React.MouseEvent) => void;
+  onFrameRotateStart: (id: string, e: React.MouseEvent) => void;
   isPresentationMode: boolean;
-  onOpenMediaLibrary: () => void; // Open media library to change media for this frame
-  playbackCommand: 'play' | 'pause' | null; // Global playback command
+  onOpenFrameMediaLibrary: (id: string) => void; // Open media library to change media for this frame
+  playback: LiveState['playback']; // Global transport (play / pause all)
   clientToComp: (clientX: number, clientY: number) => Point; // pointer → composition coords
   snapToGrid: (value: number) => number; // identity when snapping is off
   // Editor overlay layer (portal target) — handles, outlines and hit areas
@@ -51,14 +58,13 @@ interface MediaFrameComponentProps {
   overlayContainer: HTMLElement | null;
   viewScale: number; // composition → screen scale; keeps handles a constant screen size
   outputGain: number; // master fader × blackout, applied to audio volume
+  // false when the GPU renderer draws the content — only the editor UI remains
+  renderContent?: boolean;
+  preload?: PreloadMedia[]; // launcher: clips of this frame's layer to keep ready
+  startSeq?: number; // launcher: this frame's layer trigger counter
+  gain?: number; // crossfader gain on the layer's opacity
+  bpm?: number; // master tempo (transitions in beats)
 }
-
-// Helper to convert normalized vertices to clip-path polygon string (percent)
-const verticesToClipPath = (vertices: Point[] | undefined): string => {
-  if (!vertices || vertices.length < 3) return 'none';
-  const points = vertices.map(v => `${v.x * 100}% ${v.y * 100}%`).join(', ');
-  return `polygon(${points})`;
-};
 
 // Number of subdivisions of the warped editing grid (Resolume-style)
 const WARP_GRID_DIVISIONS = 8;
@@ -78,23 +84,54 @@ const RESIZE_HANDLES: { handle: ResizeHandle; fx: number; fy: number }[] = [
 // Frame UI layers (outlines, handles, controls) stack above every hit area
 const UI_LAYER_Z = 100000;
 
-export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
+const NO_POINTS: readonly number[] = [];
+
+/** The surface's warp when it bends beyond its corner-pin homography (mesh, bilinear pin). */
+const innerWarpOf = (frame: MediaFrame): PreparedWarp | null => {
+  const warp = surfaceWarp(frame);
+  return bendsBeyondPerspective(warp) ? prepareWarp(warp) : null;
+};
+
+/** More points along every edge of a closed outline, so it can follow a curved warp. */
+const densify = (points: Point[], steps: number): Point[] =>
+  points.flatMap((p, i) => {
+    const q = points[(i + 1) % points.length];
+    return Array.from({ length: steps }, (_, k) => ({ x: p.x + ((q.x - p.x) * k) / steps, y: p.y + ((q.y - p.y) * k) / steps }));
+  });
+
+export const MediaFrameComponent = React.memo(function MediaFrameComponent({
   frame,
   isSelected,
-  onUpdate,
-  onDelete,
-  onDragStart,
-  onResizeStart,
-  onRotateStart,
+  onUpdateFrame,
+  onDeleteFrame,
+  onFrameDragStart,
+  onFrameResizeStart,
+  onFrameRotateStart,
   isPresentationMode,
-  onOpenMediaLibrary,
-  playbackCommand,
+  onOpenFrameMediaLibrary,
+  playback,
   clientToComp,
   snapToGrid,
   overlayContainer,
   viewScale,
   outputGain,
-}) => {
+  renderContent = true,
+  gain,
+  bpm,
+  preload,
+  startSeq,
+}: MediaFrameComponentProps) {
+  const frameId = frame.id;
+  const onUpdate = useCallback(
+    (updates: Partial<MediaFrame>) => onUpdateFrame(frameId, updates),
+    [onUpdateFrame, frameId]
+  );
+  const onDelete = () => onDeleteFrame(frameId);
+  const onDragStart = (e: React.MouseEvent) => onFrameDragStart(frameId, e);
+  const onResizeStart = (e: React.MouseEvent, handle: ResizeHandle) => onFrameResizeStart(frameId, handle, e);
+  const onRotateStart = (e: React.MouseEvent) => onFrameRotateStart(frameId, e);
+  const onOpenMediaLibrary = () => onOpenFrameMediaLibrary(frameId);
+
   const [showControls, setShowControls] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showEffects, setShowEffects] = useState(false);
@@ -104,7 +141,9 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   // box corners), so — like Photoshop's transform vs. direct selection —
   // either the warp pins or the shape's vertices are editable at a time
   const [isEditingShape, setIsEditingShape] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // This surface's mesh is the one edited on the stage, and its selected points
+  const isMeshTarget = useMeshEditor(s => s.target?.kind === 'surface' && s.target.id === frame.id);
+  const meshSelected = useMeshEditor(s => (s.target?.kind === 'surface' && s.target.id === frame.id ? s.selected : NO_POINTS));
   const hideControlsTimerRef = useRef<number | null>(null);
   const bodyPointerDownRef = useRef<Point | null>(null);
 
@@ -203,10 +242,19 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         if (!currentFrame.vertices) return;
 
         const warped = pointerToSnappedLocal(clientX, clientY);
-        const H = getFrameHomography(currentFrame);
-        const Hinv = H ? invertHomography(H) : null;
-        if (H && !Hinv) return;
-        const local = Hinv ? applyHomography(Hinv, warped.x, warped.y) : warped;
+        let local: Point;
+        const inner = innerWarpOf(currentFrame);
+        if (inner) {
+          // Through the mesh / bilinear pin
+          const uv = inner.inverse(warped);
+          if (!uv) return;
+          local = { x: uv.x * currentFrame.width, y: uv.y * currentFrame.height };
+        } else {
+          const H = getFrameHomography(currentFrame);
+          const Hinv = H ? invertHomography(H) : null;
+          if (H && !Hinv) return;
+          local = Hinv ? applyHomography(Hinv, warped.x, warped.y) : warped;
+        }
 
         const newVertices = [...currentFrame.vertices];
         newVertices[currentIndex] = {
@@ -242,8 +290,18 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         setDraggingVertexIndex(null);
         draggingVertexIndexRef.current = null;
         // Shrink/grow the box to the edited shape without moving anything
-        const refit = refitFrameToVertices(frameRef.current);
-        if (refit) onUpdateRef.current(refit);
+        const edited = frameRef.current;
+        const refit = refitFrameToVertices(edited);
+        if (refit && edited.mesh && edited.vertices) {
+          // The mesh follows: the new box is a part of the old one
+          const xs = edited.vertices.map(v => v.x);
+          const ys = edited.vertices.map(v => v.y);
+          const x = Math.min(...xs);
+          const y = Math.min(...ys);
+          onUpdateRef.current({ ...refit, mesh: cropMesh(edited.mesh, { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y }) });
+        } else if (refit) {
+          onUpdateRef.current(refit);
+        }
       }
       if (draggingCornerRef.current !== null) {
         setDraggingCorner(null);
@@ -265,87 +323,10 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     };
   }, []); // Empty dependency — handlers use refs
 
-  // Handle video playback settings
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.playbackRate = frame.playbackRate;
-    }
-  }, [frame.playbackRate, frame.type]);
-
-  // Handle video muted state separately to avoid autoplay issues
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.muted = frame.muted;
-    }
-  }, [frame.muted, frame.type]);
-
-  // Master fader / blackout also apply to audio, not just pixels
-  useEffect(() => {
-    if (videoRef.current && frame.type === 'video') {
-      videoRef.current.volume = Math.max(0, Math.min(1, outputGain));
-    }
-  }, [outputGain, frame.type, frame.url]);
-
   // Clear a pending hide-controls timer on unmount
   useEffect(() => () => {
     if (hideControlsTimerRef.current !== null) clearTimeout(hideControlsTimerRef.current);
   }, []);
-
-  // Auto-play video when URL changes or on mount
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !frame.url) return;
-
-    const attemptPlay = async () => {
-      try {
-        // Ensure video is muted for autoplay (browser policy)
-        video.muted = true;
-        await video.play();
-        // Restore muted state after successful autoplay
-        video.muted = frame.muted;
-      } catch (error) {
-        console.warn('Autoplay failed, will play on user interaction:', error);
-        // Try again with muted if unmuted failed
-        if (!video.muted) {
-          video.muted = true;
-          video.play().catch(() => {});
-        }
-      }
-    };
-
-    // Try to play when video data is loaded
-    const handleLoadedData = () => {
-      attemptPlay();
-    };
-
-    // If video is already loaded, play immediately
-    if (video.readyState >= 2) {
-      attemptPlay();
-    } else {
-      video.addEventListener('loadeddata', handleLoadedData);
-    }
-
-    return () => {
-      video.removeEventListener('loadeddata', handleLoadedData);
-    };
-  }, [frame.url, frame.type, frame.muted]);
-
-  // Handle global playback commands (Play All / Pause All)
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || frame.type !== 'video' || !playbackCommand) return;
-
-    if (playbackCommand === 'play') {
-      video.play().catch((error) => {
-        console.warn('Play failed:', error);
-        // Try muted play as fallback
-        video.muted = true;
-        video.play().catch(() => {});
-      });
-    } else if (playbackCommand === 'pause') {
-      video.pause();
-    }
-  }, [playbackCommand, frame.type]);
 
   // Hover shows the controls; hiding is delayed slightly so the pointer can
   // cross the gap between the shape and its (outside-anchored) buttons
@@ -382,7 +363,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     e.stopPropagation();
     const start = bodyPointerDownRef.current;
     const moved = !start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4;
-    if (!moved && !frame.url && !frame.testPattern) onOpenMediaLibrary();
+    // (A launcher layer that is merely cleared is not empty)
+    if (!moved && !frame.url && !frame.testPattern && !frame.layerHasClips) onOpenMediaLibrary();
   };
 
   // -------------------------------------------------------------------------
@@ -399,106 +381,32 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   const w = frame.width;
   const h = frame.height;
   const H = getFrameHomography(frame);
-  const toWarped = (x: number, y: number): Point => (H ? applyHomography(H, x, y) : { x, y });
+  // A mesh or a bilinear pin bends lines: everything goes through the full warp
+  const innerWarp = innerWarpOf(frame);
+  const toWarped = (x: number, y: number): Point =>
+    innerWarp ? innerWarp.point(x / w, y / h) : H ? applyHomography(H, x, y) : { x, y };
 
-  const shapeVertices = getShapeVertices(frame.shape, frame.vertices, H ? 96 : 48);
+  const baseVertices = getShapeVertices(frame.shape, frame.vertices, H || innerWarp ? 96 : 48);
+  const shapeVertices = innerWarp && frame.shape !== 'circle' ? densify(baseVertices, 24) : baseVertices;
   const shapeVerticesPx: Point[] = shapeVertices.map(v => toWarped(v.x * w, v.y * h));
   const outlinePoints = shapeVerticesPx.map(p => `${p.x},${p.y}`).join(' ');
 
-  // Clip path on the content box (untransformed space)
-  const getClipPath = (): string => {
-    if (H) {
-      // All shapes clip to their homography-transformed outline
-      return `polygon(${shapeVerticesPx.map(p => `${p.x}px ${p.y}px`).join(', ')})`;
-    }
-    if (frame.shape === 'circle') {
-      return 'ellipse(50% 50% at 50% 50%)'; // exact ellipse when unwarped
-    }
-    if (frame.shape === 'polygon') {
-      return verticesToClipPath(frame.vertices);
-    }
-    return 'none';
-  };
-
-  const clipPathStyle = getClipPath();
-
-  // Build CSS filter string
-  const filterStyle = [
-    frame.blur > 0 ? `blur(${frame.blur}px)` : '',
-    frame.brightness !== 100 ? `brightness(${frame.brightness}%)` : '',
-    frame.contrast !== 100 ? `contrast(${frame.contrast}%)` : '',
-    frame.grayscale > 0 ? `grayscale(${frame.grayscale}%)` : '',
-    frame.saturate !== 100 ? `saturate(${frame.saturate}%)` : '',
-    frame.hueRotate !== 0 ? `hue-rotate(${frame.hueRotate}deg)` : '',
-    frame.invert > 0 ? `invert(${frame.invert}%)` : '',
-    frame.sepia > 0 ? `sepia(${frame.sepia}%)` : '',
-  ].filter(Boolean).join(' ');
-
+  // Values edited in the settings / effects panels
   const contentScale = frame.contentScale ?? 1;
   const contentOffsetX = frame.contentOffsetX ?? 0;
   const contentOffsetY = frame.contentOffsetY ?? 0;
-
-  // Content transform. With a homography the transform-origin is (0,0), so
-  // flips/zoom are expressed relative to the frame box and composed AFTER the
-  // homography (transform lists apply right-to-left).
-  const buildContentTransform = (): string => {
-    const parts: string[] = [];
-    if (H) {
-      parts.push(homographyToCSS(H));
-      if (frame.flipHorizontal) parts.push(`translate(${w}px, 0px) scaleX(-1)`);
-      if (frame.flipVertical) parts.push(`translate(0px, ${h}px) scaleY(-1)`);
-      if (contentScale !== 1) parts.push(`translate(${w / 2}px, ${h / 2}px) scale(${contentScale}) translate(${-w / 2}px, ${-h / 2}px)`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
-    } else {
-      if (frame.flipHorizontal) parts.push('scaleX(-1)');
-      if (frame.flipVertical) parts.push('scaleY(-1)');
-      if (contentScale !== 1) parts.push(`scale(${contentScale})`);
-      if (contentOffsetX !== 0 || contentOffsetY !== 0) parts.push(`translate(${contentOffsetX}%, ${contentOffsetY}%)`);
-    }
-    return parts.join(' ');
-  };
-
-  // Soft edge feathering — masks the content element itself, so the feather
-  // warps together with the content under a corner-pin homography.
   const softEdge = frame.softEdge ?? { left: 0, right: 0, top: 0, bottom: 0 };
   const hasSoftEdge = softEdge.left > 0 || softEdge.right > 0 || softEdge.top > 0 || softEdge.bottom > 0;
-  const softEdgeMask = hasSoftEdge
-    ? [
-        `linear-gradient(to right, transparent 0px, black ${softEdge.left}px, black calc(100% - ${softEdge.right}px), transparent 100%)`,
-        `linear-gradient(to bottom, transparent 0px, black ${softEdge.top}px, black calc(100% - ${softEdge.bottom}px), transparent 100%)`,
-      ].join(', ')
-    : undefined;
-
-  const contentStyle: React.CSSProperties = {
-    ...(H
-      ? {
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          objectFit: 'cover',
-          transformOrigin: '0 0',
-        }
-      : {}),
-    filter: filterStyle || undefined,
-    transform: buildContentTransform() || undefined,
-    ...(softEdgeMask
-      ? {
-          maskImage: softEdgeMask,
-          maskComposite: 'intersect',
-          WebkitMaskImage: softEdgeMask,
-          WebkitMaskComposite: 'source-in',
-        }
-      : {}),
-  };
 
   // ---- Editor overlay geometry (warped frame-local px) ----
   const ui = 1 / (viewScale || 1); // composition px per screen px
+  // Mesh editing (3.2): the mesh's points replace the other handles
+  const editingMesh = isMeshTarget && isSelected && !!frame.mesh && !isPresentationMode;
   const canToggleShapeEdit = frame.shape === 'polygon' && frame.perspectiveMode;
-  const editingShape = canToggleShapeEdit && isEditingShape && isSelected;
-  const showPins = frame.perspectiveMode && (isSelected || showControls) && !editingShape;
-  const showVertexHandles = isSelected && frame.shape === 'polygon' && (!frame.perspectiveMode || editingShape);
+  const editingShape = canToggleShapeEdit && isEditingShape && isSelected && !editingMesh;
+  const showPins = frame.perspectiveMode && (isSelected || showControls) && !editingShape && !editingMesh;
+  const showVertexHandles = isSelected && frame.shape === 'polygon' && (!frame.perspectiveMode || editingShape) && !editingMesh;
+  const showBoxHandles = isSelected && !editingMesh;
   const cornerPositions = getCornerLocalPositions(w, h, frame.perspectiveCorners);
   const pinQuad = frame.perspectiveMode
     ? [cornerPositions.tl, cornerPositions.tr, cornerPositions.br, cornerPositions.bl]
@@ -528,18 +436,16 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
   });
   const rotateAnchor = toWarped(w / 2, 0);
 
-  // Warped editing grid lines (homographies map straight lines to straight
-  // lines, so each grid line is a segment between transformed endpoints)
-  const warpGridLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
-  if (frame.perspectiveMode && (isSelected || showControls)) {
+  // Warped editing grid lines. Homographies map straight lines to straight
+  // lines (a segment between transformed endpoints); a mesh bends them.
+  const warpGridLines: Point[][] = [];
+  if ((frame.perspectiveMode || innerWarp) && (isSelected || showControls) && !editingMesh) {
+    const samples = innerWarp ? 24 : 1;
+    const along = (fn: (t: number) => Point) => Array.from({ length: samples + 1 }, (_, k) => fn(k / samples));
     for (let i = 1; i < WARP_GRID_DIVISIONS; i++) {
       const f = i / WARP_GRID_DIVISIONS;
-      const v1 = toWarped(f * w, 0);
-      const v2 = toWarped(f * w, h);
-      warpGridLines.push({ x1: v1.x, y1: v1.y, x2: v2.x, y2: v2.y });
-      const h1 = toWarped(0, f * h);
-      const h2 = toWarped(w, f * h);
-      warpGridLines.push({ x1: h1.x, y1: h1.y, x2: h2.x, y2: h2.y });
+      warpGridLines.push(along(t => toWarped(f * w, t * h)));
+      warpGridLines.push(along(t => toWarped(t * w, f * h)));
     }
   }
 
@@ -562,77 +468,6 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
     transform: `rotate(${frame.rotation}deg)`,
     pointerEvents: 'none',
   };
-
-  // Content — pure output: positioned, rotated, blended, never interactive
-  const content = (
-    <div
-      className="absolute"
-      style={{
-        left: frame.x,
-        top: frame.y,
-        width: w,
-        height: h,
-        transform: `rotate(${frame.rotation}deg)`,
-        zIndex: frame.zIndex,
-        opacity: frame.opacity,
-        // This element is the frame's stacking context, so the blend mode has
-        // to sit here to mix with the frames and background below it
-        mixBlendMode: frame.blendMode,
-        pointerEvents: 'none',
-        // Warped content may extend beyond the box; the clip-path (which
-        // follows the warped shape) does the clipping
-        overflow: H ? 'visible' : undefined,
-      }}
-    >
-      <div
-        className="w-full h-full relative"
-        style={{
-          clipPath: clipPathStyle,
-          overflow: H ? 'visible' : 'hidden',
-          backgroundColor: frame.url || frame.testPattern || isPresentationMode ? undefined : 'rgb(243 244 246)',
-        }}
-      >
-        {frame.testPattern ? (
-          <div className="w-full h-full" style={contentStyle}>
-            <TestCard
-              width={frame.width}
-              height={frame.height}
-              label={frame.name || frame.filename || `${Math.round(frame.width)} × ${Math.round(frame.height)}`}
-            />
-          </div>
-        ) : frame.url ? (
-          frame.type === 'video' ? (
-            <video
-              ref={videoRef}
-              src={frame.url}
-              loop={frame.loop}
-              muted // Always muted for initial autoplay (browser requirement)
-              autoPlay
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              playsInline
-            />
-          ) : (
-            <img
-              src={frame.url}
-              alt="Media"
-              className="w-full h-full object-cover"
-              style={contentStyle}
-              draggable={false}
-            />
-          )
-        ) : !isPresentationMode ? (
-          <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-gray-200 to-gray-300">
-            <div className="text-center text-gray-500">
-              <Upload className="w-8 h-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm font-medium">Click to add media</p>
-              <p className="text-xs mt-1">from library</p>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
 
   // Hit layer — exactly the rendered (warped) shape, stacked like the content
   const hitLayer = !isPresentationMode ? (
@@ -683,12 +518,10 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         {warpGridLines.length > 0 && (
           <g clipPath={`url(#${clipId})`}>
             {warpGridLines.map((line, i) => (
-              <line
+              <polyline
                 key={i}
-                x1={line.x1}
-                y1={line.y1}
-                x2={line.x2}
-                y2={line.y2}
+                points={line.map(p => `${p.x},${p.y}`).join(' ')}
+                fill="none"
                 stroke="rgba(34, 211, 238, 0.45)"
                 strokeWidth={ui}
               />
@@ -717,6 +550,21 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
           strokeLinejoin="round"
         />
       </svg>
+
+      {/* Mesh warp points (3.2) */}
+      {editingMesh && frame.mesh && (
+        <MeshHandles
+          target={{ kind: 'surface', id: frame.id }}
+          warp={surfaceWarp(frame)}
+          mesh={frame.mesh}
+          selected={meshSelected}
+          px={ui}
+          toSpace={(clientX, clientY) => {
+            const comp = clientToCompRef.current(clientX, clientY);
+            return compToFrameLocal(comp.x, comp.y, frameRef.current);
+          }}
+        />
+      )}
 
       {/* Perspective corner pins — visible on hover OR when selected */}
       {showPins &&
@@ -754,7 +602,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
         ))}
 
       {/* Resize handles — every shape, on the warped box */}
-      {isSelected && resizeHandlePositions.map(({ handle, p }) => (
+      {showBoxHandles && resizeHandlePositions.map(({ handle, p }) => (
         <div
           key={handle}
           className="absolute bg-yellow-400 border-yellow-600 shadow-md"
@@ -807,7 +655,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
       })}
 
       {/* Rotation handle — above the warped top edge */}
-      {isSelected && (
+      {showBoxHandles && (
         <div
           className="absolute bg-green-500 rounded-full border-white cursor-grab flex items-center justify-center shadow-lg"
           style={{
@@ -862,7 +710,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   setShowSettings(!showSettings);
                   setShowEffects(false);
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Settings"
               >
                 <Layers className="w-4 h-4" />
@@ -874,7 +722,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   setShowEffects(!showEffects);
                   setShowSettings(false);
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Effects"
               >
                 <Sparkles className="w-4 h-4" />
@@ -885,7 +733,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   e.stopPropagation();
                   handleChangeMedia();
                 }}
-                className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Change Media"
               >
                 <Upload className="w-4 h-4" />
@@ -897,7 +745,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                     e.stopPropagation();
                     setIsEditingShape(!isEditingShape);
                   }}
-                  className={`p-2 text-white rounded backdrop-blur-sm transition-colors ${editingShape ? 'bg-purple-600 hover:bg-purple-500' : 'bg-black/70 hover:bg-black/90'}`}
+                  className={`p-2 text-white rounded backdrop-blur-md shadow-lg transition-colors ${editingShape ? 'bg-purple-600 hover:bg-purple-500' : 'bg-black/85 hover:bg-white/20'}`}
                   title={editingShape ? 'Back to corner pins (double-click shape)' : 'Edit shape vertices (double-click shape)'}
                 >
                   <PenTool className="w-4 h-4" />
@@ -909,7 +757,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   e.stopPropagation();
                   onUpdate({ testPattern: !frame.testPattern });
                 }}
-                className={`p-2 text-white rounded backdrop-blur-sm transition-colors ${frame.testPattern ? 'bg-cyan-600 hover:bg-cyan-500' : 'bg-black/70 hover:bg-black/90'}`}
+                className={`p-2 rounded backdrop-blur-md shadow-lg transition-colors ${frame.testPattern ? 'bg-cyan-500 text-black hover:bg-cyan-400' : 'bg-black/85 text-white hover:bg-white/20'}`}
                 title={frame.testPattern ? 'Hide test pattern' : 'Show test pattern (calibrate this surface)'}
               >
                 <LayoutTemplate className="w-4 h-4" />
@@ -921,7 +769,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                     e.stopPropagation();
                     onUpdate({ muted: !frame.muted });
                   }}
-                  className="p-2 bg-black/70 hover:bg-black/90 text-white rounded backdrop-blur-sm transition-colors"
+                  className="p-2 bg-black/85 hover:bg-white/20 text-white rounded backdrop-blur-md shadow-lg transition-colors"
                   title={frame.muted ? "Unmute" : "Mute"}
                 >
                   {frame.muted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
@@ -933,7 +781,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   e.stopPropagation();
                   onDelete();
                 }}
-                className="p-2 bg-red-600/80 hover:bg-red-600 text-white rounded backdrop-blur-sm transition-colors"
+                className="p-2 bg-black/85 hover:bg-red-600 text-red-300 hover:text-white rounded backdrop-blur-md shadow-lg transition-colors"
                 title="Delete"
               >
                 <Trash2 className="w-4 h-4" />
@@ -943,12 +791,12 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
             {/* Settings Panel */}
             {showSettings && (
               <div
-                className="bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[220px] max-h-[400px] overflow-y-auto"
+                className={`${menuSurface} p-3 min-w-[220px] max-h-[400px] overflow-y-auto`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs mb-2 block">Opacity</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Opacity</label>
                     <Slider
                       value={[frame.opacity * 100]}
                       onValueChange={(value) => onUpdate({ opacity: value[0] / 100 })}
@@ -959,8 +807,8 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   {/* Content Scale/Zoom */}
-                  <div className="pt-2 border-t border-white/20">
-                    <label className="text-xs mb-2 block">Content Zoom</label>
+                  <div className="pt-2 border-t border-white/10">
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Content Zoom</label>
                     <Slider
                       value={[contentScale * 100]}
                       onValueChange={(value) => onUpdate({ contentScale: value[0] / 100 })}
@@ -974,7 +822,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   {contentScale > 1 && (
                     <>
                       <div>
-                        <label className="text-xs mb-2 block">Pan X</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Pan X</label>
                         <Slider
                           value={[contentOffsetX]}
                           onValueChange={(value) => onUpdate({ contentOffsetX: value[0] })}
@@ -984,7 +832,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                         />
                       </div>
                       <div>
-                        <label className="text-xs mb-2 block">Pan Y</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Pan Y</label>
                         <Slider
                           value={[contentOffsetY]}
                           onValueChange={(value) => onUpdate({ contentOffsetY: value[0] })}
@@ -1005,7 +853,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   {frame.type === 'video' && (
                     <>
                       <div>
-                        <label className="text-xs mb-2 block">Playback Speed</label>
+                        <label className="text-[11px] text-gray-300 mb-1.5 block">Playback Speed</label>
                         <Slider
                           value={[frame.playbackRate * 100]}
                           onValueChange={(value) => onUpdate({ playbackRate: value[0] / 100 })}
@@ -1031,7 +879,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   )}
 
                   <div>
-                    <label className="text-xs mb-2 block">Shape</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Shape</label>
                     <select
                       value={frame.shape}
                       onChange={(e) => {
@@ -1051,7 +899,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                           onUpdate({ shape: newShape });
                         }
                       }}
-                      className="w-full bg-white/10 rounded px-2 py-1 text-xs"
+                      className={`w-full ${field}`}
                     >
                       <option value="rectangle">Rectangle</option>
                       <option value="circle">Circle</option>
@@ -1064,7 +912,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                       corner pin so the media stretches onto it. */}
                   {frame.shape === 'polygon' && (
                     <div>
-                      <label className="text-xs mb-2 block">Media Mapping</label>
+                      <label className="text-[11px] text-gray-300 mb-1.5 block">Media Mapping</label>
                       <p className="text-[10px] text-gray-400">
                         The polygon cuts the media; corner pin warps media and shape together.
                       </p>
@@ -1088,7 +936,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   )}
 
                   {/* Perspective / Corner Pin */}
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="text-xs mb-2 block font-medium text-orange-400 flex items-center gap-1">
                       <Grid3X3 className="w-3 h-3" />
                       Perspective Mapping
@@ -1127,7 +975,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                     )}
                   </div>
 
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="flex items-center gap-2 text-xs cursor-pointer">
                       <button
                         onClick={() => onUpdate({ lockAspectRatio: !frame.lockAspectRatio })}
@@ -1142,14 +990,14 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   <div className="pt-2 flex gap-2">
                     <button
                       onClick={() => onUpdate({ flipHorizontal: !frame.flipHorizontal })}
-                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipHorizontal ? 'bg-blue-600' : 'bg-white/10'}`}
+                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipHorizontal ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
                       title="Flip Horizontal"
                     >
                       <FlipHorizontal className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => onUpdate({ flipVertical: !frame.flipVertical })}
-                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipVertical ? 'bg-blue-600' : 'bg-white/10'}`}
+                      className={`flex-1 p-2 rounded text-xs flex items-center justify-center gap-1 ${frame.flipVertical ? 'bg-cyan-500 text-black font-semibold' : 'bg-white/10 hover:bg-white/20'}`}
                       title="Flip Vertical"
                     >
                       <FlipVertical className="w-3 h-3" />
@@ -1162,7 +1010,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
             {/* Effects Panel */}
             {showEffects && (
               <div
-                className="bg-black/90 text-white p-4 rounded-lg backdrop-blur-sm min-w-[240px] max-h-[500px] overflow-y-auto"
+                className={`${menuSurface} p-3 min-w-[240px] max-h-[500px] overflow-y-auto`}
                 onClick={(e) => e.stopPropagation()}
               >
                 <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
@@ -1171,7 +1019,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                 </h3>
                 <div className="space-y-4">
                   <div>
-                    <label className="text-xs mb-2 block">Blur</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Blur</label>
                     <Slider
                       value={[frame.blur]}
                       onValueChange={(value) => onUpdate({ blur: value[0] })}
@@ -1183,7 +1031,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Brightness</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Brightness</label>
                     <Slider
                       value={[frame.brightness]}
                       onValueChange={(value) => onUpdate({ brightness: value[0] })}
@@ -1195,7 +1043,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Contrast</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Contrast</label>
                     <Slider
                       value={[frame.contrast]}
                       onValueChange={(value) => onUpdate({ contrast: value[0] })}
@@ -1207,7 +1055,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Saturation</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Saturation</label>
                     <Slider
                       value={[frame.saturate]}
                       onValueChange={(value) => onUpdate({ saturate: value[0] })}
@@ -1219,7 +1067,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Grayscale</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Grayscale</label>
                     <Slider
                       value={[frame.grayscale]}
                       onValueChange={(value) => onUpdate({ grayscale: value[0] })}
@@ -1231,7 +1079,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Hue Rotate</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Hue Rotate</label>
                     <Slider
                       value={[frame.hueRotate]}
                       onValueChange={(value) => onUpdate({ hueRotate: value[0] })}
@@ -1243,7 +1091,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Invert</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Invert</label>
                     <Slider
                       value={[frame.invert]}
                       onValueChange={(value) => onUpdate({ invert: value[0] })}
@@ -1255,7 +1103,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Sepia</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Sepia</label>
                     <Slider
                       value={[frame.sepia]}
                       onValueChange={(value) => onUpdate({ sepia: value[0] })}
@@ -1267,11 +1115,11 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-xs mb-2 block">Blend Mode</label>
+                    <label className="text-[11px] text-gray-300 mb-1.5 block">Blend Mode</label>
                     <select
                       value={frame.blendMode}
                       onChange={(e) => onUpdate({ blendMode: e.target.value as BlendMode })}
-                      className="w-full bg-white/10 rounded px-2 py-1 text-xs"
+                      className={`w-full ${field}`}
                     >
                       <option value="normal">Normal</option>
                       <option value="multiply">Multiply</option>
@@ -1293,7 +1141,7 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
                   </div>
 
                   {/* Soft edge feathering for projection blending */}
-                  <div className="pt-2 border-t border-white/20">
+                  <div className="pt-2 border-t border-white/10">
                     <label className="text-xs mb-2 block font-medium text-cyan-400">Soft Edge (blend)</label>
                     {(['left', 'right', 'top', 'bottom'] as const).map(edge => (
                       <div key={edge} className="mb-2">
@@ -1345,9 +1193,21 @@ export const MediaFrameComponent: React.FC<MediaFrameComponentProps> = ({
 
   return (
     <>
-      {content}
+      {renderContent && (
+        <FrameContent
+          frame={frame}
+          playback={playback}
+          outputGain={outputGain}
+          showPlaceholder={!isPresentationMode && !frame.layerHasClips}
+          preload={preload}
+          startSeq={startSeq}
+          gain={gain}
+          bpm={bpm}
+          hints={!isPresentationMode}
+        />
+      )}
       {overlayContainer && hitLayer && createPortal(hitLayer, overlayContainer)}
       {overlayContainer && uiLayer && createPortal(uiLayer, overlayContainer)}
     </>
   );
-};
+});
